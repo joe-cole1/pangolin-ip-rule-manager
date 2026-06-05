@@ -95,7 +95,7 @@ def _build_checkin_html(
             "      if (el) { el.textContent = val; if (cls) el.className = cls; }\n"
             "    }\n"
             "    if (!badge) return;\n"
-            "    fetch(url, { method: 'HEAD', mode: 'no-cors', redirect: 'manual', cache: 'no-store' })\n"
+            "    fetch(url, { method: 'GET', mode: 'no-cors', redirect: 'manual', cache: 'no-store' })\n"
             "      .then(function(r) {\n"
             "        setDetail('ac-type', r.type, 'val');\n"
             "        setDetail('ac-status', r.status === 0 ? 'n/a (opaque)' : String(r.status), 'val');\n"
