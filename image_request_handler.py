@@ -94,8 +94,8 @@ def _build_checkin_html(ip: str, results: dict, retention_minutes: int, last_see
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    padding: 24px 16px 48px;
+    justify-content: flex-start;
+    padding: 40px 16px 48px;
     background-image:
       linear-gradient(var(--border) 1px, transparent 1px),
       linear-gradient(90deg, var(--border) 1px, transparent 1px);
