@@ -55,10 +55,10 @@ def _build_checkin_html(
 
     details_label = "Technical details" if overall_ok else "What went wrong?"
 
-    # Access check row — only rendered when both enabled and a URL is configured
+    # Access check link — only rendered when both enabled and a URL is configured
     show_access_check = access_check_enabled and bool(access_check_url)
     if show_access_check:
-        # Escape the URL for safe inline HTML/JS embedding
+        # Escape the URL for safe inline HTML attribute embedding
         safe_url = (
             access_check_url
             .replace("&", "&amp;")
@@ -68,74 +68,29 @@ def _build_checkin_html(
             .replace(">", "&gt;")
         )
         access_check_row = (
-            "      <div class=\"status-row\" id=\"access-check-row\">\n"
-            "        <span class=\"label\">\n"
-            "          <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\">"
+            "      <a class=\"access-link\" href=\"" + safe_url + "\" target=\"_blank\" rel=\"noopener noreferrer\">\n"
+            "        <span class=\"access-link-left\">\n"
+            "          <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" style=\"flex-shrink:0;\">"
             "<path d=\"M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6\"/>"
             "<polyline points=\"15 3 21 3 21 9\"/><line x1=\"10\" y1=\"14\" x2=\"21\" y2=\"3\"/>"
             "</svg>\n"
-            f"          <span style=\"font-family:var(--mono);font-size:11px;\">{safe_url}</span>\n"
+            "          <span class=\"access-link-text\">\n"
+            "            <span class=\"access-link-label\">Confirm access</span>\n"
+            f"            <span class=\"access-link-url\">{safe_url}</span>\n"
+            "          </span>\n"
             "        </span>\n"
-            "        <span class=\"badge pending\" id=\"access-check-badge\">"
-            "<span class=\"spinner\"></span>Checking&hellip;"
-            "</span>\n"
-            "      </div>"
+            "        <svg class=\"access-link-arrow\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\">"
+            "<line x1=\"5\" y1=\"12\" x2=\"19\" y2=\"12\"/>"
+            "<polyline points=\"12 5 19 12 12 19\"/>"
+            "</svg>\n"
+            "      </a>"
         )
-        # JS snippet injected at end of page — runs after DOM is ready
-        # Uses fetch with mode:'no-cors' and redirect:'manual' to detect whether
-        # the target responds directly (opaque = reachable) or redirects to Pangolin
-        # auth (opaqueredirect = not yet whitelisted), without needing CORS headers.
-        access_check_js = (
-            "\n"
-            "  (function() {\n"
-            f"    var url = \"{safe_url}\";\n"
-            "    var badge = document.getElementById('access-check-badge');\n"
-            "    function setDetail(key, val, cls) {\n"
-            "      var el = document.getElementById(key);\n"
-            "      if (el) { el.textContent = val; if (cls) el.className = cls; }\n"
-            "    }\n"
-            "    if (!badge) return;\n"
-            "    fetch(url, { method: 'GET', mode: 'no-cors', redirect: 'manual', cache: 'no-store' })\n"
-            "      .then(function(r) {\n"
-            "        setDetail('ac-type', r.type, 'val');\n"
-            "        setDetail('ac-status', r.status === 0 ? 'n/a (opaque)' : String(r.status), 'val');\n"
-            "        setDetail('ac-error', 'none', 'ok');\n"
-            "        if (r.type === 'opaqueredirect') {\n"
-            "          // Redirected — Pangolin auth wall still in place for this IP\n"
-            "          badge.className = 'badge err';\n"
-            "          badge.innerHTML = 'Redirected';\n"
-            "          setDetail('ac-result', 'redirected - pangolin auth wall active', 'bad');\n"
-            "        } else {\n"
-            "          // Got a real response (opaque 2xx/3xx from target) — reachable\n"
-            "          badge.className = 'badge ok';\n"
-            "          badge.innerHTML = 'Reachable';\n"
-            "          setDetail('ac-result', 'reachable', 'ok');\n"
-            "        }\n"
-            "      })\n"
-            "      .catch(function(err) {\n"
-            "        // Network error — fetch never got a response\n"
-            "        badge.className = 'badge warn';\n"
-            "        badge.innerHTML = 'Unreachable';\n"
-            "        setDetail('ac-type', 'error', 'bad');\n"
-            "        setDetail('ac-status', 'n/a', 'val');\n"
-            "        setDetail('ac-result', 'network error', 'bad');\n"
-            "        setDetail('ac-error', err ? String(err) : 'unknown', 'bad');\n"
-            "      });\n"
-            "  })();"
+        access_check_detail_rows = (
+            "      <div class=\"row\"><span class=\"key\">ac_url&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>"
+            "<span class=\"val\" style=\"word-break:break-all;\">" + safe_url + "</span></div>\n"
         )
     else:
         access_check_row = ""
-        access_check_js = ""
-
-    if show_access_check:
-        access_check_detail_rows = (
-            "      <div class=\"row\"><span class=\"key\">ac_url&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" style=\"word-break:break-all;\">" + safe_url + "</span></div>\n"
-            "      <div class=\"row\"><span class=\"key\">ac_result&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" id=\"ac-result\">pending&hellip;</span></div>\n"
-            "      <div class=\"row\"><span class=\"key\">ac_type&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" id=\"ac-type\">pending&hellip;</span></div>\n"
-            "      <div class=\"row\"><span class=\"key\">ac_status&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" id=\"ac-status\">pending&hellip;</span></div>\n"
-            "      <div class=\"row\"><span class=\"key\">ac_error&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" id=\"ac-error\">pending&hellip;</span></div>\n"
-        )
-    else:
         access_check_detail_rows = ""
 
     html = (
@@ -239,9 +194,20 @@ def _build_checkin_html(
         "  .badge.skip    { background: var(--border);     color: var(--muted); }\n"
         "  .badge.err     { background: var(--err-dim);    color: var(--err); }\n"
         "  .badge.warn    { background: var(--warn-dim);   color: var(--warn); }\n"
-        "  .badge.pending { background: var(--border);     color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }\n"
-        "  @keyframes spin { to { transform: rotate(360deg); } }\n"
-        "  .spinner { width: 9px; height: 9px; border: 1.5px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; flex-shrink: 0; }\n"
+        "  .access-link {\n"
+        "    display: flex; align-items: center; justify-content: space-between;\n"
+        "    padding: 10px 14px; border-radius: 8px; border: 1px solid var(--accent-dim);\n"
+        "    background: var(--bg); text-decoration: none; cursor: pointer;\n"
+        "    transition: border-color .15s, background .15s;\n"
+        "  }\n"
+        "  .access-link:hover { border-color: var(--accent); background: #0d1f16; }\n"
+        "  .access-link-left { display: flex; align-items: center; gap: 8px; min-width: 0; }\n"
+        "  .access-link-left svg { opacity: .6; color: var(--accent); stroke: var(--accent); }\n"
+        "  .access-link-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }\n"
+        "  .access-link-label { font-size: 13px; font-weight: 500; color: var(--accent); }\n"
+        "  .access-link-url { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n"
+        "  .access-link-arrow { color: var(--accent); stroke: var(--accent); opacity: .7; flex-shrink: 0; transition: transform .15s; }\n"
+        "  .access-link:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }\n"
         "  .expiry { font-size: 12px; color: var(--muted); text-align: center; margin-bottom: 20px; line-height: 1.5; }\n"
         "  .expiry span { color: var(--text); font-family: var(--mono); font-size: 12px; }\n"
         "  .details-toggle {\n"
@@ -324,7 +290,6 @@ def _build_checkin_html(
         "    const open = body.classList.toggle('open');\n"
         "    btn.setAttribute('aria-expanded', open);\n"
         "  }\n"
-        f"{access_check_js}\n"
         "</script>\n"
         "</body>\n"
         "</html>"
