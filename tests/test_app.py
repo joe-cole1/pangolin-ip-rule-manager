@@ -298,9 +298,8 @@ def test_cleanup_longer_scenario_mixed_outcomes(monkeypatch, app_module):
         assert ip_delete_failed in app.state
         assert "5" in app.state[ip_delete_failed]["resources"]
 
-        # Not created by us -> never attempted -> remains
-        assert ip_not_created in app.state
-        assert "5" in app.state[ip_not_created]["resources"]
+        # Not created by us -> state entry removed after expiry (Finding 6E)
+        assert ip_not_created not in app.state
 
         # Fresh (not expired) -> remains untouched
         assert ip_fresh in app.state
@@ -342,8 +341,9 @@ def test_cleanup_does_not_remove_non_created_rules(monkeypatch, app_module):
     app.cleanup_old_ips()
 
     with app.state_lock:
-        assert ip in app.state
-        assert "5" in app.state[ip]["resources"]
+        # Entry should be removed from state — we clean up our bookkeeping
+        # for expired unowned entries even though we don't touch the Pangolin rule
+        assert ip not in app.state
 
     # Ensure no delete attempt was made
     assert called == []
@@ -433,8 +433,9 @@ def test_update_endpoint_invalid_ip_400(monkeypatch, temp_state_file):
 def test_update_endpoint_ipv6_success(monkeypatch, temp_state_file):
     app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=True)
 
-    ipv6 = "2001:db8::1"
-    encoded = "2001%3Adb8%3A%3A1"
+    ipv6 = "2606:4700:4700::1111"
+    encoded = "2606%3A4700%3A4700%3A%3A1111"
+
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
@@ -474,3 +475,22 @@ def test_update_endpoint_last_seen_updates(monkeypatch, temp_state_file):
     with app.state_lock:
         second_seen = app.state[ip]["last_seen"]
     assert second_seen != first_seen
+
+def test_update_endpoint_returns_html_when_accepted(monkeypatch, temp_state_file):
+    app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=True)
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers = {
+            app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        conn.request("GET", "/update?ip=1.2.3.4", headers=headers)
+        resp = conn.getresponse()
+        data = resp.read()
+        assert resp.status == 200
+        assert b"text/html" in resp.getheader("Content-Type", "").encode()
+        assert b"Network Check-in" in data
+        assert b"1.2.3.4" in data
