@@ -475,3 +475,22 @@ def test_update_endpoint_last_seen_updates(monkeypatch, temp_state_file):
     with app.state_lock:
         second_seen = app.state[ip]["last_seen"]
     assert second_seen != first_seen
+
+def test_update_endpoint_returns_html_when_accepted(monkeypatch, temp_state_file):
+    app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=True)
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers = {
+            app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        conn.request("GET", "/update?ip=1.2.3.4", headers=headers)
+        resp = conn.getresponse()
+        data = resp.read()
+        assert resp.status == 200
+        assert b"text/html" in resp.getheader("Content-Type", "").encode()
+        assert b"Network Check-in" in data
+        assert b"1.2.3.4" in data
