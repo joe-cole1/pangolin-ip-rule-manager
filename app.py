@@ -143,14 +143,11 @@ def http_json(method: str, url: str, body: dict | None = None) -> dict:
     except HTTPError as e:
         try:
             err = e.read().decode("utf-8", errors="replace")
-        except (UnicodeDecodeError, IOError):  # More specific exceptions
+        except (UnicodeDecodeError, IOError):
             err = str(e)
         raise RuntimeError(f"HTTP {e.code} {e.reason}: {err}")
     except URLError as e:
         raise RuntimeError(f"Network error: {e}")
-
-
-
 
 
 # Targets common interface
@@ -227,13 +224,29 @@ def ensure_ip_rule(ip: str) -> None:
 # Target aggregation (extensibility point)
 # --------------------------
 
-def add_ip_to_targets(ip: str) -> None:
-    """Add/allow this IP across configured targets (Pangolin, CrowdSec, etc.)."""
+def add_ip_to_targets(ip: str) -> dict:
+    """Add/allow this IP across configured targets (Pangolin, CrowdSec, etc.).
+    Returns a dict of per-target results for display purposes:
+      {
+        "pangolin": {"ok": bool, "detail": str, "enabled": bool},
+        "crowdsec": {"ok": bool, "detail": str, "enabled": bool},
+      }
+    """
+    results = {
+        "pangolin": {"ok": False, "detail": "not attempted", "enabled": True},
+        "crowdsec": {"ok": False, "detail": "disabled", "enabled": CROWDSEC_ENABLED},
+    }
     for t in TARGETS:
+        key = "crowdsec" if isinstance(t, CrowdSecTarget) else "pangolin"
         try:
             t.add_ip(ip)
+            results[key]["ok"] = True
+            results[key]["detail"] = "ok"
         except Exception as e:
+            results[key]["ok"] = False
+            results[key]["detail"] = str(e)
             print(f"[targets] add failed for {ip} on {t.__class__.__name__}: {e}")
+    return results
 
 
 def expire_ip_from_targets(ip: str) -> None:
@@ -264,7 +277,7 @@ def cleanup_old_ips():
             resources = rec.get("resources", {})
         try:
             last_seen = datetime.fromisoformat(last_seen_str.replace("Z", "+00:00")) if last_seen_str else None
-        except ValueError:  # Specifically catch ValueError for invalid datetime format
+        except ValueError:
             print(f"[cleanup] Invalid datetime format in last_seen: {last_seen_str}")
             last_seen = None
         # Skip if record is missing timestamp or not yet expired
@@ -306,7 +319,7 @@ def cleanup_loop():
             cleanup_old_ips()
         except Exception as e:
             print(f"[cleanup] unexpected error: {e}")
-        time.sleep(CLEANUP_INTERVAL_MINUTES*60)
+        time.sleep(CLEANUP_INTERVAL_MINUTES * 60)
 
 
 from image_request_handler import create_image_request_handler
@@ -318,6 +331,7 @@ def _make_image_handler_context() -> dict:
         "expected_header_value": EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE,
         "update_enabled": UPDATE_ENDPOINT_ENABLED,
         "retention_minutes": RETENTION_MINUTES,
+        "crowdsec_enabled": CROWDSEC_ENABLED,
         "state": state,
         "state_lock": state_lock,
         "now_utc_iso": now_utc_iso,
@@ -332,6 +346,7 @@ def _make_image_handler_context() -> dict:
 # Expose the HTTP handler class
 ImageRequestHandler = create_image_request_handler(_make_image_handler_context())
 
+
 def self_check():
     # Double-check mandatory environment settings and print useful warnings/summary.
     missing = []
@@ -340,7 +355,6 @@ def self_check():
     if not EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE:
         missing.append("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE")
     if missing:
-        # Keep behavior aligned with import-time validation but provide a clear error here as well
         print("[self-check] WARNING: Missing required environment variables: " + ", ".join(missing))
         raise RuntimeError(
             "Missing required environment variables: " + ", ".join(missing)
