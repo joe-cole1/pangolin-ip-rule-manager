@@ -342,8 +342,9 @@ def test_cleanup_does_not_remove_non_created_rules(monkeypatch, app_module):
     app.cleanup_old_ips()
 
     with app.state_lock:
-        assert ip in app.state
-        assert "5" in app.state[ip]["resources"]
+        # Entry should be removed from state — we clean up our bookkeeping
+        # for expired unowned entries even though we don't touch the Pangolin rule
+        assert ip not in app.state
 
     # Ensure no delete attempt was made
     assert called == []
