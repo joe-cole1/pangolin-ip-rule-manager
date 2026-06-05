@@ -215,11 +215,6 @@ def _get_ip_set_for_resource_cached(rid: int):
     return pg_get_ip_set_for_resource_cached(ctx, rid)
 
 
-def ensure_ip_rule(ip: str) -> None:
-    ctx = make_pangolin_context()
-    pg_ensure_ip_rule(ctx, ip)
-
-
 # --------------------------
 # Target aggregation (extensibility point)
 # --------------------------
