@@ -1,33 +1,48 @@
 services:
   pangolin-ip-rule-manager:
-    # Build the image from the local Dockerfile (recommended for local use)
     build: .
-    # Also tag the image name so Portainer/Compose show a friendly name
     image: pangolin-ip-rule-manager:latest
     container_name: pangolin-ip-rule-manager
 
-    # Optional: load environment overrides from a local file next to this compose file
-    # Create a file named `config.env` and put your sensitive/override values there.
-    # Example content:
-    #   PANGOLIN_TOKEN=REPLACE_ME
-    #   RESOURCE_IDS=2,7,12
-    #   RETENTION_MINUTES=10080
-    env_file:
-      - ./config.env
-
     environment:
-      # no need to adapt these for now
+      # Network
       LISTEN_PORT: "8080"
-      STATE_FILE: /data/state.json   # store state inside a dedicated data volume
+
+      # Pangolin connection — set these in Portainer or your env file
+      PANGOLIN_URL: ${PANGOLIN_URL}
+      PANGOLIN_TOKEN: ${PANGOLIN_TOKEN}
+      ORG_ID: ${ORG_ID}
+      RESOURCE_IDS: ${RESOURCE_IDS}
+
+      # Custom header gate — REQUIRED, app will not start without these
+      EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: ${EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY}
+      EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE: ${EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
+
+      # Retention and cleanup
+      RETENTION_MINUTES: "43200"
+      CLEANUP_INTERVAL_MINUTES: "60"
       RULE_PRIORITY: "0"
+      RULES_CACHE_TTL_SECONDS: "3600"
+
+      # State
+      STATE_FILE: /data/state.json
+
+      # CrowdSec integration
+      CROWDSEC_ENABLED: "true"
+      CROWDSEC_ALLOWLIST_NAME: pangolin-ip-rule-manager
+      CROWDSEC_CSCLI_BIN: cscli
+      CROWDSEC_CMD_PREFIX: docker exec crowdsec
+      CROWDSEC_CACHE_TTL_SECONDS: "3600"
+
+      # Optional endpoints
+      UPDATE_ENDPOINT_ENABLED: "false"
 
     networks:
-      - pangolin # put in pangolin network
+      - pangolin
 
-    # Persist only the state file. The application code stays inside the image.
     volumes:
       - pangolin-ip-rule-manager-data:/data
-      - /var/run/docker.sock:/var/run/docker.sock:ro # comment out if crowdsec integration is not needed
+      - /var/run/docker.sock:/var/run/docker.sock:ro
 
     restart: unless-stopped
 
