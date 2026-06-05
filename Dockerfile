@@ -1,6 +1,7 @@
 # Minimal Python stdlib-only image
 FROM python:3.12-alpine
 
+# Install Docker CLI for optional CrowdSec integration via 'docker exec crowdsec cscli ...'
 RUN apk add --no-cache docker-cli
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -23,8 +24,5 @@ WORKDIR /app
 COPY *.py /app/
 
 EXPOSE 8080
-
-# Install Docker CLI for optional CrowdSec integration via 'docker exec crowdsec cscli ...'
-
 
 CMD ["python", "/app/app.py"]
