@@ -433,8 +433,9 @@ def test_update_endpoint_invalid_ip_400(monkeypatch, temp_state_file):
 def test_update_endpoint_ipv6_success(monkeypatch, temp_state_file):
     app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=True)
 
-    ipv6 = "2001:db8::1"
-    encoded = "2001%3Adb8%3A%3A1"
+    ipv6 = "2606:4700:4700::1111"
+    encoded = "2606%3A4700%3A4700%3A%3A1111"
+
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
