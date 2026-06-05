@@ -4,7 +4,15 @@ from datetime import datetime, timedelta, timezone
 import ipaddress
 
 
-def _build_checkin_html(ip: str, results: dict, retention_minutes: int, last_seen: str, crowdsec_enabled: bool) -> str:
+def _build_checkin_html(
+    ip: str,
+    results: dict,
+    retention_minutes: int,
+    last_seen: str,
+    crowdsec_enabled: bool,
+    access_check_enabled: bool = False,
+    access_check_url: str = "",
+) -> str:
     """Build the HTML checkin response page."""
 
     try:
@@ -47,6 +55,65 @@ def _build_checkin_html(ip: str, results: dict, retention_minutes: int, last_see
 
     details_label = "Technical details" if overall_ok else "What went wrong?"
 
+    # Access check row — only rendered when both enabled and a URL is configured
+    show_access_check = access_check_enabled and bool(access_check_url)
+    if show_access_check:
+        # Escape the URL for safe inline HTML/JS embedding
+        safe_url = (
+            access_check_url
+            .replace("&", "&amp;")
+            .replace('"', "&quot;")
+            .replace("'", "&#39;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        access_check_row = (
+            "      <div class=\"status-row\" id=\"access-check-row\">\n"
+            "        <span class=\"label\">\n"
+            "          <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\">"
+            "<path d=\"M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6\"/>"
+            "<polyline points=\"15 3 21 3 21 9\"/><line x1=\"10\" y1=\"14\" x2=\"21\" y2=\"3\"/>"
+            "</svg>\n"
+            f"          <span style=\"font-family:var(--mono);font-size:11px;\">{safe_url}</span>\n"
+            "        </span>\n"
+            "        <span class=\"badge pending\" id=\"access-check-badge\">"
+            "<span class=\"spinner\"></span>Checking&hellip;"
+            "</span>\n"
+            "      </div>"
+        )
+        # JS snippet injected at end of page — runs after DOM is ready
+        # Uses fetch with mode:'no-cors' and redirect:'manual' to detect whether
+        # the target responds directly (opaque = reachable) or redirects to Pangolin
+        # auth (opaqueredirect = not yet whitelisted), without needing CORS headers.
+        access_check_js = (
+            "\n"
+            "  (function() {\n"
+            f"    var url = \"{safe_url}\";\n"
+            "    var badge = document.getElementById('access-check-badge');\n"
+            "    if (!badge) return;\n"
+            "    fetch(url, { method: 'HEAD', mode: 'no-cors', redirect: 'manual', cache: 'no-store' })\n"
+            "      .then(function(r) {\n"
+            "        if (r.type === 'opaqueredirect') {\n"
+            "          // Redirected — Pangolin auth wall still in place for this IP\n"
+            "          badge.className = 'badge err';\n"
+            "          badge.innerHTML = 'Redirected';\n"
+            "        } else {\n"
+            "          // Got a real response (opaque 2xx/3xx from target) — reachable\n"
+            "          badge.className = 'badge ok';\n"
+            "          badge.innerHTML = 'Reachable';\n"
+            "        }\n"
+            "      })\n"
+            "      .catch(function() {\n"
+            "        // Network error — target is down or unreachable entirely\n"
+            "        badge.className = 'badge warn';\n"
+            "        badge.innerHTML = 'Unreachable';\n"
+            "      });\n"
+            "  })();"
+        )
+    else:
+        access_check_row = ""
+        access_check_js = ""
+
     html = (
         "<!DOCTYPE html>\n"
         "<html lang=\"en\">\n"
@@ -65,6 +132,8 @@ def _build_checkin_html(ip: str, results: dict, retention_minutes: int, last_see
         "    --muted:     #6b7390;\n"
         "    --accent:    #4ade80;\n"
         "    --accent-dim:#1a3d28;\n"
+        "    --warn:      #fbbf24;\n"
+        "    --warn-dim:  #3d2e0a;\n"
         "    --err:       #f87171;\n"
         "    --err-dim:   #3d1515;\n"
         "    --mono:      'IBM Plex Mono', monospace;\n"
@@ -140,11 +209,15 @@ def _build_checkin_html(ip: str, results: dict, retention_minutes: int, last_see
         "    padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg);\n"
         "  }\n"
         "  .status-row .label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }\n"
-        "  .status-row .label svg { opacity: .5; }\n"
+        "  .status-row .label svg { opacity: .5; flex-shrink: 0; }\n"
         "  .badge { font-family: var(--mono); font-size: 11px; font-weight: 500; padding: 3px 9px; border-radius: 4px; letter-spacing: .04em; text-transform: uppercase; }\n"
-        "  .badge.ok   { background: var(--accent-dim); color: var(--accent); }\n"
-        "  .badge.skip { background: var(--border);     color: var(--muted); }\n"
-        "  .badge.err  { background: var(--err-dim);    color: var(--err); }\n"
+        "  .badge.ok      { background: var(--accent-dim); color: var(--accent); }\n"
+        "  .badge.skip    { background: var(--border);     color: var(--muted); }\n"
+        "  .badge.err     { background: var(--err-dim);    color: var(--err); }\n"
+        "  .badge.warn    { background: var(--warn-dim);   color: var(--warn); }\n"
+        "  .badge.pending { background: var(--border);     color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }\n"
+        "  @keyframes spin { to { transform: rotate(360deg); } }\n"
+        "  .spinner { width: 9px; height: 9px; border: 1.5px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; flex-shrink: 0; }\n"
         "  .expiry { font-size: 12px; color: var(--muted); text-align: center; margin-bottom: 20px; line-height: 1.5; }\n"
         "  .expiry span { color: var(--text); font-family: var(--mono); font-size: 12px; }\n"
         "  .details-toggle {\n"
@@ -200,6 +273,7 @@ def _build_checkin_html(ip: str, results: dict, retention_minutes: int, last_see
         "        </span>\n"
         f"        {crowdsec_badge}\n"
         "      </div>\n"
+        f"{access_check_row}\n"
         "    </div>\n"
         "    <p class=\"expiry\">\n"
         f"      Access expires <span>{expires_str}</span><br>\n"
@@ -225,6 +299,7 @@ def _build_checkin_html(ip: str, results: dict, retention_minutes: int, last_see
         "    const open = body.classList.toggle('open');\n"
         "    btn.setAttribute('aria-expanded', open);\n"
         "  }\n"
+        f"{access_check_js}\n"
         "</script>\n"
         "</body>\n"
         "</html>"
@@ -314,6 +389,8 @@ def create_image_request_handler(ctx: dict):
       - update_enabled: bool
       - retention_minutes: int
       - crowdsec_enabled: bool
+      - access_check_enabled: bool
+      - access_check_url: str
       - state: dict
       - state_lock: threading.Lock
       - now_utc_iso: callable () -> str
@@ -456,6 +533,8 @@ def create_image_request_handler(ctx: dict):
                         retention_minutes=ctx.get("retention_minutes", 0),
                         last_seen=ctx["now_utc_iso"](),
                         crowdsec_enabled=ctx.get("crowdsec_enabled", False),
+                        access_check_enabled=ctx.get("access_check_enabled", False),
+                        access_check_url=ctx.get("access_check_url", ""),
                     ))
                 else:
                     payload = (
@@ -521,6 +600,8 @@ def create_image_request_handler(ctx: dict):
                     retention_minutes=ctx.get("retention_minutes", 0),
                     last_seen=now_iso,
                     crowdsec_enabled=ctx.get("crowdsec_enabled", False),
+                    access_check_enabled=ctx.get("access_check_enabled", False),
+                    access_check_url=ctx.get("access_check_url", ""),
                 ))
             else:
                 body = ctx["banner_gif"] if is_gif else ctx["banner_png"]

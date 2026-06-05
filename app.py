@@ -41,6 +41,9 @@ CROWDSEC_ALLOWLIST_NAME = os.getenv("CROWDSEC_ALLOWLIST_NAME", "pangolin-ip-rule
 CROWDSEC_CACHE_TTL_SECONDS = int(os.getenv("CROWDSEC_CACHE_TTL_SECONDS", "3600"))  # cache TTL for CrowdSec allowlist entries (~1h)
 # Optional: allow overriding the caller IP via /update?ip=...
 UPDATE_ENDPOINT_ENABLED = os.getenv("UPDATE_ENDPOINT_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+# Optional: browser-side access check shown on the success page
+ACCESS_CHECK_ENABLED = os.getenv("ACCESS_CHECK_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+ACCESS_CHECK_URL = os.getenv("ACCESS_CHECK_URL", "").strip()
 # Mandatory Pangolin custom header gate: both must be set and non-empty
 EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY = os.getenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", "").strip()
 EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE = os.getenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", "").strip()
@@ -314,7 +317,7 @@ def cleanup_old_ips():
                 if not rec4.get("resources"):
                     state.pop(ip, None)
                     changed = True
-                    
+
         # Always attempt CrowdSec expiration for expired IPs (idempotent)
         try:
             expire_ip_from_targets(ip)
@@ -345,6 +348,8 @@ def _make_image_handler_context() -> dict:
         "update_enabled": UPDATE_ENDPOINT_ENABLED,
         "retention_minutes": RETENTION_MINUTES,
         "crowdsec_enabled": CROWDSEC_ENABLED,
+        "access_check_enabled": ACCESS_CHECK_ENABLED,
+        "access_check_url": ACCESS_CHECK_URL,
         "state": state,
         "state_lock": state_lock,
         "now_utc_iso": now_utc_iso,
@@ -385,6 +390,15 @@ def self_check():
     if not RESOURCE_IDS:
         print("[warn] RESOURCE_IDS is empty; no resources will be managed.")
 
+    if ACCESS_CHECK_ENABLED and not ACCESS_CHECK_URL:
+        print("")
+        print("=" * 60)
+        print("[WARN] ACCESS_CHECK_ENABLED=true but ACCESS_CHECK_URL is not set.")
+        print("       The access check row will not appear on the success page.")
+        print("       Set ACCESS_CHECK_URL to the URL you want to verify.")
+        print("=" * 60)
+        print("")
+
     # Verify state file directory is writable before we need it
     state_dir = os.path.dirname(os.path.abspath(STATE_FILE))
     if not os.path.isdir(state_dir):
@@ -419,7 +433,8 @@ def self_check():
         f"[self-check] OK. listen_port={LISTEN_PORT} state_file={STATE_FILE} "
         f"resources={RESOURCE_IDS} retention_minutes={RETENTION_MINUTES} "
         f"cleanup_interval_minutes={CLEANUP_INTERVAL_MINUTES} rule_priority={RULE_PRIORITY} "
-        f"crowdsec={cs_status} update_endpoint_enabled={UPDATE_ENDPOINT_ENABLED}"
+        f"crowdsec={cs_status} update_endpoint_enabled={UPDATE_ENDPOINT_ENABLED} "
+        f"access_check_enabled={ACCESS_CHECK_ENABLED} access_check_url={ACCESS_CHECK_URL!r}"
     )
 
 
