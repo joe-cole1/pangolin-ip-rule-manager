@@ -361,9 +361,41 @@ def self_check():
         )
 
     if not PANGOLIN_TOKEN:
-        print("[warn] PANGOLIN_TOKEN is not set; Pangolin API actions will be skipped.")
+        print("")
+        print("=" * 60)
+        print("[WARN] PANGOLIN_TOKEN is not set or empty.")
+        print("       All Pangolin API calls will be skipped.")
+        print("       IP rules will NOT be created or deleted.")
+        print("       If this is unintentional, check your environment.")
+        print("=" * 60)
+        print("")
     if not RESOURCE_IDS:
         print("[warn] RESOURCE_IDS is empty; no resources will be managed.")
+
+    # Verify state file directory is writable before we need it
+    state_dir = os.path.dirname(os.path.abspath(STATE_FILE))
+    if not os.path.isdir(state_dir):
+        print("")
+        print("=" * 60)
+        print(f"[WARN] State file directory does not exist: {state_dir}")
+        print(f"       State will be lost on restart.")
+        print(f"       Check your volume mount for STATE_FILE={STATE_FILE}")
+        print("=" * 60)
+        print("")
+    else:
+        test_file = os.path.join(state_dir, ".write_test")
+        try:
+            with open(test_file, "w") as f:
+                f.write("ok")
+            os.remove(test_file)
+        except OSError as e:
+            print("")
+            print("=" * 60)
+            print(f"[WARN] State file directory is not writable: {state_dir}")
+            print(f"       State will be lost on restart.")
+            print(f"       Error: {e}")
+            print("=" * 60)
+            print("")
 
     cs_status = (
         f"enabled name='{CROWDSEC_ALLOWLIST_NAME}' bin='{CROWDSEC_CSCLI_BIN}' prefix='{CROWDSEC_CMD_PREFIX}'"
