@@ -28,12 +28,33 @@ def create_image_request_handler(ctx: dict):
 
         def _get_real_ip(self) -> str:
             # precedence: X-Real-IP, X-Forwarded-For (first), fallback to client addr
+            # Each candidate is validated: must be a parseable, globally-routable IP.
+            # Non-global addresses (loopback, private, link-local, multicast) are
+            # rejected and the next candidate is tried. Falls back to socket address
+            # (not validated, as it is controlled by the OS/kernel, not the caller).
+            def _parse_global_ip(raw: str) -> str | None:
+                try:
+                    ip_obj = ipaddress.ip_address(raw.strip())
+                    if not ip_obj.is_global:
+                        print(f"[warn] Rejected non-global IP from header: {raw.strip()!r}")
+                        return None
+                    return str(ip_obj)
+                except ValueError:
+                    print(f"[warn] Rejected unparseable IP from header: {raw.strip()!r}")
+                    return None
+
             xr = self.headers.get("X-Real-IP")
             if xr:
-                return xr.strip()
+                parsed = _parse_global_ip(xr)
+                if parsed:
+                    return parsed
+
             xff = self.headers.get("X-Forwarded-For")
             if xff:
-                return xff.split(",")[0].strip()
+                parsed = _parse_global_ip(xff.split(",")[0])
+                if parsed:
+                    return parsed
+
             return self.client_address[0]
 
         def do_GET(self):
@@ -59,7 +80,7 @@ def create_image_request_handler(ctx: dict):
 
             lower_path = path.lower()
 
-            # New: /update?ip=1.2.3.4 endpoint (guarded by UPDATE_ENDPOINT_ENABLED)
+            # /update?ip=1.2.3.4 endpoint (guarded by UPDATE_ENDPOINT_ENABLED)
             if lower_path == "/update":
                 if not ctx.get("update_enabled"):
                     # Pretend it doesn't exist when disabled
@@ -85,6 +106,13 @@ def create_image_request_handler(ctx: dict):
                     self.end_headers()
                     self.wfile.write(b"Bad Request: invalid IP address")
                     print(f"[error] Invalid IP address: {raw_ip}")
+                    return
+
+                if not ipaddress.ip_address(normalized_ip).is_global:
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b"Bad Request: non-routable IP address")
+                    print(f"[error] Rejected non-global IP in /update: {normalized_ip!r}")
                     return
 
                 # Update state and ensure rules for the provided IP using same retention behavior
@@ -119,6 +147,7 @@ def create_image_request_handler(ctx: dict):
                 self.wfile.write(b"Forbidden")
                 print(f"[error] Root path forbidden: {self.path}")
                 return
+
             # Only serve PNG or GIF transparent images; other paths -> 404
             is_png = lower_path.endswith(".png")
             is_gif = lower_path.endswith(".gif")
