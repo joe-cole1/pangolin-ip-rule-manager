@@ -127,6 +127,17 @@ def _build_checkin_html(
         access_check_row = ""
         access_check_js = ""
 
+    if show_access_check:
+        access_check_detail_rows = (
+            "      <div class=\"row\"><span class=\"key\">ac_url&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" style=\"word-break:break-all;\">" + safe_url + "</span></div>\n"
+            "      <div class=\"row\"><span class=\"key\">ac_result&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" id=\"ac-result\">pending&hellip;</span></div>\n"
+            "      <div class=\"row\"><span class=\"key\">ac_type&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" id=\"ac-type\">pending&hellip;</span></div>\n"
+            "      <div class=\"row\"><span class=\"key\">ac_status&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" id=\"ac-status\">pending&hellip;</span></div>\n"
+            "      <div class=\"row\"><span class=\"key\">ac_error&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" id=\"ac-error\">pending&hellip;</span></div>\n"
+        )
+    else:
+        access_check_detail_rows = ""
+
     html = (
         "<!DOCTYPE html>\n"
         "<html lang=\"en\">\n"
@@ -302,14 +313,7 @@ def _build_checkin_html(
         f"      <div class=\"row\"><span class=\"key\">retention&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\">{retention_minutes} min</span></div>\n"
         f"      <div class=\"row\"><span class=\"key\">expires_at&nbsp;&nbsp;&nbsp;</span><span class=\"val\">{expires_iso}</span></div>\n"
         f"      <div class=\"row\"><span class=\"key\">last_seen&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\">{last_seen}</span></div>\n"
-        + (
-        "      <div class=\"row\"><span class=\"key\">ac_url&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" style=\"word-break:break-all;\">" + safe_url + "</span></div>\n"
-        "      <div class=\"row\"><span class=\"key\">ac_result&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" id=\"ac-result\">pending&hellip;</span></div>\n"
-        "      <div class=\"row\"><span class=\"key\">ac_type&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" id=\"ac-type\">pending&hellip;</span></div>\n"
-        "      <div class=\"row\"><span class=\"key\">ac_status&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" id=\"ac-status\">pending&hellip;</span></div>\n"
-        "      <div class=\"row\"><span class=\"key\">ac_error&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\" id=\"ac-error\">pending&hellip;</span></div>\n"
-        if show_access_check else ""
-        )
+        f"{access_check_detail_rows}"
         "    </div>\n"
         "  </div>\n"
         "  <div class=\"card-footer\">Requests are logged &nbsp;&middot;&nbsp; Access resets on each visit</div>\n"
