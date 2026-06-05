@@ -50,8 +50,7 @@ def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> Set[str]:
 
 def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
     if not ctx.token:
-        print("[warn] No PANGOLIN_TOKEN set; skipping Pangolin API calls.")
-        return
+        raise RuntimeError("PANGOLIN_TOKEN is not set — Pangolin API calls are disabled. Check your environment configuration.")
     for rid in ctx.resource_ids:
         try:
             # 1) check cached existence
