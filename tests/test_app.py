@@ -298,9 +298,8 @@ def test_cleanup_longer_scenario_mixed_outcomes(monkeypatch, app_module):
         assert ip_delete_failed in app.state
         assert "5" in app.state[ip_delete_failed]["resources"]
 
-        # Not created by us -> never attempted -> remains
-        assert ip_not_created in app.state
-        assert "5" in app.state[ip_not_created]["resources"]
+        # Not created by us -> state entry removed after expiry (Finding 6E)
+        assert ip_not_created not in app.state
 
         # Fresh (not expired) -> remains untouched
         assert ip_fresh in app.state
