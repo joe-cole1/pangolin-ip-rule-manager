@@ -12,5 +12,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb9dadb99c97fb671e7e7c # v3
     - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
+      run: docker buildx build --platform linux/amd64,linux/arm64 . --file Dockerfile --tag my-image-name:$(date +%s)
