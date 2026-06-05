@@ -302,6 +302,24 @@ def cleanup_old_ips():
             if rec3 and not rec3.get("resources"):
                 state.pop(ip, None)
                 changed = True
+        # Drop expired created_by_us=False resource entries from state.
+        # We never created these rules so we don't delete them from Pangolin,
+        # but we also don't need to track them forever.
+        with state_lock:
+            rec4 = state.get(ip)
+            if rec4:
+                expired_unowned = [
+                    rid_str for rid_str, meta in rec4.get("resources", {}).items()
+                    if not meta.get("created_by_us")
+                ]
+                for rid_str in expired_unowned:
+                    rec4["resources"].pop(rid_str, None)
+                    changed = True
+                # If that emptied the record entirely, drop the IP
+                if not rec4.get("resources"):
+                    state.pop(ip, None)
+                    changed = True
+                    
         # Always attempt CrowdSec expiration for expired IPs (idempotent)
         try:
             expire_ip_from_targets(ip)
