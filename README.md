@@ -64,7 +64,7 @@ Jellyfin never becomes public. The rule applies only to the specific resource ID
 
 ## How It Works
 
-- Serves any request path ending in `.png` or `.gif` with a 1×1 transparent image
+- Any request path ending in `.png` or `.gif` triggers a check-in. The response depends on the client: browsers (requests sending `Accept: text/html`) receive a styled status page confirming the result; all other clients (native apps, CSS image fetches) receive a 1×1 transparent image. The check-in itself — recording the IP, creating Pangolin rules, updating CrowdSec — happens either way.
 - Every such request is treated as a check-in: the client IP is extracted, a Pangolin IP rule is created for each configured resource, and (if enabled) the IP is added to a CrowdSec allowlist
 - Browser requests (those sending `Accept: text/html`) receive a styled status page confirming the check-in result instead of the raw image
 - A background thread runs cleanup on a configurable interval, removing rules and allowlist entries for IPs that haven't checked in within the retention window
