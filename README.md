@@ -1,5 +1,5 @@
 ![GitHub release](https://img.shields.io/github/v/release/joe-cole1/pangolin-ip-rule-manager)
-![Build and Publish](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/workflows/docker-publish.yml/badge.svg?branch=master)
+[![Build and Publish Docker Image](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/workflows/docker-publish.yml)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 
 # Pangolin IP Rule Manager
