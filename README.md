@@ -64,7 +64,7 @@ Jellyfin never becomes public. The rule applies only to the specific resource ID
 
 ## How It Works
 
-- Any request path ending in `.png` or `.gif` triggers a check-in. The response depends on the client: browsers (requests sending `Accept: text/html`) receive a styled status page confirming the result; all other clients (native apps, CSS image fetches) receive a 1×1 transparent image. The check-in itself — recording the IP, creating Pangolin rules, updating CrowdSec — happens either way.
+- Serves any request path ending in `.png` or `.gif` with a 1×1 transparent image
 - Every such request is treated as a check-in: the client IP is extracted, a Pangolin IP rule is created for each configured resource, and (if enabled) the IP is added to a CrowdSec allowlist
 - Browser requests (those sending `Accept: text/html`) receive a styled status page confirming the check-in result instead of the raw image
 - A background thread runs cleanup on a configurable interval, removing rules and allowlist entries for IPs that haven't checked in within the retention window
@@ -148,6 +148,9 @@ services:
       CROWDSEC_CMD_PREFIX: docker exec crowdsec
       CROWDSEC_CACHE_TTL_SECONDS: "3600"
 
+      # Branding
+      SITE_NAME: ""                  # shown in HTML page header/footer; leave empty to omit
+
       # Optional endpoints (disabled by default)
       UPDATE_ENDPOINT_ENABLED: "false"
 
@@ -211,6 +214,7 @@ This integration uses `cscli` on the Docker host. If CrowdSec runs in a containe
 
 | Variable | Default | Required | Description |
 |---|---|---|---|
+| `SITE_NAME` | _(empty)_ | No | Name shown in the card header and footer of the HTML check-in and error pages (e.g. `yourdomain.com`). When left empty, the subtitle and footer domain are omitted entirely. |
 | `UPDATE_ENDPOINT_ENABLED` | `false` | No | Enables the `/update?ip=...` endpoint. See [Manual IP Override](#manual-ip-override-update-endpoint). |
 | `ACCESS_CHECK_ENABLED` | `false` | No | Enables a confirmation link on the HTML success page. |
 | `ACCESS_CHECK_URL` | _(empty)_ | No | The URL to link to on the success page (e.g., `https://jellyfin.yourdomain.com`). Only used when `ACCESS_CHECK_ENABLED=true`. |

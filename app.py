@@ -39,6 +39,8 @@ CROWDSEC_CSCLI_BIN = os.getenv("CROWDSEC_CSCLI_BIN", "cscli").strip()
 CROWDSEC_CMD_PREFIX = os.getenv("CROWDSEC_CMD_PREFIX", "").strip()
 CROWDSEC_ALLOWLIST_NAME = os.getenv("CROWDSEC_ALLOWLIST_NAME", "pangolin-ip-rule-manager").strip()
 CROWDSEC_CACHE_TTL_SECONDS = int(os.getenv("CROWDSEC_CACHE_TTL_SECONDS", "3600"))  # cache TTL for CrowdSec allowlist entries (~1h)
+# Optional: site name shown in the HTML check-in and error pages
+SITE_NAME = os.getenv("SITE_NAME", "").strip()
 # Optional: allow overriding the caller IP via /update?ip=...
 UPDATE_ENDPOINT_ENABLED = os.getenv("UPDATE_ENDPOINT_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 # Optional: browser-side access check shown on the success page
@@ -350,6 +352,7 @@ def _make_image_handler_context() -> dict:
         "crowdsec_enabled": CROWDSEC_ENABLED,
         "access_check_enabled": ACCESS_CHECK_ENABLED,
         "access_check_url": ACCESS_CHECK_URL,
+        "site_name": SITE_NAME,
         "state": state,
         "state_lock": state_lock,
         "now_utc_iso": now_utc_iso,
@@ -434,7 +437,8 @@ def self_check():
         f"resources={RESOURCE_IDS} retention_minutes={RETENTION_MINUTES} "
         f"cleanup_interval_minutes={CLEANUP_INTERVAL_MINUTES} rule_priority={RULE_PRIORITY} "
         f"crowdsec={cs_status} update_endpoint_enabled={UPDATE_ENDPOINT_ENABLED} "
-        f"access_check_enabled={ACCESS_CHECK_ENABLED} access_check_url={ACCESS_CHECK_URL!r}"
+        f"access_check_enabled={ACCESS_CHECK_ENABLED} access_check_url={ACCESS_CHECK_URL!r} "
+        f"site_name={SITE_NAME!r}"
     )
 
 

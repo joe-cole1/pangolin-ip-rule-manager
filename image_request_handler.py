@@ -12,6 +12,7 @@ def _build_checkin_html(
     crowdsec_enabled: bool,
     access_check_enabled: bool = False,
     access_check_url: str = "",
+    site_name: str = "",
 ) -> str:
     """Build the HTML checkin response page."""
 
@@ -93,6 +94,7 @@ def _build_checkin_html(
         access_check_row = ""
         access_check_detail_rows = ""
 
+    site_name_sub = f'      <div class="sub">{site_name}</div>\n' if site_name else ""
     html = (
         "<!DOCTYPE html>\n"
         "<html lang=\"en\">\n"
@@ -239,8 +241,8 @@ def _build_checkin_html(
         f"    <div class=\"{dot_class}\"></div>\n"
         "    <div>\n"
         "      <h1>Network Check-in</h1>\n"
-        "      <div class=\"sub\">thecolefam.com</div>\n"
-        "    </div>\n"
+        + site_name_sub
+        + "    </div>\n"
         "  </div>\n"
         "  <div class=\"card-body\">\n"
         f"    <p class=\"hero\">{hero}</p>\n"
@@ -297,8 +299,10 @@ def _build_checkin_html(
     return html
 
 
-def _build_error_html(title: str, message: str) -> str:
+def _build_error_html(title: str, message: str, site_name: str = "") -> str:
     """Build a minimal HTML error page matching the checkin page style."""
+    site_name_sub = f'      <div class="sub">{site_name}</div>\n' if site_name else ""
+    site_name_footer = f'{site_name} &nbsp;&middot;&nbsp; ' if site_name else ""
     html = (
         "<!DOCTYPE html>\n"
         "<html lang=\"en\">\n"
@@ -355,14 +359,14 @@ def _build_error_html(title: str, message: str) -> str:
         "    <div class=\"err-dot\"></div>\n"
         "    <div>\n"
         "      <h1>Network Check-in</h1>\n"
-        "      <div class=\"sub\">thecolefam.com</div>\n"
-        "    </div>\n"
+        + site_name_sub
+        + "    </div>\n"
         "  </div>\n"
         "  <div class=\"card-body\">\n"
         f"    <p class=\"hero\"><strong>{title}</strong></p>\n"
         f"    <p class=\"detail\">{message}</p>\n"
         "  </div>\n"
-        "  <div class=\"card-footer\">thecolefam.com &nbsp;&middot;&nbsp; Requests are logged</div>\n"
+        f"  <div class=\"card-footer\">{site_name_footer}Requests are logged</div>\n"
         "</div>\n"
         "</body>\n"
         "</html>"
@@ -389,6 +393,7 @@ def create_image_request_handler(ctx: dict):
       - banner_png: bytes
       - banner_gif: bytes
       - redact_headers_for_log: callable (headers: dict[str, str]) -> dict[str, str]
+      - site_name: str
     """
 
     class ImageRequestHandler(BaseHTTPRequestHandler):
@@ -479,7 +484,8 @@ def create_image_request_handler(ctx: dict):
                     self._send_html(400, _build_error_html(
                         "Bad request",
                         "Missing required <code>ip</code> query parameter. "
-                        "Expected format: /update?ip=1.2.3.4"
+                        "Expected format: /update?ip=1.2.3.4",
+                        site_name=ctx.get("site_name", ""),
                     ))
                     return
 
@@ -489,7 +495,8 @@ def create_image_request_handler(ctx: dict):
                     print(f"[error] Invalid IP address: {raw_ip}")
                     self._send_html(400, _build_error_html(
                         "Bad request",
-                        f"&#39;{raw_ip}&#39; is not a valid IP address."
+                        f"&#39;{raw_ip}&#39; is not a valid IP address.",
+                        site_name=ctx.get("site_name", ""),
                     ))
                     return
 
@@ -497,7 +504,8 @@ def create_image_request_handler(ctx: dict):
                     print(f"[error] Rejected non-global IP in /update: {normalized_ip!r}")
                     self._send_html(400, _build_error_html(
                         "Bad request",
-                        f"&#39;{normalized_ip}&#39; is a non-routable IP address and cannot be allowlisted."
+                        f"&#39;{normalized_ip}&#39; is a non-routable IP address and cannot be allowlisted.",
+                        site_name=ctx.get("site_name", ""),
                     ))
                     return
 
@@ -525,6 +533,7 @@ def create_image_request_handler(ctx: dict):
                         crowdsec_enabled=ctx.get("crowdsec_enabled", False),
                         access_check_enabled=ctx.get("access_check_enabled", False),
                         access_check_url=ctx.get("access_check_url", ""),
+                        site_name=ctx.get("site_name", ""),
                     ))
                 else:
                     payload = (
@@ -556,7 +565,8 @@ def create_image_request_handler(ctx: dict):
                     self._send_html(404, _build_error_html(
                         "Page not found",
                         "This URL isn&#39;t a valid check-in path. "
-                        "Make sure you&#39;re using the correct link ending in .png or .gif."
+                        "Make sure you&#39;re using the correct link ending in .png or .gif.",
+                        site_name=ctx.get("site_name", ""),
                     ))
                 else:
                     self.send_response(404)
@@ -592,6 +602,7 @@ def create_image_request_handler(ctx: dict):
                     crowdsec_enabled=ctx.get("crowdsec_enabled", False),
                     access_check_enabled=ctx.get("access_check_enabled", False),
                     access_check_url=ctx.get("access_check_url", ""),
+                    site_name=ctx.get("site_name", ""),
                 ))
             else:
                 body = ctx["banner_gif"] if is_gif else ctx["banner_png"]
