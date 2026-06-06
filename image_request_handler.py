@@ -231,7 +231,7 @@ def _build_checkin_html(
         "  .access-link:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }\n"
         "  .bookmark-btn {\n"
         "    width: 100%; background: none; border: 1px solid var(--accent-dim); border-radius: 8px;\n"
-        "    padding: 10px 14px; cursor: pointer; display: flex; align-items: center;\n"
+        "    padding: 10px 14px; cursor: pointer; display: flex; align-items: center; text-align: left;\n"
         "    justify-content: space-between; transition: border-color .15s, background .15s;\n"
         "  }\n"
         "  .bookmark-btn:hover { border-color: var(--accent); background: #0d1f16; }\n"
