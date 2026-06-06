@@ -1,4 +1,5 @@
 ![Build and Publish](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/workflows/docker-publish.yml/badge.svg)
+![Build and Publish](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/workflows/docker-publish.yml/badge.svg?branch=master)
 
 # Pangolin IP Rule Manager
 
