@@ -22,6 +22,46 @@ The service is not limited to Jellyfin — Pangolin rules can target any resourc
 
 ---
 
+## How Pangolin IP Rules Enable Selective Bypass
+
+To understand what this service does, it helps to understand how Pangolin protects resources and what an IP rule actually changes.
+
+### The normal Pangolin flow
+
+When a resource (like Jellyfin) is placed behind Pangolin, every request to it is intercepted. Pangolin checks whether the requester is authenticated — typically via SSO. If they're not, they're redirected to a login page before they can reach the service at all.
+
+This works perfectly for browsers and apps that can complete a login flow. It's the right default. Your service is protected; only authenticated users get through.
+
+### The problem with native apps
+
+Native apps on devices like Roku, Android TV, or Apple TV have no concept of a browser-based SSO flow. When Jellyfin's Android TV app tries to reach `jellyfin.yourdomain.com`, Pangolin intercepts it and redirects it to an auth page the app cannot render or interact with. The app sees an error. There's no way around this within the native app itself.
+
+The standard workaround — making Jellyfin fully public — removes authentication entirely, which is not acceptable if you want your service protected by default.
+
+### What an IP rule does
+
+Pangolin supports IP-based bypass rules on a per-resource basis. When an IP rule exists for a given resource, Pangolin skips the authentication check for requests originating from that IP and forwards them directly to the service.
+
+This is the mechanism this service manages. It doesn't weaken your overall Pangolin setup — Jellyfin remains behind auth for everyone else. It selectively grants pass-through for specific IPs, for a configurable period of time, and then automatically revokes it.
+
+### The full picture
+
+```
+Without an IP rule:
+  TV → Pangolin → [auth required] → ✗ (app can't authenticate)
+
+With an IP rule for your home IP:
+  TV → Pangolin → [IP rule match: bypass auth] → Jellyfin ✓
+  Phone/browser → Pangolin → [auth required] → SSO login → Jellyfin ✓
+  Anyone else → Pangolin → [auth required] → SSO login → Jellyfin ✓
+```
+
+The check-in step — visiting the URL on your phone — is what creates the IP rule. Your phone is already authenticated through Pangolin, so it can reach the check-in service. The service sees your public IP, creates the rule, and from that point your TV (sharing the same public IP) can reach Jellyfin directly.
+
+Jellyfin never becomes public. The rule applies only to the specific resource IDs you configure, and it expires automatically after `RETENTION_MINUTES`. The rest of your Pangolin setup is untouched.
+
+---
+
 ## How It Works
 
 - Serves any request path ending in `.png` or `.gif` with a 1×1 transparent image
