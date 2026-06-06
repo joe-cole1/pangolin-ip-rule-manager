@@ -36,7 +36,7 @@ def _build_checkin_html(
     else:
         hero = "Something went wrong.<br><strong>Jellyfin may not work right now &mdash; try again in a moment.</strong>"
 
-    pangolin_badge = '<span class="badge ok">Active</span>' if pangolin_ok else '<span class="badge err">Failed</span>'
+    pangolin_badge = '<span class="badge ok">Added</span>' if pangolin_ok else '<span class="badge err">Failed</span>'
 
     if not crowdsec_enabled:
         crowdsec_badge = '<span class="badge skip">Not enabled</span>'
