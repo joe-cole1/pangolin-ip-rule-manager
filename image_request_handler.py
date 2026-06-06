@@ -33,7 +33,7 @@ def _build_checkin_html(
 
     dot_class = "status-dot" if overall_ok else "status-dot err"
     if overall_ok:
-        hero = "You&#39;re all set!<br><strong>Jellyfin should work on your TV now.</strong>"
+        hero = "You&#39;re all set!<br><strong>Jellyfin should work on your TV.</strong>"
     else:
         hero = "Something went wrong.<br><strong>Jellyfin may not work right now &mdash; try again in a moment.</strong>"
 
