@@ -7,7 +7,6 @@
 A lightweight Python service that automatically manages Pangolin IP bypass rules and (optionally) CrowdSec allowlist entries based on observed client IPs. Originally built to solve a specific problem with Jellyfin and native TV apps, but applicable to any resource behind Pangolin that needs IP-based access bootstrapping.
 
 > **Roadmap note:** A future release will generalize the service away from its Jellyfin-specific framing so it can be used more cleanly with any application behind Pangolin.
-
 ---
 
 ## The Problem It Solves
