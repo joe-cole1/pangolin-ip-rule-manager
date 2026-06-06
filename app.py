@@ -450,8 +450,24 @@ def print_org_resources():
 def main():
     self_check()
     load_state()
-    # Fetch and print resources for the configured org (helper for selecting resource IDs)
-    print_org_resources()
+
+    # Fetch and print resources for the configured org (helper for selecting resource IDs).
+    # Also serves as a startup connectivity/auth check against the Pangolin API.
+    try:
+        print_org_resources()
+    except Exception as e:
+        err_str = str(e)
+        print("")
+        print("=" * 60)
+        if "401" in err_str or "403" in err_str:
+            print("[WARN] Pangolin API auth failed at startup.")
+            print("       Check that PANGOLIN_TOKEN is correct and has the required permissions.")
+        else:
+            print(f"[WARN] Pangolin API unreachable at startup: {e}")
+            print("       Check PANGOLIN_URL and network connectivity.")
+        print("       The service will still start, but Pangolin rules will fail until resolved.")
+        print("=" * 60)
+        print("")
 
     # Ensure targets are ready (e.g., create CrowdSec allowlist if enabled)
     for t in TARGETS:
