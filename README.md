@@ -1,3 +1,5 @@
+![Build and Publish](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/workflows/docker-publish.yml/badge.svg)
+
 # Pangolin IP Rule Manager
 
 A lightweight Python service that automatically manages Pangolin IP bypass rules and (optionally) CrowdSec allowlist entries based on observed client IPs. Originally built to solve a specific problem with Jellyfin and native TV apps, but applicable to any resource behind Pangolin that needs IP-based access bootstrapping.
