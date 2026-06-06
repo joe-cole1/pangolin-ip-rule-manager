@@ -71,6 +71,7 @@ def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> Set[str]:
 def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
     if not ctx.token:
         raise RuntimeError("PANGOLIN_TOKEN is not set — Pangolin API calls are disabled. Check your environment configuration.")
+    failures: list[str] = []
     for rid in ctx.resource_ids:
         try:
             # 1) check cached existence
@@ -111,6 +112,9 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
             ctx.save_state()
         except Exception as e:
             print(f"[pangolin] ensure rule failed for resource {rid}, ip {ip}: {e}")
+            failures.append(f"resource {rid}: {e}")
+    if failures:
+        raise RuntimeError(f"Pangolin: rule creation failed for {len(failures)}/{len(ctx.resource_ids)} resource(s): {'; '.join(failures)}")
 
 
 def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> bool:
