@@ -6,6 +6,23 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Set, Any, List
 
 
+def _retry(fn, *, attempts: int = 3, backoff: float = 1.0, label: str = ""):
+    """Call fn() up to `attempts` times, sleeping backoff * 2^n between retries.
+    Only retries on Exception; propagates the final exception if all attempts fail.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if attempt < attempts - 1:
+                wait = backoff * (2 ** attempt)
+                print(f"[retry] {label} attempt {attempt + 1}/{attempts} failed: {e} — retrying in {wait:.1f}s")
+                time.sleep(wait)
+    raise last_exc
+
+
 @dataclass
 class PangolinContext:
     url: str
@@ -35,7 +52,10 @@ def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> Set[str]:
 
     # Refresh from Pangolin
     print(f"[pangolin] refreshing rules for resource {rid}")
-    rules_resp = ctx.http_json("GET", f"{ctx.url}/v1/resource/{rid}/rules?limit=10000")
+    rules_resp = _retry(
+        lambda: ctx.http_json("GET", f"{ctx.url}/v1/resource/{rid}/rules?limit=10000"),
+        label=f"GET rules resource={rid}",
+    )
     rules = rules_resp.get("data", {}).get("rules", [])
     ip_set: Set[str] = set()
     for r in rules:
@@ -71,7 +91,10 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
                 "priority": ctx.rule_priority,
                 "enabled": True,
             }
-            _ = ctx.http_json("PUT", f"{ctx.url}/v1/resource/{rid}/rule", payload)
+            _ = _retry(
+                lambda: ctx.http_json("PUT", f"{ctx.url}/v1/resource/{rid}/rule", payload),
+                label=f"PUT rule ip={ip} resource={rid}",
+            )
             print(f"[pangolin] created rule for IP {ip} on resource {rid}")
             # Update cache to include newly created rule
             with ctx.state_lock:
@@ -93,7 +116,10 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
 def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> bool:
     """Returns True if a deletion was performed, False otherwise."""
     try:
-        rules_resp = ctx.http_json("GET", f"{ctx.url}/v1/resource/{rid}/rules?limit=10000")
+        rules_resp = _retry(
+            lambda: ctx.http_json("GET", f"{ctx.url}/v1/resource/{rid}/rules?limit=10000"),
+            label=f"GET rules (delete phase) resource={rid}",
+        )
         rules = rules_resp.get("data", {}).get("rules", [])
         to_delete = [r for r in rules if r.get("match") == "IP" and r.get("value") == ip]
         deleted_any = False
@@ -102,7 +128,10 @@ def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> 
             if rule_id is None:
                 continue
             try:
-                _ = ctx.http_json("DELETE", f"{ctx.url}/v1/resource/{rid}/rule/{rule_id}")
+                _ = _retry(
+                    lambda: ctx.http_json("DELETE", f"{ctx.url}/v1/resource/{rid}/rule/{rule_id}"),
+                    label=f"DELETE rule={rule_id} ip={ip} resource={rid}",
+                )
                 print(f"[pangolin] deleted rule {rule_id} for IP {ip} on resource {rid}")
                 deleted_any = True
             except Exception as e:
