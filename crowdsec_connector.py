@@ -201,15 +201,22 @@ def crowdsec_add_ip(ip: str) -> None:
         print(f"[crowdsec] already present {ip} in allowlist '{CROWDSEC_ALLOWLIST_NAME}' (cache)")
         return
     args = ["allowlist", "add", CROWDSEC_ALLOWLIST_NAME, ip, "-d", "added on " + _now_utc_iso() + " by pangolin-ip-rule-manager"]
-    rc, out, err = run_cscli(args)
-    if rc == 0:
-        print(f"[crowdsec] added {ip} to allowlist '{CROWDSEC_ALLOWLIST_NAME}'")
-        with _cache_lock:
-            _crowdsec_cache.setdefault("ip_set", set()).add(ip)
-            if not _crowdsec_cache.get("ts"):
-                _crowdsec_cache["ts"] = time.time()
-        return
-    # Add failed: maybe it already existed; re-list once to confirm
+    backoff = 1.0
+    rc, out, err = 1, "", ""
+    for attempt in range(3):
+        rc, out, err = run_cscli(args)
+        if rc == 0:
+            print(f"[crowdsec] added {ip} to allowlist '{CROWDSEC_ALLOWLIST_NAME}'")
+            with _cache_lock:
+                _crowdsec_cache.setdefault("ip_set", set()).add(ip)
+                if not _crowdsec_cache.get("ts"):
+                    _crowdsec_cache["ts"] = time.time()
+            return
+        if attempt < 2:
+            print(f"[crowdsec] add attempt {attempt + 1}/3 failed (rc={rc}) — retrying in {backoff:.1f}s")
+            time.sleep(backoff)
+            backoff *= 2
+    # All attempts failed: maybe it already existed; re-list once to confirm
     refreshed = _crowdsec_refresh_allowlist_ip_set()
     if ip in refreshed:
         print(f"[crowdsec] add reported failure but IP already present {ip} in '{CROWDSEC_ALLOWLIST_NAME}'")
@@ -228,10 +235,16 @@ def crowdsec_remove_ip(ip: str) -> None:
         # nothing to do
         return
     args = ["allowlist", "remove", CROWDSEC_ALLOWLIST_NAME, ip]
-    rc, out, err = run_cscli(args)
-    if rc == 0:
-        print(f"[crowdsec] removed {ip} from allowlist '{CROWDSEC_ALLOWLIST_NAME}'")
-        with _cache_lock:
-            _crowdsec_cache.setdefault("ip_set", set()).discard(ip)
-        return
+    backoff = 1.0
+    for attempt in range(3):
+        rc, out, err = run_cscli(args)
+        if rc == 0:
+            print(f"[crowdsec] removed {ip} from allowlist '{CROWDSEC_ALLOWLIST_NAME}'")
+            with _cache_lock:
+                _crowdsec_cache.setdefault("ip_set", set()).discard(ip)
+            return
+        if attempt < 2:
+            print(f"[crowdsec] remove attempt {attempt + 1}/3 failed (rc={rc}) — retrying in {backoff:.1f}s")
+            time.sleep(backoff)
+            backoff *= 2
     print(f"[crowdsec] WARNING: failed to remove {ip} from allowlist '{CROWDSEC_ALLOWLIST_NAME}'")
