@@ -22,10 +22,10 @@ from pangolin_connector import (
 )
 
 # Config via environment
-PANGOLIN_URL = os.getenv("PANGOLIN_URL", "https://api.url.of.your.pangolin.instance").rstrip("/")
+PANGOLIN_URL = os.getenv("PANGOLIN_URL", "").rstrip("/")
 PANGOLIN_TOKEN = os.getenv("PANGOLIN_TOKEN", "")
-ORG_ID = os.getenv("ORG_ID", "your_org_id")
-RESOURCE_IDS = [int(x) for x in os.getenv("RESOURCE_IDS", "2,7,12").split(",") if x.strip()]
+ORG_ID = os.getenv("ORG_ID", "")
+RESOURCE_IDS = [int(x) for x in os.getenv("RESOURCE_IDS", "").split(",") if x.strip()]
 RETENTION_MINUTES = int(os.getenv("RETENTION_MINUTES", "1440"))  # default 1 day in minutes
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", "8080"))
 STATE_FILE = os.getenv("STATE_FILE", "/data/state.json")
@@ -375,6 +375,10 @@ def self_check():
         missing.append("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY")
     if not EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE:
         missing.append("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE")
+    if not PANGOLIN_URL:
+        missing.append("PANGOLIN_URL")
+    if not RESOURCE_IDS:
+        missing.append("RESOURCE_IDS")
     if missing:
         print("[self-check] WARNING: Missing required environment variables: " + ", ".join(missing))
         raise RuntimeError(
@@ -390,8 +394,8 @@ def self_check():
         print("       If this is unintentional, check your environment.")
         print("=" * 60)
         print("")
-    if not RESOURCE_IDS:
-        print("[warn] RESOURCE_IDS is empty; no resources will be managed.")
+    if not ORG_ID:
+        print("[warn] ORG_ID is not set; startup resource listing will be skipped.")
 
     if ACCESS_CHECK_ENABLED and not ACCESS_CHECK_URL:
         print("")
