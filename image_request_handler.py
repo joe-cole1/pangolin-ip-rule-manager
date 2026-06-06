@@ -228,7 +228,19 @@ def _build_checkin_html(
         "  .access-link-label { font-size: 13px; font-weight: 500; color: var(--accent); }\n"
         "  .access-link-url { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n"
         "  .access-link-arrow { color: var(--accent); stroke: var(--accent); opacity: .7; flex-shrink: 0; transition: transform .15s; }\n"
-        "  .access-link:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }\n  .bookmark-btn {\n    width: 100%; background: none; border: 1px solid var(--accent-dim); border-radius: 8px;\n    padding: 10px 14px; cursor: pointer; display: flex; align-items: center;\n    justify-content: space-between; transition: border-color .15s, background .15s;\n  }\n  .bookmark-btn:hover { border-color: var(--accent); background: #0d1f16; }\n  .bookmark-btn .access-link-left { display: flex; align-items: center; gap: 8px; min-width: 0; }\n  .bookmark-btn .access-link-left svg { opacity: .6; color: var(--accent); stroke: var(--accent); }\n  .bookmark-btn .access-link-label { font-size: 13px; font-weight: 500; color: var(--accent); }\n  .bookmark-btn .access-link-url { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n  .bookmark-btn .access-link-arrow { color: var(--accent); stroke: var(--accent); opacity: .7; flex-shrink: 0; transition: transform .15s; }\n  .bookmark-btn:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }\n"
+        "  .access-link:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }\n"
+        "  .bookmark-btn {\n"
+        "    width: 100%; background: none; border: 1px solid var(--accent-dim); border-radius: 8px;\n"
+        "    padding: 10px 14px; cursor: pointer; display: flex; align-items: center;\n"
+        "    justify-content: space-between; transition: border-color .15s, background .15s;\n"
+        "  }\n"
+        "  .bookmark-btn:hover { border-color: var(--accent); background: #0d1f16; }\n"
+        "  .bookmark-btn .access-link-left { display: flex; align-items: center; gap: 8px; min-width: 0; }\n"
+        "  .bookmark-btn .access-link-left svg { opacity: .6; color: var(--accent); stroke: var(--accent); }\n"
+        "  .bookmark-btn .access-link-label { font-size: 13px; font-weight: 500; color: var(--accent); }\n"
+        "  .bookmark-btn .access-link-url { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n"
+        "  .bookmark-btn .access-link-arrow { color: var(--accent); stroke: var(--accent); opacity: .7; flex-shrink: 0; transition: transform .15s; }\n"
+        "  .bookmark-btn:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }\n"
         "  .expiry { font-size: 12px; color: var(--muted); text-align: center; margin-bottom: 20px; line-height: 1.5; }\n"
         "  .expiry span { color: var(--text); font-family: var(--mono); font-size: 12px; }\n"
         "  .details-toggle {\n"
@@ -318,7 +330,7 @@ def _build_checkin_html(
         "      navigator.share({ title: 'Network Check-in', url: url }).catch(() => {});\n"
         "    } else {\n"
         "      navigator.clipboard.writeText(url).then(function() {\n"
-        "        alert('Link copied to clipboard — paste it into your bookmarks.');\n"
+        "        alert('Link copied to clipboard \u2014 paste it into your bookmarks.');\n"
         "      }).catch(function() {\n"
         "        prompt('Copy this link and save it as a bookmark:', url);\n"
         "      });\n"
@@ -353,4 +365,299 @@ def _build_error_html(title: str, message: str, site_name: str = "") -> str:
         "    --muted:     #6b7390;\n"
         "    --err:       #f87171;\n"
         "    --err-dim:   #3d1515;\n"
-        "    --sans:      'IBM Plex Sans', sans-se
+        "    --sans:      'IBM Plex Sans', sans-serif;\n"
+        "  }\n"
+        "  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }\n"
+        "  body {\n"
+        "    background: var(--bg); color: var(--text); font-family: var(--sans); font-weight: 300;\n"
+        "    min-height: 100vh; display: flex; align-items: flex-start; justify-content: center;\n"
+        "    padding: 40px 16px 48px;\n"
+        "    background-image:\n"
+        "      linear-gradient(var(--border) 1px, transparent 1px),\n"
+        "      linear-gradient(90deg, var(--border) 1px, transparent 1px);\n"
+        "    background-size: 32px 32px;\n"
+        "  }\n"
+        "  .card {\n"
+        "    width: 100%; max-width: 440px; background: var(--surface);\n"
+        "    border: 1px solid var(--border-hi); border-radius: 12px; overflow: hidden;\n"
+        "    box-shadow: 0 8px 48px rgba(0,0,0,.5); animation: rise .45s cubic-bezier(.22,1,.36,1) both;\n"
+        "  }\n"
+        "  @keyframes rise {\n"
+        "    from { opacity:0; transform: translateY(18px); }\n"
+        "    to   { opacity:1; transform: translateY(0); }\n"
+        "  }\n"
+        "  .card-header { padding: 20px 24px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }\n"
+        "  .err-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--err); box-shadow: 0 0 0 3px var(--err-dim); flex-shrink: 0; }\n"
+        "  .card-header h1 { font-size: 15px; font-weight: 500; color: var(--text); }\n"
+        "  .card-header .sub { font-size: 12px; color: var(--muted); margin-top: 1px; }\n"
+        "  .card-body { padding: 24px; }\n"
+        "  .hero { font-size: 20px; font-weight: 400; line-height: 1.35; margin-bottom: 12px; color: var(--text); }\n"
+        "  .hero strong { color: var(--err); font-weight: 500; }\n"
+        "  .detail { font-size: 13px; color: var(--muted); line-height: 1.6; }\n"
+        "  .card-footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); text-align: center; }\n"
+        "</style>\n"
+        "</head>\n"
+        "<body>\n"
+        "<div class=\"card\">\n"
+        "  <div class=\"card-header\">\n"
+        "    <div class=\"err-dot\"></div>\n"
+        "    <div>\n"
+        "      <h1>Network Check-in</h1>\n"
+        + site_name_sub
+        + "    </div>\n"
+        "  </div>\n"
+        "  <div class=\"card-body\">\n"
+        f"    <p class=\"hero\"><strong>{title}</strong></p>\n"
+        f"    <p class=\"detail\">{message}</p>\n"
+        "  </div>\n"
+        f"  <div class=\"card-footer\">{site_name_footer}Requests are logged</div>\n"
+        "</div>\n"
+        "</body>\n"
+        "</html>"
+    )
+    return html
+
+
+def create_image_request_handler(ctx: dict):
+    """
+    Factory that returns an ImageRequestHandler class bound to the provided context.
+    Expected ctx keys:
+      - expected_header_key: str
+      - expected_header_value: str
+      - update_enabled: bool
+      - retention_minutes: int
+      - crowdsec_enabled: bool
+      - access_check_enabled: bool
+      - access_check_url: str
+      - state: dict
+      - state_lock: threading.Lock
+      - now_utc_iso: callable () -> str
+      - save_state: callable () -> None
+      - add_ip_to_targets: callable (ip: str) -> dict
+      - banner_png: bytes
+      - banner_gif: bytes
+      - redact_headers_for_log: callable (headers: dict[str, str]) -> dict[str, str]
+      - site_name: str
+    """
+
+    class ImageRequestHandler(BaseHTTPRequestHandler):
+        server_version = "BannerServer/1.0"
+
+        def log_message(self, fmt, *args):
+            print("[http]", self.address_string(), "-", fmt % args)
+
+        def _get_real_ip(self) -> str:
+            # precedence: X-Real-IP, X-Forwarded-For (first), fallback to client addr
+            # Each candidate is validated: must be a parseable, globally-routable IP.
+            # Non-global addresses (loopback, private, link-local, multicast) are
+            # rejected and the next candidate is tried. Falls back to socket address
+            # (not validated, as it is controlled by the OS/kernel, not the caller).
+            def _parse_global_ip(raw: str) -> str | None:
+                try:
+                    ip_obj = ipaddress.ip_address(raw.strip())
+                    if not ip_obj.is_global:
+                        print(f"[warn] Rejected non-global IP from header: {raw.strip()!r}")
+                        return None
+                    return str(ip_obj)
+                except ValueError:
+                    print(f"[warn] Rejected unparseable IP from header: {raw.strip()!r}")
+                    return None
+
+            xr = self.headers.get("X-Real-IP")
+            if xr:
+                parsed = _parse_global_ip(xr)
+                if parsed:
+                    return parsed
+
+            xff = self.headers.get("X-Forwarded-For")
+            if xff:
+                parsed = _parse_global_ip(xff.split(",")[0])
+                if parsed:
+                    return parsed
+
+            return self.client_address[0]
+
+        def _wants_html(self) -> bool:
+            accept = self.headers.get("Accept", "")
+            return "text/html" in accept
+
+        def _send_html(self, status: int, html: str) -> None:
+            body = html.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            ip = self._get_real_ip()
+            parsed_path = urlparse(self.path)
+            path = (parsed_path.path or "/")
+            remote_user = self.headers.get("Remote-User", "")
+
+            print(f"New request from {ip}  user: {remote_user}  path: {path}")
+
+            # Enforce Pangolin custom header (mandatory)
+            actual = self.headers.get(ctx["expected_header_key"]) if ctx.get("expected_header_key") else None
+            if actual is None or actual != ctx.get("expected_header_value"):
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(b"Forbidden: missing or invalid Pangolin custom header")
+                print(f"[error] Missing or invalid Pangolin custom header: {actual}")
+                return
+
+            lower_path = path.lower()
+
+            # /update?ip=1.2.3.4 endpoint (guarded by UPDATE_ENDPOINT_ENABLED)
+            if lower_path == "/update":
+                if not ctx.get("update_enabled"):
+                    # Intentionally bare — do not reveal the endpoint exists
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b"Not found")
+                    print(f"[error] Update endpoint disabled: {self.path}")
+                    return
+
+                qs = parse_qs(parsed_path.query or "")
+                raw_ip = (qs.get("ip", [""])[0] or "").strip()
+                if not raw_ip:
+                    print(f"[error] Missing 'ip' query parameter: {self.path}")
+                    self._send_html(400, _build_error_html(
+                        "Bad request",
+                        "Missing required <code>ip</code> query parameter. "
+                        "Expected format: /update?ip=1.2.3.4",
+                        site_name=ctx.get("site_name", ""),
+                    ))
+                    return
+
+                try:
+                    normalized_ip = str(ipaddress.ip_address(raw_ip))
+                except Exception:
+                    print(f"[error] Invalid IP address: {raw_ip}")
+                    self._send_html(400, _build_error_html(
+                        "Bad request",
+                        f"&#39;{raw_ip}&#39; is not a valid IP address.",
+                        site_name=ctx.get("site_name", ""),
+                    ))
+                    return
+
+                if not ipaddress.ip_address(normalized_ip).is_global:
+                    print(f"[error] Rejected non-global IP in /update: {normalized_ip!r}")
+                    self._send_html(400, _build_error_html(
+                        "Bad request",
+                        f"&#39;{normalized_ip}&#39; is a non-routable IP address and cannot be allowlisted.",
+                        site_name=ctx.get("site_name", ""),
+                    ))
+                    return
+
+                with ctx["state_lock"]:
+                    rec = ctx["state"].setdefault(normalized_ip, {"last_seen": ctx["now_utc_iso"](), "resources": {}})
+                    rec["last_seen"] = ctx["now_utc_iso"]()
+                ctx["save_state"]()
+
+                update_results = {}
+                try:
+                    update_results = ctx["add_ip_to_targets"](normalized_ip)
+                except Exception as e:
+                    print(f"[error] add_ip_to_targets failed for {normalized_ip}: {e}")
+                    update_results = {
+                        "pangolin": {"ok": False, "detail": str(e), "enabled": True},
+                        "crowdsec": {"ok": False, "detail": "not reached", "enabled": ctx.get("crowdsec_enabled", False)},
+                    }
+
+                if self._wants_html():
+                    self._send_html(200, _build_checkin_html(
+                        ip=normalized_ip,
+                        results=update_results,
+                        retention_minutes=ctx.get("retention_minutes", 0),
+                        last_seen=ctx["now_utc_iso"](),
+                        crowdsec_enabled=ctx.get("crowdsec_enabled", False),
+                        access_check_enabled=ctx.get("access_check_enabled", False),
+                        access_check_url=ctx.get("access_check_url", ""),
+                        site_name=ctx.get("site_name", ""),
+                    ))
+                else:
+                    payload = (
+                        "{"
+                        f"\"ok\":true,\"ip\":\"{normalized_ip}\",\"retention_minutes\":{ctx.get('retention_minutes', 0)}"
+                        "}"
+                    ).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                return
+
+            # Forbid root path
+            if path == "/":
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(b"Forbidden")
+                print(f"[error] Root path forbidden: {self.path}")
+                return
+
+            # Only handle .png and .gif paths
+            is_png = lower_path.endswith(".png")
+            is_gif = lower_path.endswith(".gif")
+            if not (is_png or is_gif):
+                print(f"[error] Invalid path (not .png/.gif): {self.path}")
+                if self._wants_html():
+                    self._send_html(404, _build_error_html(
+                        "Page not found",
+                        "This URL isn&#39;t a valid check-in path. "
+                        "Make sure you&#39;re using the correct link ending in .png or .gif.",
+                        site_name=ctx.get("site_name", ""),
+                    ))
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b"Not found")
+                return
+
+            # Update state
+            now_iso = ctx["now_utc_iso"]()
+            with ctx["state_lock"]:
+                rec = ctx["state"].setdefault(ip, {"last_seen": now_iso, "resources": {}})
+                rec["last_seen"] = now_iso
+            ctx["save_state"]()
+
+            # Run checkin against all targets
+            results = {}
+            try:
+                results = ctx["add_ip_to_targets"](ip)
+            except Exception as e:
+                print(f"[error] add_ip_to_targets failed for {ip}: {e}")
+                results = {
+                    "pangolin": {"ok": False, "detail": str(e), "enabled": True},
+                    "crowdsec": {"ok": False, "detail": "not reached", "enabled": ctx.get("crowdsec_enabled", False)},
+                }
+
+            # Browser gets the HTML page; everything else gets the transparent image
+            if self._wants_html():
+                self._send_html(200, _build_checkin_html(
+                    ip=ip,
+                    results=results,
+                    retention_minutes=ctx.get("retention_minutes", 0),
+                    last_seen=now_iso,
+                    crowdsec_enabled=ctx.get("crowdsec_enabled", False),
+                    access_check_enabled=ctx.get("access_check_enabled", False),
+                    access_check_url=ctx.get("access_check_url", ""),
+                    site_name=ctx.get("site_name", ""),
+                ))
+            else:
+                body = ctx["banner_gif"] if is_gif else ctx["banner_png"]
+                ctype = "image/gif" if is_gif else "image/png"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Expires", "0")
+                self.end_headers()
+                self.wfile.write(body)
+
+    return ImageRequestHandler
