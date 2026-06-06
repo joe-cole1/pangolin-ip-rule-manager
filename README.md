@@ -2,6 +2,22 @@
 [![Build and Publish Docker Image](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/workflows/docker-publish.yml)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 
+## Table of Contents
+
+- [The Problem It Solves](#the-problem-it-solves)
+- [How Pangolin IP Rules Enable Selective Bypass](#how-pangolin-ip-rules-enable-selective-bypass)
+- [How It Works](#how-it-works)
+- [Quickstart with Docker Compose](#quickstart-with-docker-compose)
+- [Docker Compose Reference](#docker-compose-reference)
+- [Environment Variables](#environment-variables)
+- [Pangolin API and Resource Setup](#pangolin-api-and-resource-setup)
+- [Detailed Behaviour](#detailed-behaviour)
+- [Optional Features](#optional-features)
+- [Triggering Check-in via CSS](#triggering-check-in-via-css-invisible-request)
+- [Security Notes](#security-notes)
+- [Key Properties](#key-properties)
+- [Disclaimer](#disclaimer)
+
 # Pangolin IP Rule Manager
 
 A lightweight Python service that automatically manages Pangolin IP bypass rules and (optionally) CrowdSec allowlist entries based on observed client IPs. Originally built to solve a specific problem with Jellyfin and native TV apps, but applicable to any resource behind Pangolin that needs IP-based access bootstrapping.
