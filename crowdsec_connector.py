@@ -221,8 +221,8 @@ def crowdsec_add_ip(ip: str) -> None:
     if ip in refreshed:
         print(f"[crowdsec] add reported failure but IP already present {ip} in '{CROWDSEC_ALLOWLIST_NAME}'")
         return
-        print(f"[crowdsec] WARNING: failed to add {ip} to allowlist '{CROWDSEC_ALLOWLIST_NAME}'", rc, out, err)
-            raise RuntimeError(f"CrowdSec: failed to add {ip} to allowlist '{CROWDSEC_ALLOWLIST_NAME}' after 3 attempts (rc={rc}): {err}")
+    print(f"[crowdsec] WARNING: failed to add {ip} to allowlist '{CROWDSEC_ALLOWLIST_NAME}'", rc, out, err)
+    raise RuntimeError(f"CrowdSec: failed to add {ip} to allowlist '{CROWDSEC_ALLOWLIST_NAME}' after 3 attempts (rc={rc}): {err}")
 
 
 
