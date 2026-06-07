@@ -419,7 +419,8 @@ def test_add_ip_to_targets_intersection_filters_by_role(monkeypatch, app_module)
         if "/resource/6/roles" in url:
             return {"data": {"roles": [{"roleId": 1, "name": "Admin"}]}, "success": True}
         if url.endswith("/resource/5"):
-            return {"data": {"resourceId": 5, "name": "Jellyfin", "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
+            return {"data": {"resourceId": 5, "name": "Jellyfin",
+                             "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
         if "/rules" in url:
             return {"data": {"rules": []}}
         if method == "PUT":
@@ -467,7 +468,8 @@ def _standard_fake_http_json(method, url, body=None):
     if "/resource/5/roles" in url:
         return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
     if url.endswith("/resource/5"):
-        return {"data": {"resourceId": 5, "name": "Jellyfin", "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
+        return {"data": {"resourceId": 5, "name": "Jellyfin",
+                         "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
     if "/rules" in url:
         return {"data": {"rules": []}}
     if method == "PUT":
@@ -603,7 +605,8 @@ def test_add_ip_to_targets_pangolin_rule_creation_failure(monkeypatch, app_modul
         if "/resource/5/roles" in url:
             return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
         if url.endswith("/resource/5"):
-            return {"data": {"resourceId": 5, "name": "Jellyfin", "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
+            return {"data": {"resourceId": 5, "name": "Jellyfin",
+                             "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
         if "/rules" in url:
             return {"data": {"rules": []}}
         if method == "PUT":
