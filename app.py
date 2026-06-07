@@ -340,7 +340,7 @@ def cleanup_loop():
         time.sleep(CLEANUP_INTERVAL_MINUTES * 60)
 
 
-from image_request_handler import create_image_request_handler
+from request_handler import create_image_request_handler
 
 
 def _make_image_handler_context() -> dict:
