@@ -36,9 +36,6 @@ def app_module(monkeypatch, temp_state_file):
     monkeypatch.setenv("RESOURCE_IDS", "5")
     monkeypatch.setenv("LISTEN_PORT", "0")
     monkeypatch.setenv("STATE_FILE", temp_state_file)
-    # Mandatory custom header configuration
-    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", "X-Test-Key")
-    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", "v123")
 
     # Import or reload module to apply env
     if "app" in globals():
@@ -46,11 +43,6 @@ def app_module(monkeypatch, temp_state_file):
         app = importlib.reload(_app)
     else:
         import app  # type: ignore
-    # As a safety for client header construction in tests, ensure these are non-empty strings
-    if not getattr(app, "EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", ""):
-        app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY = "X-Test-Key"
-    if not getattr(app, "EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", ""):
-        app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE = "v123"
     # Reset runtime state
     with app.state_lock:
         app.state.clear()
@@ -68,7 +60,6 @@ def test_banner_serves_png_and_updates_state(app_module):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
-            app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE,
             # Remote-User is optional; include to ensure logging path works
             "Remote-User": "alice",
         }
@@ -84,45 +75,6 @@ def test_banner_serves_png_and_updates_state(app_module):
         rec = app.state[test_ip]
         assert isinstance(rec.get("resources"), dict)
         assert "last_seen" in rec
-
-
-def test_security_header_enforced(monkeypatch, temp_state_file):
-    # Set required header env and reload module
-    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", "X-Test-Key")
-    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", "v123")
-    monkeypatch.setenv("PANGOLIN_TOKEN", "")
-    monkeypatch.setenv("RESOURCE_IDS", "8")
-    monkeypatch.setenv("STATE_FILE", temp_state_file)
-
-    import app as _app
-    app = importlib.reload(_app)
-    with app.state_lock:
-        app.state.clear()
-
-    with start_server(app.ImageRequestHandler) as (httpd, port):
-        # Missing header -> 403
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", "/banner.png")
-        resp = conn.getresponse()
-        _ = resp.read()
-        assert resp.status == 403
-
-        # With correct custom header -> 200
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        headers = {app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
-        conn.request("GET", "/some-file.png", headers=headers)
-        resp = conn.getresponse()
-        data = resp.read()
-        assert resp.status == 200
-        assert data == app.BANNER_PNG
-
-        # Root path with correct header -> 403
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        headers = {app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
-        conn.request("GET", "/", headers=headers)
-        resp = conn.getresponse()
-        _ = resp.read()
-        assert resp.status == 403
 
 
 def test_rules_cache_uses_cache(monkeypatch, app_module):
@@ -175,33 +127,6 @@ def test_cleanup_once_removes_expired_ips(monkeypatch, app_module):
         assert old_ip not in app.state
 
 
-def test_security_header_misconfigured_only_key(monkeypatch, temp_state_file):
-    # Only key is set -> since custom header is mandatory, importing app should fail
-    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", "X-Only-Key")
-    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", "")
-    monkeypatch.setenv("PANGOLIN_TOKEN", "")
-    monkeypatch.setenv("RESOURCE_IDS", "8")
-    monkeypatch.setenv("STATE_FILE", temp_state_file)
-
-    import app as _app
-    with pytest.raises(RuntimeError):
-        importlib.reload(_app)
-
-
-def test_security_header_misconfigured_only_value(monkeypatch, temp_state_file):
-    # Only value is set -> importing app should fail
-    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", "")
-    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", "v123")
-    monkeypatch.setenv("PANGOLIN_TOKEN", "")
-    monkeypatch.setenv("RESOURCE_IDS", "8")
-    monkeypatch.setenv("STATE_FILE", temp_state_file)
-
-    import app as _app
-    with pytest.raises(RuntimeError):
-        importlib.reload(_app)
-
-
-
 def test_gif_serves_gif_and_updates_state(app_module):
     app = app_module
 
@@ -211,7 +136,6 @@ def test_gif_serves_gif_and_updates_state(app_module):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
-            app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE,
         }
         conn.request("GET", "/beacon.gif", headers=headers)
         resp = conn.getresponse()
@@ -229,23 +153,19 @@ def test_invalid_paths_denied(app_module):
 
     with start_server(app.ImageRequestHandler) as (httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        headers = {
-            app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE,
-        }
 
         # Test root path
-        conn.request("GET", "/", headers=headers)
+        conn.request("GET", "/")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 403
 
         # Test path without file extension
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", "/some-random-path", headers=headers)
+        conn.request("GET", "/some-random-path")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 404
-
 
 
 def test_cleanup_longer_scenario_mixed_outcomes(monkeypatch, app_module):
@@ -312,7 +232,6 @@ def test_cleanup_longer_scenario_mixed_outcomes(monkeypatch, app_module):
     assert ip_fresh not in ips_called
 
 
-
 def test_cleanup_does_not_remove_non_created_rules(monkeypatch, app_module):
     """Ensure that Pangolin rules not created by us are not removed during cleanup."""
     import pytest
@@ -349,15 +268,12 @@ def test_cleanup_does_not_remove_non_created_rules(monkeypatch, app_module):
     assert called == []
 
 
-
 def _reload_app_with_env(monkeypatch, temp_state_file, update_enabled: bool):
     # Helper to load app with standard env and update endpoint toggle
     monkeypatch.setenv("PANGOLIN_TOKEN", "")
     monkeypatch.setenv("RESOURCE_IDS", "9")
     monkeypatch.setenv("LISTEN_PORT", "0")
     monkeypatch.setenv("STATE_FILE", temp_state_file)
-    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", "X-Test-Key")
-    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", "v123")
     monkeypatch.setenv("UPDATE_ENDPOINT_ENABLED", "true" if update_enabled else "false")
     import app as _app
     return importlib.reload(_app)
@@ -370,8 +286,7 @@ def test_update_endpoint_enabled_adds_arbitrary_ip(monkeypatch, temp_state_file)
 
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        headers = {app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
-        conn.request("GET", "/update?ip=1.2.3.4", headers=headers)
+        conn.request("GET", "/update?ip=1.2.3.4")
         resp = conn.getresponse()
         data = resp.read()
         assert resp.status == 200
@@ -388,22 +303,10 @@ def test_update_endpoint_disabled_returns_404(monkeypatch, temp_state_file):
 
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        headers = {app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
-        conn.request("GET", "/update?ip=1.2.3.4", headers=headers)
-        resp = conn.getresponse()
-        _ = resp.read()
-        assert resp.status == 404
-
-
-def test_update_endpoint_missing_header_403(monkeypatch, temp_state_file):
-    app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=True)
-
-    with start_server(app.ImageRequestHandler) as (_httpd, port):
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         conn.request("GET", "/update?ip=1.2.3.4")
         resp = conn.getresponse()
         _ = resp.read()
-        assert resp.status == 403
+        assert resp.status == 404
 
 
 def test_update_endpoint_missing_ip_param_400(monkeypatch, temp_state_file):
@@ -411,8 +314,7 @@ def test_update_endpoint_missing_ip_param_400(monkeypatch, temp_state_file):
 
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        headers = {app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
-        conn.request("GET", "/update", headers=headers)
+        conn.request("GET", "/update")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 400
@@ -423,8 +325,7 @@ def test_update_endpoint_invalid_ip_400(monkeypatch, temp_state_file):
 
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        headers = {app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
-        conn.request("GET", "/update?ip=999.999.999.999", headers=headers)
+        conn.request("GET", "/update?ip=999.999.999.999")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 400
@@ -438,8 +339,7 @@ def test_update_endpoint_ipv6_success(monkeypatch, temp_state_file):
 
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        headers = {app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
-        conn.request("GET", f"/update?ip={encoded}", headers=headers)
+        conn.request("GET", f"/update?ip={encoded}")
         resp = conn.getresponse()
         data = resp.read()
         assert resp.status == 200
@@ -455,8 +355,7 @@ def test_update_endpoint_last_seen_updates(monkeypatch, temp_state_file):
     ip = "5.6.7.8"
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        headers = {app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
-        conn.request("GET", f"/update?ip={ip}", headers=headers)
+        conn.request("GET", f"/update?ip={ip}")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 200
@@ -467,14 +366,14 @@ def test_update_endpoint_last_seen_updates(monkeypatch, temp_state_file):
     _time.sleep(1.1)
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        headers = {app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
-        conn.request("GET", f"/update?ip={ip}", headers=headers)
+        conn.request("GET", f"/update?ip={ip}")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 200
     with app.state_lock:
         second_seen = app.state[ip]["last_seen"]
     assert second_seen != first_seen
+
 
 def test_update_endpoint_returns_html_when_accepted(monkeypatch, temp_state_file):
     app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=True)
@@ -484,7 +383,6 @@ def test_update_endpoint_returns_html_when_accepted(monkeypatch, temp_state_file
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
-            app.EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: app.EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
         conn.request("GET", "/update?ip=1.2.3.4", headers=headers)
@@ -557,8 +455,6 @@ def _reload_app_with_crowdsec(monkeypatch, temp_state_file):
     monkeypatch.setenv("RESOURCE_IDS", "5")
     monkeypatch.setenv("LISTEN_PORT", "0")
     monkeypatch.setenv("STATE_FILE", temp_state_file)
-    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", "X-Test-Key")
-    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", "v123")
     monkeypatch.setenv("CROWDSEC_ENABLED", "true")
     import app as _app
     return importlib.reload(_app)
@@ -770,3 +666,93 @@ def test_add_ip_to_targets_crowdsec_failure_isolated(monkeypatch, temp_state_fil
     assert results["pangolin"]["ok"] is True, "Pangolin should succeed regardless of CrowdSec"
     assert results["crowdsec"]["ok"] is False
     assert "cscli" in results["crowdsec"]["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Tests for removal of custom passthrough header
+# ---------------------------------------------------------------------------
+
+def test_app_loads_without_custom_header_env(monkeypatch, temp_state_file):
+    """App must load successfully without EXPECTED_PANGOLIN_CUSTOM_HEADER_* env vars.
+    Previously these were mandatory and the module raised RuntimeError on import without them.
+    """
+    monkeypatch.setenv("PANGOLIN_TOKEN", "")
+    monkeypatch.setenv("RESOURCE_IDS", "5")
+    monkeypatch.setenv("LISTEN_PORT", "0")
+    monkeypatch.setenv("STATE_FILE", temp_state_file)
+    # Explicitly ensure neither custom header var is set
+    monkeypatch.delenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", raising=False)
+    monkeypatch.delenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", raising=False)
+
+    import app as _app
+    # Should not raise — if it does the test fails
+    app = importlib.reload(_app)
+    assert app is not None
+
+
+def test_request_without_custom_header_reaches_handler(monkeypatch, temp_state_file):
+    """A request with no passthrough header must no longer be rejected with 403.
+    It should proceed to the handler logic and return 200 (serving the image or error page).
+    Previously the custom header check fired first and returned 403 unconditionally.
+    """
+    monkeypatch.setenv("PANGOLIN_TOKEN", "")
+    monkeypatch.setenv("RESOURCE_IDS", "5")
+    monkeypatch.setenv("LISTEN_PORT", "0")
+    monkeypatch.setenv("STATE_FILE", temp_state_file)
+    monkeypatch.delenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", raising=False)
+    monkeypatch.delenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", raising=False)
+
+    import app as _app
+    app = importlib.reload(_app)
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        # No custom header sent — previously this would be 403
+        conn.request("GET", "/checkin.png", headers={"X-Real-IP": "1.2.3.4"})
+        resp = conn.getresponse()
+        _ = resp.read()
+        # Must not be 403 — handler logic should have run
+        assert resp.status != 403, (
+            "Request without custom header should no longer be rejected with 403 "
+            "— the passthrough header check has been removed"
+        )
+        assert resp.status == 200
+
+
+def test_no_remote_user_fails_closed_no_ip_added(monkeypatch, temp_state_file):
+    """Without Remote-User, the identity check fails closed: no IP is added to state,
+    and the response is still 200 (error page rendered). This is now the primary gate,
+    replacing the removed custom header check.
+    """
+    monkeypatch.setenv("PANGOLIN_TOKEN", "")
+    monkeypatch.setenv("RESOURCE_IDS", "5")
+    monkeypatch.setenv("LISTEN_PORT", "0")
+    monkeypatch.setenv("STATE_FILE", temp_state_file)
+    monkeypatch.delenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", raising=False)
+    monkeypatch.delenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", raising=False)
+
+    import app as _app
+    app = importlib.reload(_app)
+    with app.state_lock:
+        app.state.clear()
+
+    test_ip = "9.9.9.9"
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        # No Remote-User header — identity check must fail closed
+        conn.request("GET", "/checkin.png", headers={"X-Real-IP": test_ip})
+        resp = conn.getresponse()
+        _ = resp.read()
+        assert resp.status == 200
+
+    # No IP rule should have been created
+    with app.state_lock:
+        rec = app.state.get(test_ip, {})
+        # last_seen will be set (state is updated before add_ip_to_targets is called),
+        # but no resources should have been whitelisted
+        resources = rec.get("resources", {})
+        assert resources == {}, (
+            f"No resources should be whitelisted when Remote-User is absent, got: {resources}"
+        )
