@@ -44,12 +44,6 @@ CROWDSEC_CACHE_TTL_SECONDS = int(os.getenv("CROWDSEC_CACHE_TTL_SECONDS", "3600")
 SITE_NAME = os.getenv("SITE_NAME", "").strip()
 # Optional: allow overriding the caller IP via /update?ip=...
 UPDATE_ENDPOINT_ENABLED = os.getenv("UPDATE_ENDPOINT_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
-# Optional: browser-side access check shown on the success page
-# Mandatory Pangolin custom header gate: both must be set and non-empty
-EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY = os.getenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", "").strip()
-EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE = os.getenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", "").strip()
-if not EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY or not EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE:
-    raise RuntimeError("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY and EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE must be set and non-empty")
 
 # Minimal 1x1 PNG (transparent) as bytes
 BANNER_PNG = base64.b64decode(
@@ -85,19 +79,14 @@ def now_utc_iso() -> str:
 
 def redact_headers_for_log(headers: dict[str, str]) -> dict[str, str]:
     """Return a copy of headers suitable for logging.
-    - Redacts Authorization/Proxy-Authorization values
-    - Masks the expected Pangolin custom header value to avoid leaking secrets
+    - Redacts Authorization/Proxy-Authorization values.
     Header names are matched case-insensitively.
     """
     redacted: dict[str, str] = {}
-    expected_key_lower = EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY.lower() if EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY else None
     for k, v in headers.items():
         kl = k.lower()
         if kl in ("authorization", "proxy-authorization"):
             redacted[k] = "<redacted>"
-        elif expected_key_lower and kl == expected_key_lower:
-            # Don't log secret value; only indicate presence
-            redacted[k] = "<present>" if v else "<missing>"
         else:
             redacted[k] = v
     return redacted
@@ -373,8 +362,6 @@ from request_handler import create_image_request_handler
 
 def _make_image_handler_context() -> dict:
     return {
-        "expected_header_key": EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY,
-        "expected_header_value": EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE,
         "update_enabled": UPDATE_ENDPOINT_ENABLED,
         "retention_minutes": RETENTION_MINUTES,
         "crowdsec_enabled": CROWDSEC_ENABLED,
@@ -397,10 +384,6 @@ ImageRequestHandler = create_image_request_handler(_make_image_handler_context()
 def self_check():
     # Double-check mandatory environment settings and print useful warnings/summary.
     missing = []
-    if not EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY:
-        missing.append("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY")
-    if not EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE:
-        missing.append("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE")
     if not PANGOLIN_URL:
         missing.append("PANGOLIN_URL")
     if not RESOURCE_IDS:
