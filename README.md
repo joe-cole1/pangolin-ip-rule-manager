@@ -2,6 +2,18 @@
 [![Build and Publish Docker Image](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/workflows/docker-publish.yml)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 
+## Roadmap
+
+This project is actively maintained and has a few things in the pipeline worth knowing about before you set it up.
+
+The next release focuses on internal reliability improvements — nothing that changes how you configure or use the service, but fixes that make it more robust under the hood.
+
+After that, the CrowdSec integration is getting a security improvement that will change how the service communicates with CrowdSec. If you're planning to use that feature, it's worth knowing the setup steps will look a little different once that lands. The current approach works, but the new one will be cleaner and safer. The README will be updated when it ships.
+
+Longer term, the check-in page is getting a visual refresh to better match the Pangolin aesthetic, along with smarter resource link icons that auto-match to the app you're protecting (Jellyfin, Radarr, and so on).
+
+None of this should give you pause about installing now — the current version is stable and in production use. Just good things coming.
+
 # Pangolin IP Rule Manager
 
 A lightweight Python service that automatically manages Pangolin IP bypass rules and (optionally) CrowdSec allowlist entries based on observed client IPs. It bootstraps trust from an authenticated device (like a phone) to a device that cannot authenticate (like a TV), while honoring each user's role-based permissions in Pangolin.
