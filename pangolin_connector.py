@@ -4,6 +4,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, Set, Any, List
+from urllib.parse import quote
 
 
 def _retry(fn, *, attempts: int = 3, backoff: float = 1.0, label: str = ""):
@@ -173,3 +174,52 @@ def list_org_resources(ctx: PangolinContext, org_id: str) -> None:
     except Exception as e:
         print(f"[pangolin] failed to list resources for org {org_id}: {e}")
         raise e
+
+
+def get_user_role_ids(ctx: PangolinContext, org_id: str, username: str) -> list[int]:
+    """Return the list of roleIds for the given username in the org.
+    Raises RuntimeError on any failure (caller is responsible for fail-closed behaviour).
+    """
+    if not ctx.token:
+        raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up user")
+    url = f"{ctx.url}/v1/org/{org_id}/user-by-username?username={quote(username, safe='')}"
+    resp = _retry(
+        lambda: ctx.http_json("GET", url),
+        label=f"GET user-by-username username={username}",
+    )
+    role_ids = resp.get("data", {}).get("roleIds")
+    if role_ids is None:
+        raise RuntimeError(f"User {username!r} not found in org {org_id!r} (or unexpected response shape)")
+    return role_ids
+
+
+def get_resource_allowed_role_ids(ctx: PangolinContext, rid: int) -> set[int]:
+    """Return the set of roleIds authorised for the given resource.
+    Raises RuntimeError on any failure.
+    """
+    if not ctx.token:
+        raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up resource roles")
+    url = f"{ctx.url}/v1/resource/{rid}/roles"
+    resp = _retry(
+        lambda: ctx.http_json("GET", url),
+        label=f"GET resource/{rid}/roles",
+    )
+    roles = resp.get("data", {}).get("roles", [])
+    return {r["roleId"] for r in roles if "roleId" in r}
+
+
+def filter_resources_for_user(ctx: PangolinContext, org_id: str, username: str) -> list[int]:
+    """Return the subset of ctx.resource_ids the user is authorised for.
+    Raises on any API error (fail-closed). Returns an empty list if the
+    intersection is empty but no error occurred.
+    """
+    user_role_ids = set(get_user_role_ids(ctx, org_id, username))
+    effective: list[int] = []
+    for rid in ctx.resource_ids:
+        resource_role_ids = get_resource_allowed_role_ids(ctx, rid)
+        if user_role_ids & resource_role_ids:
+            print(f"[pangolin] user {username!r} authorised for resource {rid}")
+            effective.append(rid)
+        else:
+            print(f"[pangolin] user {username!r} not authorised for resource {rid} — skipping")
+    return effective

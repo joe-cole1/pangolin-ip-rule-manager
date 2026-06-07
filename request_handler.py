@@ -33,9 +33,9 @@ def _build_checkin_html(
 
     dot_class = "status-dot" if overall_ok else "status-dot err"
     if overall_ok:
-        hero = "You&#39;re all set!<br><strong>Your IP address has access.</strong>"
+        hero = "You&#39;re all set!<br><strong>Jellyfin should work on your TV.</strong>"
     else:
-        hero = "Something went wrong.<br><strong>Access may not work right now &mdash; try again in a moment.</strong>"
+        hero = "Something went wrong.<br><strong>Jellyfin may not work right now &mdash; try again in a moment.</strong>"
 
     pangolin_badge = '<span class="badge ok">Added</span>' if pangolin_ok else '<span class="badge err">Failed</span>'
 
@@ -560,7 +560,7 @@ def create_image_request_handler(ctx: dict):
 
                 update_results = {}
                 try:
-                    update_results = ctx["add_ip_to_targets"](normalized_ip)
+                    update_results = ctx["add_ip_to_targets"](normalized_ip, remote_user=remote_user)
                 except Exception as e:
                     print(f"[error] add_ip_to_targets failed for {normalized_ip}: {e}")
                     update_results = {
@@ -628,7 +628,7 @@ def create_image_request_handler(ctx: dict):
             # Run checkin against all targets
             results = {}
             try:
-                results = ctx["add_ip_to_targets"](ip)
+                results = ctx["add_ip_to_targets"](ip, remote_user=remote_user)
             except Exception as e:
                 print(f"[error] add_ip_to_targets failed for {ip}: {e}")
                 results = {

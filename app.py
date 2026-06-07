@@ -19,6 +19,7 @@ from pangolin_connector import (
     ensure_ip_rule as pg_ensure_ip_rule,
     delete_ip_rule_if_created_by_us as pg_delete_ip_rule_if_created_by_us,
     list_org_resources as pg_list_org_resources,
+    filter_resources_for_user as pg_filter_resources_for_user,
 )
 
 # Config via environment
@@ -171,8 +172,11 @@ class PangolinTarget(Target):
     def __init__(self, ctx_factory):
         self._ctx_factory = ctx_factory
 
-    def add_ip(self, ip: str) -> None:
+    def add_ip(self, ip: str, resource_ids: list[int] | None = None) -> None:
+        from dataclasses import replace as _dc_replace
         ctx = self._ctx_factory()
+        if resource_ids is not None:
+            ctx = _dc_replace(ctx, resource_ids=resource_ids)
         pg_ensure_ip_rule(ctx, ip)
 
     # Pangolin cleanup is handled separately based on created_by_us; no expire here.
@@ -224,14 +228,35 @@ def _get_ip_set_for_resource_cached(rid: int):
 # Target aggregation (extensibility point)
 # --------------------------
 
-def add_ip_to_targets(ip: str) -> dict:
+def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
     """Add/allow this IP across configured targets (Pangolin, CrowdSec, etc.).
-    Returns a dict of per-target results for display purposes:
-      {
-        "pangolin": {"ok": bool, "detail": str, "enabled": bool},
-        "crowdsec": {"ok": bool, "detail": str, "enabled": bool},
-      }
+    Requires remote_user (value of the Remote-User header forwarded by Pangolin).
+    Fails closed: returns ok=False without touching any target if the user cannot
+    be identified or is not authorised for any configured resource.
+    Returns a dict of per-target results for display purposes.
     """
+    def _fail(detail: str) -> dict:
+        print(f"[targets] fail-closed: {detail}")
+        return {
+            "pangolin": {"ok": False, "detail": detail, "enabled": True},
+            "crowdsec": {"ok": False, "detail": "not reached", "enabled": CROWDSEC_ENABLED},
+        }
+
+    if not remote_user:
+        return _fail(
+            "Remote-User header not present — cannot identify user. "
+            "Ensure this resource uses SSO authentication in Pangolin."
+        )
+
+    ctx = make_pangolin_context()
+    try:
+        effective_ids = pg_filter_resources_for_user(ctx, ORG_ID, remote_user)
+    except Exception as e:
+        return _fail(f"User authorization failed for {remote_user!r}: {e}")
+
+    if not effective_ids:
+        return _fail(f"User {remote_user!r} is not authorised for any configured resource.")
+
     results = {
         "pangolin": {"ok": False, "detail": "not attempted", "enabled": True},
         "crowdsec": {"ok": False, "detail": "disabled", "enabled": CROWDSEC_ENABLED},
@@ -239,7 +264,10 @@ def add_ip_to_targets(ip: str) -> dict:
     for t in TARGETS:
         key = "crowdsec" if isinstance(t, CrowdSecTarget) else "pangolin"
         try:
-            t.add_ip(ip)
+            if isinstance(t, PangolinTarget):
+                t.add_ip(ip, resource_ids=effective_ids)
+            else:
+                t.add_ip(ip)
             results[key]["ok"] = True
             results[key]["detail"] = "ok"
         except Exception as e:
