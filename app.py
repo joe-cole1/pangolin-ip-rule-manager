@@ -45,8 +45,6 @@ SITE_NAME = os.getenv("SITE_NAME", "").strip()
 # Optional: allow overriding the caller IP via /update?ip=...
 UPDATE_ENDPOINT_ENABLED = os.getenv("UPDATE_ENDPOINT_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 # Optional: browser-side access check shown on the success page
-ACCESS_CHECK_ENABLED = os.getenv("ACCESS_CHECK_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
-ACCESS_CHECK_URL = os.getenv("ACCESS_CHECK_URL", "").strip()
 # Mandatory Pangolin custom header gate: both must be set and non-empty
 EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY = os.getenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", "").strip()
 EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE = os.getenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", "").strip()
@@ -250,16 +248,18 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
 
     ctx = make_pangolin_context()
     try:
-        effective_ids = pg_filter_resources_for_user(ctx, ORG_ID, remote_user)
+        effective_resources = pg_filter_resources_for_user(ctx, ORG_ID, remote_user)
     except Exception as e:
         return _fail(f"User authorization failed for {remote_user!r}: {e}")
 
-    if not effective_ids:
+    if not effective_resources:
         return _fail(f"User {remote_user!r} is not authorised for any configured resource.")
 
+    effective_ids = [r["resourceId"] for r in effective_resources]
     results = {
         "pangolin": {"ok": False, "detail": "not attempted", "enabled": True},
         "crowdsec": {"ok": False, "detail": "disabled", "enabled": CROWDSEC_ENABLED},
+        "resources": effective_resources,
     }
     for t in TARGETS:
         key = "crowdsec" if isinstance(t, CrowdSecTarget) else "pangolin"
@@ -378,8 +378,6 @@ def _make_image_handler_context() -> dict:
         "update_enabled": UPDATE_ENDPOINT_ENABLED,
         "retention_minutes": RETENTION_MINUTES,
         "crowdsec_enabled": CROWDSEC_ENABLED,
-        "access_check_enabled": ACCESS_CHECK_ENABLED,
-        "access_check_url": ACCESS_CHECK_URL,
         "site_name": SITE_NAME,
         "state": state,
         "state_lock": state_lock,
@@ -425,15 +423,6 @@ def self_check():
     if not ORG_ID:
         print("[warn] ORG_ID is not set; startup resource listing will be skipped.")
 
-    if ACCESS_CHECK_ENABLED and not ACCESS_CHECK_URL:
-        print("")
-        print("=" * 60)
-        print("[WARN] ACCESS_CHECK_ENABLED=true but ACCESS_CHECK_URL is not set.")
-        print("       The access check row will not appear on the success page.")
-        print("       Set ACCESS_CHECK_URL to the URL you want to verify.")
-        print("=" * 60)
-        print("")
-
     # Verify state file directory is writable before we need it
     state_dir = os.path.dirname(os.path.abspath(STATE_FILE))
     if not os.path.isdir(state_dir):
@@ -469,7 +458,6 @@ def self_check():
         f"resources={RESOURCE_IDS} retention_minutes={RETENTION_MINUTES} "
         f"cleanup_interval_minutes={CLEANUP_INTERVAL_MINUTES} rule_priority={RULE_PRIORITY} "
         f"crowdsec={cs_status} update_endpoint_enabled={UPDATE_ENDPOINT_ENABLED} "
-        f"access_check_enabled={ACCESS_CHECK_ENABLED} access_check_url={ACCESS_CHECK_URL!r} "
         f"site_name={SITE_NAME!r}"
     )
 

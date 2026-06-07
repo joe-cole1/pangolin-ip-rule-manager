@@ -10,8 +10,7 @@ def _build_checkin_html(
     retention_minutes: int,
     last_seen: str,
     crowdsec_enabled: bool,
-    access_check_enabled: bool = False,
-    access_check_url: str = "",
+    resources: list | None = None,
     site_name: str = "",
 ) -> str:
     """Build the HTML checkin response page."""
@@ -33,9 +32,9 @@ def _build_checkin_html(
 
     dot_class = "status-dot" if overall_ok else "status-dot err"
     if overall_ok:
-        hero = "You&#39;re all set!<br><strong>Jellyfin should work on your TV.</strong>"
+        hero = "Your IP address has access."
     else:
-        hero = "Something went wrong.<br><strong>Jellyfin may not work right now &mdash; try again in a moment.</strong>"
+        hero = "Access may not work right now."
 
     pangolin_badge = '<span class="badge ok">Added</span>' if pangolin_ok else '<span class="badge err">Failed</span>'
 
@@ -56,43 +55,46 @@ def _build_checkin_html(
 
     details_label = "Technical details" if overall_ok else "What went wrong?"
 
-    # Access check link — only rendered when both enabled and a URL is configured
-    show_access_check = access_check_enabled and bool(access_check_url)
-    if show_access_check:
-        # Escape the URL for safe inline HTML attribute embedding
-        safe_url = (
-            access_check_url
-            .replace("&", "&amp;")
-            .replace('"', "&quot;")
-            .replace("'", "&#39;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
-        access_check_row = (
-            "      <a class=\"access-link\" href=\"" + safe_url + "\" target=\"_blank\" rel=\"noopener noreferrer\">\n"
-            "        <span class=\"access-link-left\">\n"
-            "          <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" style=\"flex-shrink:0;\">"
-            "<path d=\"M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6\"/>"
-            "<polyline points=\"15 3 21 3 21 9\"/><line x1=\"10\" y1=\"14\" x2=\"21\" y2=\"3\"/>"
-            "</svg>\n"
-            "          <span class=\"access-link-text\">\n"
-            "            <span class=\"access-link-label\">Confirm access</span>\n"
-            f"            <span class=\"access-link-url\">{safe_url}</span>\n"
-            "          </span>\n"
-            "        </span>\n"
-            "        <svg class=\"access-link-arrow\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\">"
-            "<line x1=\"5\" y1=\"12\" x2=\"19\" y2=\"12\"/>"
-            "<polyline points=\"12 5 19 12 12 19\"/>"
-            "</svg>\n"
-            "      </a>"
-        )
-        access_check_detail_rows = (
-            "      <div class=\"row\"><span class=\"key\">ac_url&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>"
-            "<span class=\"val\" style=\"word-break:break-all;\">" + safe_url + "</span></div>\n"
-        )
-    else:
-        access_check_row = ""
-        access_check_detail_rows = ""
+    # Per-resource access links — one per authorised resource, shown on success only
+    resource_rows = ""
+    if overall_ok and resources:
+        rows = []
+        for r in resources:
+            name = r.get("name", "Resource")
+            domain = r.get("fullDomain", "")
+            ssl = r.get("ssl", True)
+            if not domain:
+                continue
+            protocol = "https" if ssl else "http"
+            raw_url = f"{protocol}://{domain}"
+            safe_url = (
+                raw_url
+                .replace("&", "&amp;")
+                .replace('"', "&quot;")
+                .replace("'", "&#39;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            safe_name = name.replace("<", "&lt;").replace(">", "&gt;")
+            rows.append(
+                "      <a class=\"access-link\" href=\"" + safe_url + "\" target=\"_blank\" rel=\"noopener noreferrer\">\n"
+                "        <span class=\"access-link-left\">\n"
+                "          <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" style=\"flex-shrink:0;\">"
+                "<path d=\"M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6\"/>"
+                "<polyline points=\"15 3 21 3 21 9\"/><line x1=\"10\" y1=\"14\" x2=\"21\" y2=\"3\"/>"
+                "</svg>\n"
+                "          <span class=\"access-link-text\">\n"
+                f"            <span class=\"access-link-label\">Open {safe_name}</span>\n"
+                f"            <span class=\"access-link-url\">{safe_url}</span>\n"
+                "          </span>\n"
+                "        </span>\n"
+                "        <svg class=\"access-link-arrow\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\">"
+                "<line x1=\"5\" y1=\"12\" x2=\"19\" y2=\"12\"/>"
+                "<polyline points=\"12 5 19 12 12 19\"/>"
+                "</svg>\n"
+                "      </a>"
+            )
+        resource_rows = "\n".join(rows)
 
     # Bookmark row — always shown on success, uses current page URL via JS
     bookmark_row = (
@@ -296,7 +298,7 @@ def _build_checkin_html(
         "        </span>\n"
         f"        {crowdsec_badge}\n"
         "      </div>\n"
-        f"{access_check_row}\n"
+        f"{resource_rows}\n"
         f"{bookmark_row}\n"
         "    </div>\n"
         "    <p class=\"expiry\">\n"
@@ -313,7 +315,6 @@ def _build_checkin_html(
         f"      <div class=\"row\"><span class=\"key\">retention&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\">{retention_minutes} min</span></div>\n"
         f"      <div class=\"row\"><span class=\"key\">expires_at&nbsp;&nbsp;&nbsp;</span><span class=\"val\">{expires_iso}</span></div>\n"
         f"      <div class=\"row\"><span class=\"key\">last_seen&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\">{last_seen}</span></div>\n"
-        f"{access_check_detail_rows}"
         "    </div>\n"
         "  </div>\n"
         "  <div class=\"card-footer\">Requests are logged &nbsp;&middot;&nbsp; Access resets on each visit</div>\n"
@@ -427,8 +428,6 @@ def create_image_request_handler(ctx: dict):
       - update_enabled: bool
       - retention_minutes: int
       - crowdsec_enabled: bool
-      - access_check_enabled: bool
-      - access_check_url: str
       - state: dict
       - state_lock: threading.Lock
       - now_utc_iso: callable () -> str
@@ -575,8 +574,7 @@ def create_image_request_handler(ctx: dict):
                         retention_minutes=ctx.get("retention_minutes", 0),
                         last_seen=ctx["now_utc_iso"](),
                         crowdsec_enabled=ctx.get("crowdsec_enabled", False),
-                        access_check_enabled=ctx.get("access_check_enabled", False),
-                        access_check_url=ctx.get("access_check_url", ""),
+                        resources=update_results.get("resources", []),
                         site_name=ctx.get("site_name", ""),
                     ))
                 else:
@@ -644,8 +642,7 @@ def create_image_request_handler(ctx: dict):
                     retention_minutes=ctx.get("retention_minutes", 0),
                     last_seen=now_iso,
                     crowdsec_enabled=ctx.get("crowdsec_enabled", False),
-                    access_check_enabled=ctx.get("access_check_enabled", False),
-                    access_check_url=ctx.get("access_check_url", ""),
+                    resources=results.get("resources", []),
                     site_name=ctx.get("site_name", ""),
                 ))
             else:

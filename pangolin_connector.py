@@ -208,18 +208,42 @@ def get_resource_allowed_role_ids(ctx: PangolinContext, rid: int) -> set[int]:
     return {r["roleId"] for r in roles if "roleId" in r}
 
 
-def filter_resources_for_user(ctx: PangolinContext, org_id: str, username: str) -> list[int]:
-    """Return the subset of ctx.resource_ids the user is authorised for.
+def get_resource(ctx: PangolinContext, rid: int) -> dict:
+    """Return display metadata for a resource: resourceId, name, fullDomain, ssl.
+    Raises RuntimeError on any failure.
+    """
+    if not ctx.token:
+        raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up resource")
+    url = f"{ctx.url}/v1/resource/{rid}"
+    resp = _retry(
+        lambda: ctx.http_json("GET", url),
+        label=f"GET resource/{rid}",
+    )
+    data = resp.get("data", {})
+    if not data:
+        raise RuntimeError(f"Resource {rid} not found or unexpected response shape")
+    return {
+        "resourceId": rid,
+        "name": data.get("name") or str(rid),
+        "fullDomain": data.get("fullDomain", ""),
+        "ssl": data.get("ssl", True),
+    }
+
+
+def filter_resources_for_user(ctx: PangolinContext, org_id: str, username: str) -> list[dict]:
+    """Return the subset of ctx.resource_ids the user is authorised for, with metadata.
+    Each entry is {"resourceId": int, "name": str, "fullDomain": str, "ssl": bool}.
     Raises on any API error (fail-closed). Returns an empty list if the
     intersection is empty but no error occurred.
     """
     user_role_ids = set(get_user_role_ids(ctx, org_id, username))
-    effective: list[int] = []
+    effective: list[dict] = []
     for rid in ctx.resource_ids:
         resource_role_ids = get_resource_allowed_role_ids(ctx, rid)
         if user_role_ids & resource_role_ids:
-            print(f"[pangolin] user {username!r} authorised for resource {rid}")
-            effective.append(rid)
+            meta = get_resource(ctx, rid)
+            print(f"[pangolin] user {username!r} authorised for resource {rid} ({meta.get('name')})")
+            effective.append(meta)
         else:
             print(f"[pangolin] user {username!r} not authorised for resource {rid} — skipping")
     return effective
