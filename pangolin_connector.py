@@ -118,7 +118,10 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
 
 
 def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> bool:
-    """Returns True if a deletion was performed, False otherwise."""
+    """Return True if the rule is definitively gone — either we deleted it, or it was
+    already absent (manually removed or expired externally). Return False only when a
+    failure occurred and we cannot confirm the rule has been removed; the caller should
+    retain the IP in state and retry on the next cleanup cycle."""
     try:
         rules_resp = _retry(
             lambda: ctx.http_json("GET", f"{ctx.url}/v1/resource/{rid}/rules?limit=10000"),
@@ -126,6 +129,10 @@ def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> 
         )
         rules = rules_resp.get("data", {}).get("rules", [])
         to_delete = [r for r in rules if r.get("match") == "IP" and r.get("value") == ip]
+        if not to_delete:
+            # Rule is already absent — safe to clear this entry from state
+            print(f"[pangolin] no rule found for IP {ip} on resource {rid} (already absent — clearing state)")
+            return True
         deleted_any = False
         for r in to_delete:
             rule_id = r.get("ruleId")

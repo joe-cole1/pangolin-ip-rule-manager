@@ -7,12 +7,10 @@ RUN apk add --no-cache docker-cli
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Default configuration can be overridden via env at runtime
-ENV PANGOLIN_URL="https://api.url.of.your.pangolin.instance" \
-    PANGOLIN_TOKEN="your_pangolin_token" \
-    ORG_ID="your_org_id" \
-    RESOURCE_IDS="2,7,12" \
-    RETENTION_MINUTES="1440" \
+# Operational defaults — PANGOLIN_URL, PANGOLIN_TOKEN, ORG_ID, and RESOURCE_IDS
+# are not set here; they must always be injected at runtime via your orchestrator
+# (Portainer, compose, etc.)
+ENV RETENTION_MINUTES="1440" \
     LISTEN_PORT="8080" \
     STATE_FILE="/data/state.json" \
     CLEANUP_INTERVAL_MINUTES="60" \
