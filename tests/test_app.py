@@ -494,3 +494,48 @@ def test_update_endpoint_returns_html_when_accepted(monkeypatch, temp_state_file
         assert b"text/html" in resp.getheader("Content-Type", "").encode()
         assert b"Network Check-in" in data
         assert b"1.2.3.4" in data
+
+
+def test_add_ip_to_targets_fails_closed_without_remote_user(app_module):
+    """No targets should be touched when Remote-User is absent."""
+    app = app_module
+    results = app.add_ip_to_targets("1.2.3.4", remote_user="")
+    assert results["pangolin"]["ok"] is False
+    assert "Remote-User" in results["pangolin"]["detail"]
+    assert results["crowdsec"]["detail"] == "not reached"
+
+
+def test_add_ip_to_targets_intersection_filters_by_role(monkeypatch, app_module):
+    """Only resources where the user's role matches should be whitelisted."""
+    app = app_module
+
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5, 6])
+
+    def fake_http_json(method, url, body=None):
+        if "user-by-username" in url:
+            return {"data": {"roleIds": [5]}, "success": True, "error": False}
+        if "/resource/5/roles" in url:
+            return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
+        if "/resource/6/roles" in url:
+            return {"data": {"roles": [{"roleId": 1, "name": "Admin"}]}, "success": True}
+        if "/rules" in url:
+            return {"data": {"rules": []}}
+        if method == "PUT":
+            return {"success": True, "data": {"rule": {"ruleId": 99}}}
+        return {}
+
+    monkeypatch.setattr(app, "http_json", fake_http_json)
+
+    with app.state_lock:
+        app.state.clear()
+
+    results = app.add_ip_to_targets("1.2.3.4", remote_user="denise@example.com")
+
+    assert results["pangolin"]["ok"] is True
+
+    with app.state_lock:
+        rec = app.state.get("1.2.3.4", {})
+        resources = rec.get("resources", {})
+        assert "5" in resources, "resource 5 should be whitelisted (role matches)"
+        assert "6" not in resources, "resource 6 should be skipped (role mismatch)"
