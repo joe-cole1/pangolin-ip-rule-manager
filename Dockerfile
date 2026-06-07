@@ -1,5 +1,5 @@
 # Minimal Python stdlib-only image
-FROM python:3.12-alpine
+FROM python:3.14-alpine
 
 # Install Docker CLI for optional CrowdSec integration via 'docker exec crowdsec cscli ...'
 RUN apk add --no-cache docker-cli
