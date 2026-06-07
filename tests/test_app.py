@@ -511,6 +511,7 @@ def test_add_ip_to_targets_intersection_filters_by_role(monkeypatch, app_module)
 
     monkeypatch.setattr(app, "ORG_ID", "test-org")
     monkeypatch.setattr(app, "RESOURCE_IDS", [5, 6])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
         if "user-by-username" in url:
