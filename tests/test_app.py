@@ -520,6 +520,8 @@ def test_add_ip_to_targets_intersection_filters_by_role(monkeypatch, app_module)
             return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
         if "/resource/6/roles" in url:
             return {"data": {"roles": [{"roleId": 1, "name": "Admin"}]}, "success": True}
+        if url.endswith("/resource/5"):
+            return {"data": {"resourceId": 5, "name": "Jellyfin", "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
         if "/rules" in url:
             return {"data": {"rules": []}}
         if method == "PUT":
@@ -534,9 +536,237 @@ def test_add_ip_to_targets_intersection_filters_by_role(monkeypatch, app_module)
     results = app.add_ip_to_targets("1.2.3.4", remote_user="denise@example.com")
 
     assert results["pangolin"]["ok"] is True
+    assert "resources" in results, "results should include resource metadata"
+    assert len(results["resources"]) == 1, "only resource 5 should be authorised"
+    assert results["resources"][0]["name"] == "Jellyfin"
+    assert results["resources"][0]["fullDomain"] == "jellyfin.example.com"
 
     with app.state_lock:
         rec = app.state.get("1.2.3.4", {})
-        resources = rec.get("resources", {})
-        assert "5" in resources, "resource 5 should be whitelisted (role matches)"
-        assert "6" not in resources, "resource 6 should be skipped (role mismatch)"
+        state_resources = rec.get("resources", {})
+        assert "5" in state_resources, "resource 5 should be whitelisted (role matches)"
+        assert "6" not in state_resources, "resource 6 should be skipped (role mismatch)"
+
+
+import time as _time_mod
+
+
+def _reload_app_with_crowdsec(monkeypatch, temp_state_file):
+    """Reload app with CrowdSec enabled so TARGETS includes CrowdSecTarget."""
+    monkeypatch.setenv("PANGOLIN_TOKEN", "")
+    monkeypatch.setenv("RESOURCE_IDS", "5")
+    monkeypatch.setenv("LISTEN_PORT", "0")
+    monkeypatch.setenv("STATE_FILE", temp_state_file)
+    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", "X-Test-Key")
+    monkeypatch.setenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", "v123")
+    monkeypatch.setenv("CROWDSEC_ENABLED", "true")
+    import app as _app
+    return importlib.reload(_app)
+
+
+def _standard_fake_http_json(method, url, body=None):
+    """Shared fake http_json for resource 5 with roleId 5 — used in CrowdSec tests."""
+    if "user-by-username" in url:
+        return {"data": {"roleIds": [5]}, "success": True, "error": False}
+    if "/resource/5/roles" in url:
+        return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
+    if url.endswith("/resource/5"):
+        return {"data": {"resourceId": 5, "name": "Jellyfin", "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
+    if "/rules" in url:
+        return {"data": {"rules": []}}
+    if method == "PUT":
+        return {"success": True, "data": {"rule": {"ruleId": 99}}}
+    return {}
+
+
+def test_add_ip_to_targets_fails_closed_empty_intersection(monkeypatch, app_module):
+    """User exists but none of their roles match any configured resource — fail-closed."""
+    app = app_module
+
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+
+    def fake_http_json(method, url, body=None):
+        if "user-by-username" in url:
+            # User has roleId 99 which matches no resource
+            return {"data": {"roleIds": [99]}, "success": True, "error": False}
+        if "/resource/5/roles" in url:
+            # Resource 5 only allows roleId 5
+            return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
+        return {}
+
+    monkeypatch.setattr(app, "http_json", fake_http_json)
+
+    results = app.add_ip_to_targets("1.2.3.4", remote_user="nobody@example.com")
+
+    assert results["pangolin"]["ok"] is False
+    assert "not authorised" in results["pangolin"]["detail"]
+    assert results["crowdsec"]["detail"] == "not reached"
+
+
+def test_add_ip_to_targets_fails_closed_user_not_found(monkeypatch, app_module):
+    """user-by-username returns no roleIds field (user not in org) — fail-closed."""
+    app = app_module
+
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+
+    def fake_http_json(method, url, body=None):
+        if "user-by-username" in url:
+            # No roleIds in response — user not found
+            return {"data": {}, "success": False, "error": True}
+        return {}
+
+    monkeypatch.setattr(app, "http_json", fake_http_json)
+
+    results = app.add_ip_to_targets("1.2.3.4", remote_user="ghost@example.com")
+
+    assert results["pangolin"]["ok"] is False
+    assert "authorization failed" in results["pangolin"]["detail"].lower()
+    assert results["crowdsec"]["detail"] == "not reached"
+
+
+def test_add_ip_to_targets_fails_closed_on_roles_api_error(monkeypatch, app_module):
+    """get_resource_allowed_role_ids raises (e.g. 403) — fail-closed, no rule created."""
+    app = app_module
+    # Suppress retry sleep so the test does not take 3+ seconds
+    monkeypatch.setattr(_time_mod, "sleep", lambda _: None)
+
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+
+    def fake_http_json(method, url, body=None):
+        if "user-by-username" in url:
+            return {"data": {"roleIds": [5]}, "success": True, "error": False}
+        if "/resource/5/roles" in url:
+            raise RuntimeError("HTTP 403 Forbidden: key lacks List Allowed Resource Roles permission")
+        return {}
+
+    monkeypatch.setattr(app, "http_json", fake_http_json)
+
+    with app.state_lock:
+        app.state.clear()
+
+    results = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+
+    assert results["pangolin"]["ok"] is False
+    assert "authorization failed" in results["pangolin"]["detail"].lower()
+    assert results["crowdsec"]["detail"] == "not reached"
+    # No state entry should have been written
+    with app.state_lock:
+        assert "1.2.3.4" not in app.state
+
+
+def test_add_ip_to_targets_fails_closed_on_resource_metadata_error(monkeypatch, app_module):
+    """get_resource raises after successful role intersection — fail-closed, no rule created."""
+    app = app_module
+    monkeypatch.setattr(_time_mod, "sleep", lambda _: None)
+
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+
+    def fake_http_json(method, url, body=None):
+        if "user-by-username" in url:
+            return {"data": {"roleIds": [5]}, "success": True, "error": False}
+        if "/resource/5/roles" in url:
+            return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
+        if url.endswith("/resource/5"):
+            raise RuntimeError("HTTP 403 Forbidden: key lacks Get Resource permission")
+        return {}
+
+    monkeypatch.setattr(app, "http_json", fake_http_json)
+
+    with app.state_lock:
+        app.state.clear()
+
+    results = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+
+    assert results["pangolin"]["ok"] is False
+    assert "authorization failed" in results["pangolin"]["detail"].lower()
+    assert results["crowdsec"]["detail"] == "not reached"
+    with app.state_lock:
+        assert "1.2.3.4" not in app.state
+
+
+def test_add_ip_to_targets_pangolin_rule_creation_failure(monkeypatch, app_module):
+    """Intersection succeeds but rule creation (PUT) fails — pangolin ok=False."""
+    app = app_module
+    monkeypatch.setattr(_time_mod, "sleep", lambda _: None)
+
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+
+    def fake_http_json(method, url, body=None):
+        if "user-by-username" in url:
+            return {"data": {"roleIds": [5]}, "success": True, "error": False}
+        if "/resource/5/roles" in url:
+            return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
+        if url.endswith("/resource/5"):
+            return {"data": {"resourceId": 5, "name": "Jellyfin", "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
+        if "/rules" in url:
+            return {"data": {"rules": []}}
+        if method == "PUT":
+            raise RuntimeError("HTTP 500 Internal Server Error: rule creation failed")
+        return {}
+
+    monkeypatch.setattr(app, "http_json", fake_http_json)
+
+    with app.state_lock:
+        app.state.clear()
+
+    results = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+
+    assert results["pangolin"]["ok"] is False
+    assert "500" in results["pangolin"]["detail"]
+
+
+def test_add_ip_to_targets_crowdsec_called_when_enabled(monkeypatch, temp_state_file):
+    """CrowdSec add is called alongside Pangolin when CROWDSEC_ENABLED=true."""
+    app = _reload_app_with_crowdsec(monkeypatch, temp_state_file)
+
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+    monkeypatch.setattr(app, "http_json", _standard_fake_http_json)
+
+    crowdsec_calls = []
+    monkeypatch.setattr(app, "crowdsec_add_ip", lambda ip: crowdsec_calls.append(ip))
+
+    with app.state_lock:
+        app.state.clear()
+
+    results = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+
+    assert results["pangolin"]["ok"] is True
+    assert results["crowdsec"]["ok"] is True
+    assert results["crowdsec"]["enabled"] is True
+    assert "1.2.3.4" in crowdsec_calls, "crowdsec_add_ip should have been called"
+
+
+def test_add_ip_to_targets_crowdsec_failure_isolated(monkeypatch, temp_state_file):
+    """CrowdSec failure does not affect Pangolin result — failures reported independently."""
+    app = _reload_app_with_crowdsec(monkeypatch, temp_state_file)
+
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+    monkeypatch.setattr(app, "http_json", _standard_fake_http_json)
+
+    def fake_crowdsec_fail(ip):
+        raise RuntimeError("cscli: command not found")
+
+    monkeypatch.setattr(app, "crowdsec_add_ip", fake_crowdsec_fail)
+
+    with app.state_lock:
+        app.state.clear()
+
+    results = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+
+    assert results["pangolin"]["ok"] is True, "Pangolin should succeed regardless of CrowdSec"
+    assert results["crowdsec"]["ok"] is False
+    assert "cscli" in results["crowdsec"]["detail"]
