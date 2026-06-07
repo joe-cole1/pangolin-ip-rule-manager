@@ -1,6 +1,6 @@
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import ipaddress
 
 
