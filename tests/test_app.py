@@ -685,7 +685,7 @@ def test_add_ip_to_targets_crowdsec_failure_isolated(monkeypatch, temp_state_fil
 
 
 # ---------------------------------------------------------------------------
-# Tests for removal of custom passthrough header
+# Tests for authorisation logic and passthrough header removal
 # ---------------------------------------------------------------------------
 
 def test_add_ip_to_targets_authorised_via_direct_user_assignment(monkeypatch, app_module):
@@ -765,6 +765,7 @@ def test_add_ip_to_targets_fails_closed_on_users_api_error(monkeypatch, app_modu
 
 
 
+def test_app_loads_without_custom_header_env(monkeypatch, temp_state_file):
     """App must load successfully without EXPECTED_PANGOLIN_CUSTOM_HEADER_* env vars.
     Previously these were mandatory and the module raised RuntimeError on import without them.
     """
@@ -848,3 +849,72 @@ def test_no_remote_user_fails_closed_no_ip_added(monkeypatch, temp_state_file):
         assert resources == {}, (
             f"No resources should be whitelisted when Remote-User is absent, got: {resources}"
         )
+
+# ---------------------------------------------------------------------------
+# Unit tests for _retry() auth-error abort (Item 2 — v2.2.2)
+# ---------------------------------------------------------------------------
+
+def test_retry_aborts_immediately_on_401():
+    """_retry() must not sleep or retry on HTTP 401 — raise on first attempt."""
+    import pangolin_connector
+    import time as _time
+
+    sleep_calls = []
+    original_sleep = _time.sleep
+
+    attempts = {"count": 0}
+
+    def fn():
+        attempts["count"] += 1
+        raise RuntimeError("HTTP 401 Unauthorized: invalid token")
+
+    # Patch time.sleep inside pangolin_connector to detect any retry sleep
+    original = pangolin_connector.time.sleep
+    pangolin_connector.time.sleep = lambda s: sleep_calls.append(s)
+    try:
+        try:
+            pangolin_connector._retry(fn, attempts=3, backoff=1.0, label="test-401")
+        except RuntimeError as e:
+            assert "401" in str(e)
+        else:
+            raise AssertionError("_retry should have raised")
+    finally:
+        pangolin_connector.time.sleep = original
+
+    assert attempts["count"] == 1, (
+        f"_retry must not retry on 401 — expected 1 attempt, got {attempts['count']}"
+    )
+    assert sleep_calls == [], (
+        f"_retry must not sleep on 401 — got sleep calls: {sleep_calls}"
+    )
+
+
+def test_retry_aborts_immediately_on_403():
+    """_retry() must not sleep or retry on HTTP 403 — raise on first attempt."""
+    import pangolin_connector
+
+    sleep_calls = []
+    attempts = {"count": 0}
+
+    def fn():
+        attempts["count"] += 1
+        raise RuntimeError("HTTP 403 Forbidden: key lacks permission")
+
+    original = pangolin_connector.time.sleep
+    pangolin_connector.time.sleep = lambda s: sleep_calls.append(s)
+    try:
+        try:
+            pangolin_connector._retry(fn, attempts=3, backoff=1.0, label="test-403")
+        except RuntimeError as e:
+            assert "403" in str(e)
+        else:
+            raise AssertionError("_retry should have raised")
+    finally:
+        pangolin_connector.time.sleep = original
+
+    assert attempts["count"] == 1, (
+        f"_retry must not retry on 403 — expected 1 attempt, got {attempts['count']}"
+    )
+    assert sleep_calls == [], (
+        f"_retry must not sleep on 403 — got sleep calls: {sleep_calls}"
+    )
