@@ -1,0 +1,22 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: "✨ Enhancements"
+      labels:
+        - enhancement
+        - feature
+        - new
+    - title: "🪲 Bug Fixes"
+      labels:
+        - bug
+        - fix
+    - title: "🔒 Security"
+      labels:
+        - security
+    - title: "🔩 Miscellaneous"
+      labels:
+        - dependencies
+        - chore
+        - documentation
