@@ -176,9 +176,13 @@ def list_org_resources(ctx: PangolinContext, org_id: str) -> None:
         raise e
 
 
-def get_user_role_ids(ctx: PangolinContext, org_id: str, username: str) -> list[int]:
-    """Return the list of roleIds for the given username in the org.
+def get_user_info(ctx: PangolinContext, org_id: str, username: str) -> tuple[str, list[int]]:
+    """Return (userId, roleIds) for the given username in the org.
     Raises RuntimeError on any failure (caller is responsible for fail-closed behaviour).
+
+    Replaces the former get_user_role_ids(); userId is now also returned so that direct
+    resource-user assignments can be checked in filter_resources_for_user without an
+    additional API call.
     """
     if not ctx.token:
         raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up user")
@@ -187,10 +191,12 @@ def get_user_role_ids(ctx: PangolinContext, org_id: str, username: str) -> list[
         lambda: ctx.http_json("GET", url),
         label=f"GET user-by-username username={username}",
     )
-    role_ids = resp.get("data", {}).get("roleIds")
-    if role_ids is None:
+    data = resp.get("data", {})
+    role_ids = data.get("roleIds")
+    user_id = data.get("userId")
+    if role_ids is None or user_id is None:
         raise RuntimeError(f"User {username!r} not found in org {org_id!r} (or unexpected response shape)")
-    return role_ids
+    return user_id, role_ids
 
 
 def get_resource_allowed_role_ids(ctx: PangolinContext, rid: int) -> set[int]:
@@ -206,6 +212,23 @@ def get_resource_allowed_role_ids(ctx: PangolinContext, rid: int) -> set[int]:
     )
     roles = resp.get("data", {}).get("roles", [])
     return {r["roleId"] for r in roles if "roleId" in r}
+
+
+def get_resource_allowed_user_ids(ctx: PangolinContext, rid: int) -> set[str]:
+    """Return the set of userIds directly assigned to the given resource.
+    This covers the 'Users' section in Pangolin Access Controls, which is separate from
+    role-based access. Both paths grant access in Pangolin's SSO check; we mirror that here.
+    Raises RuntimeError on any failure.
+    """
+    if not ctx.token:
+        raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up resource users")
+    url = f"{ctx.url}/v1/resource/{rid}/users"
+    resp = _retry(
+        lambda: ctx.http_json("GET", url),
+        label=f"GET resource/{rid}/users",
+    )
+    users = resp.get("data", {}).get("users", [])
+    return {u["userId"] for u in users if "userId" in u}
 
 
 def get_resource(ctx: PangolinContext, rid: int) -> dict:
@@ -233,16 +256,27 @@ def get_resource(ctx: PangolinContext, rid: int) -> dict:
 def filter_resources_for_user(ctx: PangolinContext, org_id: str, username: str) -> list[dict]:
     """Return the subset of ctx.resource_ids the user is authorised for, with metadata.
     Each entry is {"resourceId": int, "name": str, "fullDomain": str, "ssl": bool}.
-    Raises on any API error (fail-closed). Returns an empty list if the
-    intersection is empty but no error occurred.
+
+    Mirrors Pangolin's own SSO access check: a user is authorised for a resource if
+    *either* one of their roles is allowed on that resource (role-based) *or* they are
+    directly assigned to the resource via the Users section (direct-user). Either path
+    is sufficient — matching Pangolin's OR logic in isUserAllowedToAccessResource().
+
+    Raises on any API error (fail-closed). Returns an empty list if no resource matches
+    but no error occurred.
     """
-    user_role_ids = set(get_user_role_ids(ctx, org_id, username))
+    user_id, user_role_ids_list = get_user_info(ctx, org_id, username)
+    user_role_ids = set(user_role_ids_list)
     effective: list[dict] = []
     for rid in ctx.resource_ids:
         resource_role_ids = get_resource_allowed_role_ids(ctx, rid)
-        if user_role_ids & resource_role_ids:
+        resource_user_ids = get_resource_allowed_user_ids(ctx, rid)
+        role_match = bool(user_role_ids & resource_role_ids)
+        user_match = user_id in resource_user_ids
+        if role_match or user_match:
+            reason = "role" if role_match else "direct-user"
             meta = get_resource(ctx, rid)
-            print(f"[pangolin] user {username!r} authorised for resource {rid} ({meta.get('name')})")
+            print(f"[pangolin] user {username!r} authorised for resource {rid} ({meta.get('name')}) via {reason}")
             effective.append(meta)
         else:
             print(f"[pangolin] user {username!r} not authorised for resource {rid} — skipping")

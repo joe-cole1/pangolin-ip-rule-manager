@@ -1,6 +1,6 @@
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import ipaddress
 
 
@@ -423,8 +423,6 @@ def create_image_request_handler(ctx: dict):
     """
     Factory that returns an ImageRequestHandler class bound to the provided context.
     Expected ctx keys:
-      - expected_header_key: str
-      - expected_header_value: str
       - update_enabled: bool
       - retention_minutes: int
       - crowdsec_enabled: bool
@@ -498,15 +496,6 @@ def create_image_request_handler(ctx: dict):
             remote_user = self.headers.get("Remote-User", "")
 
             print(f"New request from {ip}  user: {remote_user}  path: {path}")
-
-            # Enforce Pangolin custom header (mandatory)
-            actual = self.headers.get(ctx["expected_header_key"]) if ctx.get("expected_header_key") else None
-            if actual is None or actual != ctx.get("expected_header_value"):
-                self.send_response(403)
-                self.end_headers()
-                self.wfile.write(b"Forbidden: missing or invalid Pangolin custom header")
-                print(f"[error] Missing or invalid Pangolin custom header: {actual}")
-                return
 
             lower_path = path.lower()
 

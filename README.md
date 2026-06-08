@@ -37,13 +37,11 @@ A lightweight Python service that automatically manages Pangolin IP bypass rules
   - [Minimum Required Variables](#minimum-required-variables)
 - [Configuration Reference](#configuration-reference)
   - [Pangolin Connection](#pangolin-connection)
-  - [Security](#security)
   - [Behaviour](#behaviour)
   - [CrowdSec](#crowdsec)
   - [Optional](#optional)
 - [Pangolin Resource Setup](#pangolin-resource-setup)
   - [SSO Authentication Requirement](#sso-authentication-requirement)
-  - [Custom Passthrough Header](#custom-passthrough-header)
   - [Resource Setup Steps](#resource-setup-steps)
 - [CrowdSec Integration](#crowdsec-integration)
 - [Advanced Features](#advanced-features)
@@ -125,18 +123,16 @@ This means a family member with a limited role only ever bootstraps access to th
 ```
 1. User opens the check-in URL on their phone
 2. Pangolin requires SSO login (if not already authenticated)
-3. Pangolin forwards the request, injecting:
-     - the custom passthrough header (proves the request came via Pangolin)
-     - the Remote-User header (identifies the authenticated user)
-4. Service validates the passthrough header → 403 if missing/wrong
-5. Service reads Remote-User → fail-closed error if absent
-6. Service looks up the user's roleIds in Pangolin
-7. For each resource in RESOURCE_IDS, service checks whether the
+3. Pangolin forwards the request, injecting the Remote-User header
+   (identifies the authenticated user)
+4. Service reads Remote-User → fail-closed error if absent
+5. Service looks up the user's roleIds in Pangolin
+6. For each resource in RESOURCE_IDS, service checks whether the
    user's role is allowed on that resource
-8. For each permitted resource, service creates an IP bypass rule
+7. For each permitted resource, service creates an IP bypass rule
    (and adds the IP to CrowdSec if enabled)
-9. Success page shows an "Open <Name>" link for each whitelisted resource
-10. Rules expire automatically after RETENTION_MINUTES
+8. Success page shows an "Open <Name>" link for each whitelisted resource
+9. Rules expire automatically after RETENTION_MINUTES
 ```
 
 ---
@@ -155,19 +151,15 @@ Create a Pangolin API token with the following permissions. The first group cove
 
 **Rule management:**
 
+- **Get Organization User** — look up a user by username to read their roles
 - **List Resources** — discover resources in the organization (used at startup)
+- **Get Resource** — fetch each resource's name and public domain
+- **List Allowed Resource Roles** — read which roles are permitted on each resource
 - **List Resource Rules** — read existing rules for managed resources
+- **List Resource Users** — read users directly assigned to a resource
 - **Create Resource Rule** — create IP bypass rules
 - **Delete Resource Rule** — remove expired rules during cleanup
 - **Update Resource Rule** — manage existing rules
-
-**Role-based access control and dashboard links:**
-
-- **Get Organization User** — look up a user by username to read their roles. *Note: this is distinct from "List Users" — the per-user lookup endpoint requires "Get Organization User" specifically, and will return `403` without it.*
-- **List Allowed Resource Roles** — read which roles are permitted on each resource (for the intersection check)
-- **Get Resource** — fetch each resource's name and public domain (for the per-resource success-page links)
-
-The `pangolin-api-key-permissions.png` screenshot in the repository illustrates the selections in the Pangolin UI. If you are upgrading from an earlier version, make sure the three role-based permissions above are added to your existing token.
 
 ---
 
@@ -192,10 +184,6 @@ services:
       PANGOLIN_TOKEN: ${PANGOLIN_TOKEN}
       ORG_ID: ${ORG_ID}
       RESOURCE_IDS: ${RESOURCE_IDS}
-
-      # Custom header gate — REQUIRED, app will not start without these
-      EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY: ${EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY}
-      EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE: ${EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE}
 
       # Retention and cleanup
       RETENTION_MINUTES: "43200"       # 30 days
@@ -249,9 +237,8 @@ Set `RESOURCE_IDS` to the correct IDs and restart.
 At minimum you need:
 
 - `PANGOLIN_URL`, `PANGOLIN_TOKEN`, `ORG_ID`, `RESOURCE_IDS`
-- `EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY` and `EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE`
 
-The app will **refuse to start** if the custom header variables are missing or empty.
+The app will **refuse to start** if `PANGOLIN_URL` or `RESOURCE_IDS` are missing or empty.
 
 ---
 
@@ -265,13 +252,6 @@ The app will **refuse to start** if the custom header variables are missing or e
 | `PANGOLIN_TOKEN` | — | **Yes** | Bearer token for the Pangolin API. Rules will not be created or deleted without this. |
 | `ORG_ID` | — | **Yes** | Your Pangolin organization ID. Used to list resources at startup and to look up users during check-in. |
 | `RESOURCE_IDS` | — | **Yes** | Comma-separated list of Pangolin resource IDs the service is permitted to manage (e.g., `3,5,12`). This is the administrative safety gate; per-user role permissions further filter it. |
-
-### Security
-
-| Variable | Default | Required | Description |
-|---|---|---|---|
-| `EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY` | — | **Yes** | The header name configured under **Custom Request Headers** on the Pangolin resource fronting this service. The app will not start without this. Recommended value: `pangoliniprulemanager` |
-| `EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE` | — | **Yes** | The expected value of that header. Requests without this exact value receive a `403`. The app will not start without this. Generate a strong secret with `openssl rand -hex 32`. |
 
 ### Behaviour
 
@@ -319,34 +299,11 @@ Without `Remote-User`, the service cannot identify who is checking in, and by de
 
 This is intentional. Requiring SSO on the check-in resource is what makes role-based access control possible and what guarantees the service never grants access to an unidentified caller.
 
-### Custom Passthrough Header
-
-This is the mechanism that prevents anyone from bypassing the service by hitting it directly, without going through Pangolin.
-
-Pangolin injects a configured header into every request it forwards. The service rejects any request that arrives without this header and exact value, returning `403` immediately — before any rule logic runs.
-
-**In Pangolin:** open the resource, scroll to **Custom Request Headers**, and add:
-
-| Header name | Value |
-|---|---|
-| `pangoliniprulemanager` | `pangolin_ip_rule_manager_authorized` |
-
-You may use any header name and value, but they must match exactly what you set in `EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY` and `EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE`. For a stronger secret, generate one with `openssl rand -hex 32`.
-
-**In your environment variables:**
-```
-EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY=pangoliniprulemanager
-EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE=pangolin_ip_rule_manager_authorized
-```
-
-Any request arriving without this header — or with the wrong value — receives an immediate `403`. This applies to every path, including `.png` and `.gif` check-in URLs.
-
 ### Resource Setup Steps
 
 1. In Pangolin, create a new resource (e.g., `checkin.yourdomain.com`) pointing to this container on the configured `LISTEN_PORT` (default `8080`)
 2. Configure the resource for **SSO authentication** (see above) so `Remote-User` is forwarded
-3. Add the **Custom Request Header** described above
-4. Confirm your API token has all the [required permissions](#api-token-permissions)
+3. Confirm your API token has all the [required permissions](#api-token-permissions)
 
 ---
 
@@ -373,7 +330,7 @@ Pangolin and CrowdSec are handled independently. If one succeeds and the other f
 
 When `UPDATE_ENDPOINT_ENABLED=true`, a `/update?ip=<address>` endpoint is available. This lets you manually specify which IP to allowlist rather than using the requester's IP — useful when the phone and TV are on different networks.
 
-The endpoint is protected by the same custom header gate and the same role-based, fail-closed identity check as all other requests. When disabled (the default), the endpoint returns `404` and gives no indication it exists.
+The endpoint is protected by the same role-based, fail-closed identity check as all other requests. When disabled (the default), the endpoint returns `404` and gives no indication it exists.
 
 ```
 GET /update?ip=203.0.113.42
@@ -412,25 +369,23 @@ Replace the URL with your actual check-in domain. The path can be anything as lo
 
 On startup the service:
 
-1. Validates that `EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY` and `EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE` are set — exits with an error if not
-2. Validates that `PANGOLIN_URL` and `RESOURCE_IDS` are set — exits with an error if not
-3. Warns (but does not exit) if `PANGOLIN_TOKEN` is empty or `ORG_ID` is unset
-4. Checks that the state file directory exists and is writable
-5. Queries Pangolin and prints all resources for `ORG_ID` with their IDs, which also serves as a startup connectivity/auth check
-6. If CrowdSec is enabled, ensures the named allowlist exists (creates it if needed)
-7. Loads existing state from the state file
-8. Starts the background cleanup thread
-9. Begins serving HTTP on `LISTEN_PORT`
+1. Validates that `PANGOLIN_URL` and `RESOURCE_IDS` are set — exits with an error if not
+2. Warns (but does not exit) if `PANGOLIN_TOKEN` is empty or `ORG_ID` is unset
+3. Checks that the state file directory exists and is writable
+4. Queries Pangolin and prints all resources for `ORG_ID` with their IDs, which also serves as a startup connectivity/auth check
+5. If CrowdSec is enabled, ensures the named allowlist exists (creates it if needed)
+6. Loads existing state from the state file
+7. Starts the background cleanup thread
+8. Begins serving HTTP on `LISTEN_PORT`
 
 ### On Each Check-in Request
 
-1. The mandatory custom header is validated — `403` if missing or wrong
-2. The `Remote-User` header is read. If absent, the service **fails closed**: it whitelists nothing and returns an error result with the reason in the technical details
-3. The client IP is extracted in priority order: `X-Real-IP` → first entry of `X-Forwarded-For` → socket address. Header IPs must be globally routable (private, loopback, link-local, and multicast addresses are rejected and the next candidate is tried)
-4. The user's `roleIds` are looked up in Pangolin. For each resource in `RESOURCE_IDS`, the service checks whether the user's role is permitted on that resource and builds the list of authorized resources. **Any API failure here causes a fail-closed error — nothing is whitelisted**
-5. For each authorized resource, a Pangolin IP rule is created (if one does not already exist), and the resource's name and domain are fetched for the success-page link
-6. If CrowdSec is enabled and the IP is not already in the allowlist cache, it is added via `cscli`
-7. The response depends on the request's `Accept` header:
+1. The `Remote-User` header is read. If absent, the service **fails closed**: it whitelists nothing and returns an error result with the reason in the technical details
+2. The client IP is extracted in priority order: `X-Real-IP` → first entry of `X-Forwarded-For` → socket address. Header IPs must be globally routable (private, loopback, link-local, and multicast addresses are rejected and the next candidate is tried)
+3. The user's `roleIds` are looked up in Pangolin. For each resource in `RESOURCE_IDS`, the service checks whether the user's role is permitted on that resource and builds the list of authorized resources. **Any API failure here causes a fail-closed error — nothing is whitelisted**
+4. For each authorized resource, a Pangolin IP rule is created (if one does not already exist), and the resource's name and domain are fetched for the success-page link
+5. If CrowdSec is enabled and the IP is not already in the allowlist cache, it is added via `cscli`
+6. The response depends on the request's `Accept` header:
    - `Accept: text/html` → styled status page showing per-target results, the IP, the expiry time, and an **"Open &lt;Name&gt;"** link for each whitelisted resource
    - All other requests → 1×1 transparent image (PNG or GIF depending on the path extension)
 
@@ -454,9 +409,9 @@ State is stored as JSON at `STATE_FILE` (default `/data/state.json`). Mount a na
 
 - **Fail-closed identity:** If the `Remote-User` header is absent or any Pangolin API call fails during authorization, the service whitelists nothing. It never falls back to granting broad access.
 - **Role intersection:** A user only ever bootstraps access to resources their Pangolin role permits, regardless of how many resources `RESOURCE_IDS` contains.
-- **Custom header gate:** All requests — regardless of path — are rejected with `403` if the Pangolin passthrough header is absent or incorrect. This prevents rule injection by anyone who can reach the container directly.
+- **Live user validation:** Every check-in performs a real-time lookup of the `Remote-User` value against the Pangolin API. A request with a forged or unknown username is rejected before any rule is created.
 - **IP validation:** IPs from `X-Real-IP` and `X-Forwarded-For` are validated and must be globally routable. The socket address fallback is not validated, as it is controlled by the OS/kernel rather than the caller.
-- **Header redaction in logs:** `Authorization` and `Proxy-Authorization` headers are redacted in all log output. The custom passthrough header value is replaced with `<present>` or `<missing>` so the secret never appears in logs.
+- **Header redaction in logs:** `Authorization` and `Proxy-Authorization` headers are redacted in all log output.
 - **Secrets:** All credentials should be stored in a secrets manager (e.g., Bitwarden) and injected at runtime. Never hardcode them in compose files or Dockerfiles.
 - **Scope of deletions:** The service only deletes Pangolin rules it created itself. It will never touch rules that existed before it ran.
 - **Docker socket:** If CrowdSec runs in a container, the Docker socket must be mounted read-only. Socket access grants significant host-level capability — keep the container locked down.
