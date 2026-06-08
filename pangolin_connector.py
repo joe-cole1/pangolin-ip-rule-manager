@@ -9,7 +9,9 @@ from urllib.parse import quote
 
 def _retry(fn, *, attempts: int = 3, backoff: float = 1.0, label: str = ""):
     """Call fn() up to `attempts` times, sleeping backoff * 2^n between retries.
-    Only retries on Exception; propagates the final exception if all attempts fail.
+    Aborts immediately (no retry) on HTTP 401 or 403 — auth failures will not
+    resolve with retries and should surface immediately.
+    Propagates the final exception if all attempts fail.
     """
     last_exc: Exception | None = None
     for attempt in range(attempts):
@@ -17,6 +19,10 @@ def _retry(fn, *, attempts: int = 3, backoff: float = 1.0, label: str = ""):
             return fn()
         except Exception as e:
             last_exc = e
+            err_str = str(e)
+            if "HTTP 401" in err_str or "HTTP 403" in err_str:
+                print(f"[retry] {label} aborted — auth error (will not retry): {e}")
+                raise
             if attempt < attempts - 1:
                 wait = backoff * (2 ** attempt)
                 print(f"[retry] {label} attempt {attempt + 1}/{attempts} failed: {e} — retrying in {wait:.1f}s")
