@@ -413,11 +413,15 @@ def test_add_ip_to_targets_intersection_filters_by_role(monkeypatch, app_module)
 
     def fake_http_json(method, url, body=None):
         if "user-by-username" in url:
-            return {"data": {"roleIds": [5]}, "success": True, "error": False}
+            return {"data": {"userId": "user-denise", "roleIds": [5]}, "success": True, "error": False}
         if "/resource/5/roles" in url:
             return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
         if "/resource/6/roles" in url:
             return {"data": {"roles": [{"roleId": 1, "name": "Admin"}]}, "success": True}
+        if "/resource/5/users" in url:
+            return {"data": {"users": []}, "success": True}
+        if "/resource/6/users" in url:
+            return {"data": {"users": []}, "success": True}
         if url.endswith("/resource/5"):
             return {"data": {"resourceId": 5, "name": "Jellyfin",
                              "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
@@ -464,9 +468,11 @@ def _reload_app_with_crowdsec(monkeypatch, temp_state_file):
 def _standard_fake_http_json(method, url, body=None):
     """Shared fake http_json for resource 5 with roleId 5 — used in CrowdSec tests."""
     if "user-by-username" in url:
-        return {"data": {"roleIds": [5]}, "success": True, "error": False}
+        return {"data": {"userId": "user-abc", "roleIds": [5]}, "success": True, "error": False}
     if "/resource/5/roles" in url:
         return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
+    if "/resource/5/users" in url:
+        return {"data": {"users": []}, "success": True}
     if url.endswith("/resource/5"):
         return {"data": {"resourceId": 5, "name": "Jellyfin",
                          "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
@@ -487,11 +493,14 @@ def test_add_ip_to_targets_fails_closed_empty_intersection(monkeypatch, app_modu
 
     def fake_http_json(method, url, body=None):
         if "user-by-username" in url:
-            # User has roleId 99 which matches no resource
-            return {"data": {"roleIds": [99]}, "success": True, "error": False}
+            # User has roleId 99 which matches no resource, and is not directly assigned
+            return {"data": {"userId": "user-nobody", "roleIds": [99]}, "success": True, "error": False}
         if "/resource/5/roles" in url:
             # Resource 5 only allows roleId 5
             return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
+        if "/resource/5/users" in url:
+            # User is not directly assigned either
+            return {"data": {"users": []}, "success": True}
         return {}
 
     monkeypatch.setattr(app, "http_json", fake_http_json)
@@ -538,7 +547,7 @@ def test_add_ip_to_targets_fails_closed_on_roles_api_error(monkeypatch, app_modu
 
     def fake_http_json(method, url, body=None):
         if "user-by-username" in url:
-            return {"data": {"roleIds": [5]}, "success": True, "error": False}
+            return {"data": {"userId": "user-joe", "roleIds": [5]}, "success": True, "error": False}
         if "/resource/5/roles" in url:
             raise RuntimeError("HTTP 403 Forbidden: key lacks List Allowed Resource Roles permission")
         return {}
@@ -569,9 +578,11 @@ def test_add_ip_to_targets_fails_closed_on_resource_metadata_error(monkeypatch, 
 
     def fake_http_json(method, url, body=None):
         if "user-by-username" in url:
-            return {"data": {"roleIds": [5]}, "success": True, "error": False}
+            return {"data": {"userId": "user-joe", "roleIds": [5]}, "success": True, "error": False}
         if "/resource/5/roles" in url:
             return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
+        if "/resource/5/users" in url:
+            return {"data": {"users": []}, "success": True}
         if url.endswith("/resource/5"):
             raise RuntimeError("HTTP 403 Forbidden: key lacks Get Resource permission")
         return {}
@@ -601,9 +612,11 @@ def test_add_ip_to_targets_pangolin_rule_creation_failure(monkeypatch, app_modul
 
     def fake_http_json(method, url, body=None):
         if "user-by-username" in url:
-            return {"data": {"roleIds": [5]}, "success": True, "error": False}
+            return {"data": {"userId": "user-joe", "roleIds": [5]}, "success": True, "error": False}
         if "/resource/5/roles" in url:
             return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
+        if "/resource/5/users" in url:
+            return {"data": {"users": []}, "success": True}
         if url.endswith("/resource/5"):
             return {"data": {"resourceId": 5, "name": "Jellyfin",
                              "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
@@ -675,7 +688,83 @@ def test_add_ip_to_targets_crowdsec_failure_isolated(monkeypatch, temp_state_fil
 # Tests for removal of custom passthrough header
 # ---------------------------------------------------------------------------
 
-def test_app_loads_without_custom_header_env(monkeypatch, temp_state_file):
+def test_add_ip_to_targets_authorised_via_direct_user_assignment(monkeypatch, app_module):
+    """User has no matching role but IS directly assigned to the resource — must be authorised."""
+    app = app_module
+    monkeypatch.setattr(_time_mod, "sleep", lambda _: None)
+
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+
+    def fake_http_json(method, url, body=None):
+        if "user-by-username" in url:
+            # User has a role that does NOT match the resource
+            return {"data": {"userId": "user-direct", "roleIds": [99]}, "success": True, "error": False}
+        if "/resource/5/roles" in url:
+            # Resource only allows roleId 5 — no role match
+            return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
+        if "/resource/5/users" in url:
+            # But user IS directly assigned
+            return {"data": {"users": [{"userId": "user-direct", "username": "direct@example.com"}]}, "success": True}
+        if url.endswith("/resource/5"):
+            return {"data": {"resourceId": 5, "name": "Jellyfin",
+                             "fullDomain": "jellyfin.example.com", "ssl": True}, "success": True}
+        if "/rules" in url:
+            return {"data": {"rules": []}}
+        if method == "PUT":
+            return {"success": True, "data": {"rule": {"ruleId": 99}}}
+        return {}
+
+    monkeypatch.setattr(app, "http_json", fake_http_json)
+
+    with app.state_lock:
+        app.state.clear()
+
+    results = app.add_ip_to_targets("1.2.3.4", remote_user="direct@example.com")
+
+    assert results["pangolin"]["ok"] is True, (
+        "User directly assigned to resource must be authorised even with no role match"
+    )
+    assert len(results["resources"]) == 1
+    assert results["resources"][0]["name"] == "Jellyfin"
+    with app.state_lock:
+        assert "5" in app.state.get("1.2.3.4", {}).get("resources", {})
+
+
+def test_add_ip_to_targets_fails_closed_on_users_api_error(monkeypatch, app_module):
+    """GET /resource/:id/users raises — fail-closed, no rule created."""
+    app = app_module
+    monkeypatch.setattr(_time_mod, "sleep", lambda _: None)
+
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+
+    def fake_http_json(method, url, body=None):
+        if "user-by-username" in url:
+            return {"data": {"userId": "user-joe", "roleIds": [5]}, "success": True, "error": False}
+        if "/resource/5/roles" in url:
+            return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
+        if "/resource/5/users" in url:
+            raise RuntimeError("HTTP 403 Forbidden: key lacks List Resource Users permission")
+        return {}
+
+    monkeypatch.setattr(app, "http_json", fake_http_json)
+
+    with app.state_lock:
+        app.state.clear()
+
+    results = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+
+    assert results["pangolin"]["ok"] is False
+    assert "authorization failed" in results["pangolin"]["detail"].lower()
+    assert results["crowdsec"]["detail"] == "not reached"
+    with app.state_lock:
+        assert "1.2.3.4" not in app.state
+
+
+
     """App must load successfully without EXPECTED_PANGOLIN_CUSTOM_HEADER_* env vars.
     Previously these were mandatory and the module raised RuntimeError on import without them.
     """
