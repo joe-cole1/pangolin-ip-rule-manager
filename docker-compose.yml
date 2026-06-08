@@ -1,7 +1,6 @@
 services:
   pangolin-ip-rule-manager:
-    build: .
-    image: pangolin-ip-rule-manager:latest
+    image: ghcr.io/joe-cole1/pangolin-ip-rule-manager:latest
     container_name: pangolin-ip-rule-manager
 
     environment:
@@ -15,7 +14,7 @@ services:
       RESOURCE_IDS: ${RESOURCE_IDS}
 
       # Retention and cleanup
-      RETENTION_MINUTES: "43200"
+      RETENTION_MINUTES: "1440"
       CLEANUP_INTERVAL_MINUTES: "60"
       RULE_PRIORITY: "0"
       RULES_CACHE_TTL_SECONDS: "3600"
@@ -23,8 +22,11 @@ services:
       # State
       STATE_FILE: /data/state.json
 
+      # Branding
+      SITE_NAME: "" #Shown in HTML page header/footer. Optional
+
       # CrowdSec integration
-      CROWDSEC_ENABLED: "true"
+      CROWDSEC_ENABLED: "false"
       CROWDSEC_ALLOWLIST_NAME: pangolin-ip-rule-manager
       CROWDSEC_CSCLI_BIN: cscli
       CROWDSEC_CMD_PREFIX: docker exec crowdsec
@@ -33,18 +35,13 @@ services:
       # Optional endpoints
       UPDATE_ENDPOINT_ENABLED: "false"
 
-    networks:
-      - pangolin
-
     volumes:
       - pangolin-ip-rule-manager-data:/data
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+      # Required only for CrowdSec integration via `docker exec`. See security note below.
+      # - /var/run/docker.sock:/var/run/docker.sock:ro
 
     restart: unless-stopped
 
 volumes:
   pangolin-ip-rule-manager-data: {}
-
-networks:
-  pangolin:
-    external: true
