@@ -764,7 +764,6 @@ def test_add_ip_to_targets_fails_closed_on_users_api_error(monkeypatch, app_modu
         assert "1.2.3.4" not in app.state
 
 
-
 def test_app_loads_without_custom_header_env(monkeypatch, temp_state_file):
     """App must load successfully without EXPECTED_PANGOLIN_CUSTOM_HEADER_* env vars.
     Previously these were mandatory and the module raised RuntimeError on import without them.
@@ -854,14 +853,13 @@ def test_no_remote_user_fails_closed_no_ip_added(monkeypatch, temp_state_file):
 # Unit tests for _retry() auth-error abort (Item 2 — v2.2.2)
 # ---------------------------------------------------------------------------
 
+
 def test_retry_aborts_immediately_on_401():
     """_retry() must not sleep or retry on HTTP 401 — raise on first attempt."""
     import pangolin_connector
     import time as _time
 
     sleep_calls = []
-    original_sleep = _time.sleep
-
     attempts = {"count": 0}
 
     def fn():
@@ -918,3 +916,336 @@ def test_retry_aborts_immediately_on_403():
     assert sleep_calls == [], (
         f"_retry must not sleep on 403 — got sleep calls: {sleep_calls}"
     )
+
+# ---------------------------------------------------------------------------
+# redact_headers_for_log — pure function, security-relevant
+# ---------------------------------------------------------------------------
+
+def test_redact_headers_authorization(app_module):
+    """Authorization header value must be replaced with <redacted>."""
+    app = app_module
+    result = app.redact_headers_for_log({"Authorization": "Bearer secret-token"})
+    assert result["Authorization"] == "<redacted>"
+
+
+def test_redact_headers_proxy_authorization(app_module):
+    """Proxy-Authorization header value must be replaced with <redacted>."""
+    app = app_module
+    result = app.redact_headers_for_log({"Proxy-Authorization": "Basic abc123"})
+    assert result["Proxy-Authorization"] == "<redacted>"
+
+
+def test_redact_headers_case_insensitive(app_module):
+    """Redaction must match header names case-insensitively."""
+    app = app_module
+    result = app.redact_headers_for_log({
+        "authorization": "Bearer lower",
+        "AUTHORIZATION": "Bearer upper",
+        "Authorization": "Bearer mixed",
+    })
+    for k in result:
+        assert result[k] == "<redacted>", f"Expected <redacted> for {k!r}, got {result[k]!r}"
+
+
+def test_redact_headers_passthrough(app_module):
+    """Non-sensitive headers must be returned unchanged."""
+    app = app_module
+    headers = {
+        "X-Real-IP": "1.2.3.4",
+        "Remote-User": "joe@example.com",
+        "Content-Type": "application/json",
+    }
+    result = app.redact_headers_for_log(headers)
+    assert result == headers
+
+
+def test_redact_headers_empty(app_module):
+    """Empty dict input must return empty dict."""
+    app = app_module
+    assert app.redact_headers_for_log({}) == {}
+
+
+def test_redact_headers_returns_copy(app_module):
+    """redact_headers_for_log must not mutate the original dict."""
+    app = app_module
+    original = {"Authorization": "Bearer secret", "X-Real-IP": "1.2.3.4"}
+    _ = app.redact_headers_for_log(original)
+    assert original["Authorization"] == "Bearer secret", "Original dict must not be mutated"
+
+
+# ---------------------------------------------------------------------------
+# save_state / load_state round-trip
+# ---------------------------------------------------------------------------
+
+def test_save_and_load_state_round_trip(monkeypatch, app_module, temp_state_file):
+    """State written by save_state must be recovered exactly by load_state."""
+    app = app_module
+    monkeypatch.setattr(app, "STATE_FILE", temp_state_file)
+
+    test_state = {
+        "1.2.3.4": {
+            "last_seen": "2025-01-01T00:00:00+00:00",
+            "resources": {"5": {"created_by_us": True}},
+        },
+        "5.6.7.8": {
+            "last_seen": "2025-06-01T12:00:00+00:00",
+            "resources": {"5": {"created_by_us": False}},
+        },
+    }
+    with app.state_lock:
+        app.state.clear()
+        app.state.update(test_state)
+
+    app.save_state()
+
+    # Clear in-memory state to prove load_state actually reads from disk
+    with app.state_lock:
+        app.state.clear()
+
+    app.load_state()
+
+    with app.state_lock:
+        assert app.state == test_state
+
+
+def test_load_state_ignores_missing_file(monkeypatch, app_module, tmp_path):
+    """load_state must not raise when the state file does not exist."""
+    app = app_module
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "nonexistent.json"))
+    with app.state_lock:
+        app.state.clear()
+    app.load_state()  # must not raise
+    with app.state_lock:
+        assert app.state == {}
+
+
+def test_load_state_ignores_non_dict_content(monkeypatch, app_module, tmp_path):
+    """load_state must leave state unchanged if the file contains a non-dict."""
+    import json as _json
+    app = app_module
+    state_file = str(tmp_path / "state.json")
+    with open(state_file, "w") as f:
+        _json.dump([1, 2, 3], f)
+    monkeypatch.setattr(app, "STATE_FILE", state_file)
+    with app.state_lock:
+        app.state.clear()
+        app.state["sentinel"] = {"last_seen": "x", "resources": {}}
+    app.load_state()
+    with app.state_lock:
+        # State must be unchanged — list JSON is not a valid state dict
+        assert "sentinel" in app.state
+
+
+# ---------------------------------------------------------------------------
+# _retry — retry behaviour and exception propagation
+# ---------------------------------------------------------------------------
+
+def test_retry_retries_on_non_auth_error():
+    """_retry must attempt the function the full number of times on non-auth errors."""
+    import pangolin_connector
+
+    attempts = {"count": 0}
+    sleep_calls = []
+
+    def fn():
+        attempts["count"] += 1
+        raise RuntimeError("HTTP 500 Internal Server Error")
+
+    original = pangolin_connector.time.sleep
+    pangolin_connector.time.sleep = lambda s: sleep_calls.append(s)
+    try:
+        try:
+            pangolin_connector._retry(fn, attempts=3, backoff=1.0, label="test-500")
+        except RuntimeError:
+            pass
+    finally:
+        pangolin_connector.time.sleep = original
+
+    assert attempts["count"] == 3, (
+        f"Expected 3 attempts on non-auth error, got {attempts['count']}"
+    )
+    assert len(sleep_calls) == 2, (
+        f"Expected 2 sleep calls between 3 attempts, got {sleep_calls}"
+    )
+
+
+def test_retry_propagates_last_exception():
+    """_retry must raise the exception from the final attempt, not the first."""
+    import pangolin_connector
+
+    call_num = {"n": 0}
+
+    def fn():
+        call_num["n"] += 1
+        raise RuntimeError(f"error on attempt {call_num['n']}")
+
+    original = pangolin_connector.time.sleep
+    pangolin_connector.time.sleep = lambda s: None
+    try:
+        try:
+            pangolin_connector._retry(fn, attempts=3, backoff=0.0, label="test-last-exc")
+            raise AssertionError("_retry should have raised")
+        except RuntimeError as e:
+            assert "attempt 3" in str(e), (
+                f"Expected exception from final attempt, got: {e}"
+            )
+    finally:
+        pangolin_connector.time.sleep = original
+
+
+# ---------------------------------------------------------------------------
+# _build_cscli_cmd — pure function
+# ---------------------------------------------------------------------------
+
+def test_build_cscli_cmd_no_prefix(monkeypatch):
+    """Without a CMD_PREFIX, result must be [bin] + args."""
+    import crowdsec_connector
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CMD_PREFIX", "")
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CSCLI_BIN", "cscli")
+    result = crowdsec_connector._build_cscli_cmd(["allowlist", "list"])
+    assert result == ["cscli", "allowlist", "list"]
+
+
+def test_build_cscli_cmd_with_single_word_prefix(monkeypatch):
+    """Single-word CMD_PREFIX must be prepended as one element."""
+    import crowdsec_connector
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CMD_PREFIX", "sudo")
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CSCLI_BIN", "cscli")
+    result = crowdsec_connector._build_cscli_cmd(["allowlist", "list"])
+    assert result == ["sudo", "cscli", "allowlist", "list"]
+
+
+def test_build_cscli_cmd_with_multi_word_prefix(monkeypatch):
+    """Multi-word CMD_PREFIX must be shell-split into separate elements."""
+    import crowdsec_connector
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec crowdsec")
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CSCLI_BIN", "cscli")
+    result = crowdsec_connector._build_cscli_cmd(["allowlist", "add", "my-list", "1.2.3.4"])
+    assert result == ["docker", "exec", "crowdsec", "cscli", "allowlist", "add", "my-list", "1.2.3.4"]
+
+
+def test_build_cscli_cmd_custom_bin(monkeypatch):
+    """Custom CROWDSEC_CSCLI_BIN path must appear in the command."""
+    import crowdsec_connector
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CMD_PREFIX", "")
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CSCLI_BIN", "/usr/local/bin/cscli")
+    result = crowdsec_connector._build_cscli_cmd(["allowlist", "list"])
+    assert result == ["/usr/local/bin/cscli", "allowlist", "list"]
+
+
+# ---------------------------------------------------------------------------
+# _parse_crowdsec_entries_from_json — pure function, multiple input shapes
+# ---------------------------------------------------------------------------
+
+def test_parse_crowdsec_list_of_strings():
+    """Plain list of IP strings must be parsed correctly."""
+    import crowdsec_connector
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '["1.2.3.4", "5.6.7.8"]'
+    )
+    assert result == {"1.2.3.4", "5.6.7.8"}
+
+
+def test_parse_crowdsec_list_of_dicts_ip_key():
+    """List of dicts with 'ip' key must extract IP values."""
+    import crowdsec_connector
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '[{"ip": "1.2.3.4"}, {"ip": "5.6.7.8"}]'
+    )
+    assert result == {"1.2.3.4", "5.6.7.8"}
+
+
+def test_parse_crowdsec_list_of_dicts_value_key():
+    """List of dicts with 'value' key must extract IP values."""
+    import crowdsec_connector
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '[{"value": "9.9.9.9"}]'
+    )
+    assert result == {"9.9.9.9"}
+
+
+def test_parse_crowdsec_dict_with_entries_key():
+    """Dict with 'entries' key containing IP list must be parsed."""
+    import crowdsec_connector
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '{"entries": ["1.1.1.1", "2.2.2.2"]}'
+    )
+    assert result == {"1.1.1.1", "2.2.2.2"}
+
+
+def test_parse_crowdsec_dict_with_ips_key():
+    """Dict with 'ips' key must be parsed."""
+    import crowdsec_connector
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '{"ips": ["3.3.3.3"]}'
+    )
+    assert result == {"3.3.3.3"}
+
+
+def test_parse_crowdsec_cidr_normalised_to_network_address():
+    """CIDR notation must be accepted and normalised to the network address."""
+    import crowdsec_connector
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '["10.0.0.5/24"]'
+    )
+    assert result == {"10.0.0.0"}
+
+
+def test_parse_crowdsec_invalid_json_returns_empty():
+    """Malformed JSON must return an empty set without raising."""
+    import crowdsec_connector
+    result = crowdsec_connector._parse_crowdsec_entries_from_json("not json at all")
+    assert result == set()
+
+
+def test_parse_crowdsec_invalid_ip_skipped():
+    """Invalid IP strings in the list must be silently skipped."""
+    import crowdsec_connector
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '["1.2.3.4", "not-an-ip", "5.6.7.8"]'
+    )
+    assert result == {"1.2.3.4", "5.6.7.8"}
+
+
+def test_parse_crowdsec_empty_list():
+    """Empty list must return empty set."""
+    import crowdsec_connector
+    result = crowdsec_connector._parse_crowdsec_entries_from_json("[]")
+    assert result == set()
+
+
+def test_parse_crowdsec_unknown_structure_returns_empty():
+    """Dict with no recognised key must return empty set."""
+    import crowdsec_connector
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '{"unknown_key": ["1.2.3.4"]}'
+    )
+    assert result == set()
+
+
+# ---------------------------------------------------------------------------
+# cleanup_old_ips — invalid last_seen format
+# ---------------------------------------------------------------------------
+
+def test_cleanup_skips_ip_with_invalid_last_seen_format(monkeypatch, app_module):
+    """An IP with an unparseable last_seen value must be skipped, not removed."""
+    app = app_module
+    monkeypatch.setattr(app, "RETENTION_MINUTES", 0)
+
+    ip = "8.8.8.8"
+    with app.state_lock:
+        app.state[ip] = {
+            "last_seen": "not-a-valid-datetime",
+            "resources": {"5": {"created_by_us": True}},
+        }
+
+    delete_calls = []
+    monkeypatch.setattr(app, "delete_ip_rule_if_created_by_us", lambda i, r: delete_calls.append((i, r)) or True)
+    monkeypatch.setattr(app, "expire_ip_from_targets", lambda _ip: None)
+
+    app.cleanup_old_ips()
+
+    # IP must remain in state — invalid timestamp means skip, not delete
+    with app.state_lock:
+        assert ip in app.state, "IP with invalid last_seen must not be removed"
+    assert delete_calls == [], "No delete must be attempted for IP with invalid last_seen"
