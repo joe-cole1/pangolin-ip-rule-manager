@@ -151,19 +151,15 @@ Create a Pangolin API token with the following permissions. The first group cove
 
 **Rule management:**
 
+- **Get Organization User** — look up a user by username to read their roles
 - **List Resources** — discover resources in the organization (used at startup)
+- **Get Resource** — fetch each resource's name and public domain
+- **List Allowed Resource Roles** — read which roles are permitted on each resource
 - **List Resource Rules** — read existing rules for managed resources
+- **List Resource Users** — read users directly assigned to a resource
 - **Create Resource Rule** — create IP bypass rules
 - **Delete Resource Rule** — remove expired rules during cleanup
 - **Update Resource Rule** — manage existing rules
-
-**Role-based access control and dashboard links:**
-
-- **Get Organization User** — look up a user by username to read their roles. *Note: this is distinct from "List Users" — the per-user lookup endpoint requires "Get Organization User" specifically, and will return `403` without it.*
-- **List Allowed Resource Roles** — read which roles are permitted on each resource (for the intersection check)
-- **Get Resource** — fetch each resource's name and public domain (for the per-resource success-page links)
-
-The `pangolin-api-key-permissions.png` screenshot in the repository illustrates the selections in the Pangolin UI. If you are upgrading from an earlier version, make sure the three role-based permissions above are added to your existing token.
 
 ---
 
