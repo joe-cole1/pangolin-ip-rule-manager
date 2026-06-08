@@ -24,7 +24,7 @@ services:
       STATE_FILE: /data/state.json
 
       # CrowdSec integration
-      CROWDSEC_ENABLED: "true"
+      CROWDSEC_ENABLED: "false"
       CROWDSEC_ALLOWLIST_NAME: pangolin-ip-rule-manager
       CROWDSEC_CSCLI_BIN: cscli
       CROWDSEC_CMD_PREFIX: docker exec crowdsec
