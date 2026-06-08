@@ -108,8 +108,10 @@ def load_state():
 def save_state():
     tmp_file = STATE_FILE + ".tmp"
     try:
+        with state_lock:
+            snapshot = json.dumps(state, indent=2, sort_keys=True)
         with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2, sort_keys=True)
+            f.write(snapshot)
         os.replace(tmp_file, STATE_FILE)
     except Exception as e:
         print(f"[state] failed to save state: {e}")
@@ -313,6 +315,9 @@ def cleanup_old_ips():
                     if rec2 and rid_str in rec2.get("resources", {}):
                         rec2["resources"].pop(rid_str, None)
                         changed = True
+                print(f"[cleanup] deleted rule for {ip} on resource {rid} (last_seen={last_seen_str})")
+            else:
+                print(f"[cleanup] delete failed for {ip} on resource {rid} — will retry next cycle")
         # If no resources remain, drop the IP record
         with state_lock:
             rec3 = state.get(ip)
@@ -332,6 +337,7 @@ def cleanup_old_ips():
                 for rid_str in expired_unowned:
                     rec4["resources"].pop(rid_str, None)
                     changed = True
+                    print(f"[cleanup] dropped unowned state entry for {ip} on resource {rid_str} (last_seen={last_seen_str})")
                 # If that emptied the record entirely, drop the IP
                 if not rec4.get("resources"):
                     state.pop(ip, None)
@@ -344,7 +350,7 @@ def cleanup_old_ips():
             print(f"[cleanup] crowdsec expire failed for {ip}: {e}")
         if changed:
             save_state()
-            print(f"[cleanup] removed {ip} (last_seen={last_seen_str})")
+            print(f"[cleanup] finished expiring {ip} (last_seen={last_seen_str})")
     print("[cleanup] done")
 
 

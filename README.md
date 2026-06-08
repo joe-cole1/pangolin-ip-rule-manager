@@ -6,9 +6,7 @@
 
 This project is actively maintained and has a few things in the pipeline worth knowing about before you set it up.
 
-The next release focuses on internal reliability improvements — nothing that changes how you configure or use the service, but fixes that make it more robust under the hood.
-
-After that, the CrowdSec integration is getting a security improvement that will change how the service communicates with CrowdSec. If you're planning to use that feature, it's worth knowing the setup steps will look a little different once that lands. The current approach works, but the new one will be cleaner and safer. The README will be updated when it ships.
+The CrowdSec integration is getting a security improvement that will change how the service communicates with CrowdSec. If you're planning to use that feature, it's worth knowing the setup steps will look a little different once that lands. The current approach works, but the new one will be cleaner and safer. The README will be updated when it ships.
 
 Longer term, the check-in page is getting a visual refresh to better match the Pangolin aesthetic, along with smarter resource link icons that auto-match to the app you're protecting (Jellyfin, Radarr, and so on).
 
@@ -126,9 +124,10 @@ This means a family member with a limited role only ever bootstraps access to th
 3. Pangolin forwards the request, injecting the Remote-User header
    (identifies the authenticated user)
 4. Service reads Remote-User → fail-closed error if absent
-5. Service looks up the user's roleIds in Pangolin
+5. Service looks up the user's roleIds and userId in Pangolin
 6. For each resource in RESOURCE_IDS, service checks whether the
-   user's role is allowed on that resource
+   user's role is allowed on that resource, or whether the user is
+   directly assigned to it — either path grants access
 7. For each permitted resource, service creates an IP bypass rule
    (and adds the IP to CrowdSec if enabled)
 8. Success page shows an "Open <Name>" link for each whitelisted resource
@@ -382,7 +381,7 @@ On startup the service:
 
 1. The `Remote-User` header is read. If absent, the service **fails closed**: it whitelists nothing and returns an error result with the reason in the technical details
 2. The client IP is extracted in priority order: `X-Real-IP` → first entry of `X-Forwarded-For` → socket address. Header IPs must be globally routable (private, loopback, link-local, and multicast addresses are rejected and the next candidate is tried)
-3. The user's `roleIds` are looked up in Pangolin. For each resource in `RESOURCE_IDS`, the service checks whether the user's role is permitted on that resource and builds the list of authorized resources. **Any API failure here causes a fail-closed error — nothing is whitelisted**
+3. The user's `roleIds` and `userId` are looked up in Pangolin. For each resource in `RESOURCE_IDS`, the service checks whether the user's role is permitted on that resource **or** whether the user is directly assigned to it — mirroring Pangolin's own OR logic. **Any API failure here causes a fail-closed error — nothing is whitelisted**
 4. For each authorized resource, a Pangolin IP rule is created (if one does not already exist), and the resource's name and domain are fetched for the success-page link
 5. If CrowdSec is enabled and the IP is not already in the allowlist cache, it is added via `cscli`
 6. The response depends on the request's `Accept` header:
