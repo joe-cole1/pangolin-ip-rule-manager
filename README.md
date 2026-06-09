@@ -175,6 +175,13 @@ services:
       # Optional endpoints (disabled by default)
       UPDATE_ENDPOINT_ENABLED: "false"
 
+      healthcheck:
+        test: ["CMD-SHELL", "pgrep -f app.py || exit 1"]
+        interval: 60s
+        timeout: 5s
+        retries: 3
+        start_period: 15s
+
     volumes:
       - pangolin-ip-rule-manager-data:/data
       # Required only for CrowdSec integration via `docker exec`. See security note below.
