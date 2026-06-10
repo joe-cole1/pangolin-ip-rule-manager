@@ -8,10 +8,17 @@ import ipaddress
 from datetime import datetime, timezone
 
 # Local configuration (read from env, mirrors app.py defaults)
-CROWDSEC_ENABLED = os.getenv("CROWDSEC_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+CROWDSEC_ENABLED = os.getenv("CROWDSEC_ENABLED", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 CROWDSEC_CSCLI_BIN = os.getenv("CROWDSEC_CSCLI_BIN", "cscli").strip()
 CROWDSEC_CMD_PREFIX = os.getenv("CROWDSEC_CMD_PREFIX", "").strip()
-CROWDSEC_ALLOWLIST_NAME = os.getenv("CROWDSEC_ALLOWLIST_NAME", "pangolin-ip-rule-manager").strip()
+CROWDSEC_ALLOWLIST_NAME = os.getenv(
+    "CROWDSEC_ALLOWLIST_NAME", "pangolin-ip-rule-manager"
+).strip()
 CROWDSEC_CACHE_TTL_SECONDS = int(os.getenv("CROWDSEC_CACHE_TTL_SECONDS", "3600"))
 
 # Runtime flags/caches (local to this module)
@@ -60,7 +67,9 @@ def crowdsec_allowlist_exists(name: str) -> bool:
             data = json.loads(out)
             # expect list of allowlists with name fields
             if isinstance(data, list):
-                return any((isinstance(x, dict) and x.get("name") == name) for x in data)
+                return any(
+                    (isinstance(x, dict) and x.get("name") == name) for x in data
+                )
         except Exception:
             pass
     else:
@@ -70,7 +79,9 @@ def crowdsec_allowlist_exists(name: str) -> bool:
             try:
                 data = json.loads(out2)
                 if isinstance(data, list):
-                    return any((isinstance(x, dict) and x.get("name") == name) for x in data)
+                    return any(
+                        (isinstance(x, dict) and x.get("name") == name) for x in data
+                    )
             except Exception:
                 pass
     # Fallback: plain text search
@@ -84,7 +95,13 @@ def crowdsec_allowlist_exists(name: str) -> bool:
 
 def crowdsec_create_allowlist(name: str) -> bool:
     # Try modern command
-    args = ["allowlist", "create", name, "-d", "allowlist created by pangolin-ip-rule-manager"]
+    args = [
+        "allowlist",
+        "create",
+        name,
+        "-d",
+        "allowlist created by pangolin-ip-rule-manager",
+    ]
     rc, out, err = run_cscli(args)
     if rc == 0:
         print(f"[crowdsec] created allowlist '{name}' via: {' '.join(args)}")
@@ -103,7 +120,9 @@ def crowdsec_ensure_allowlist() -> None:
     if not exists:
         ok = crowdsec_create_allowlist(CROWDSEC_ALLOWLIST_NAME)
         if not ok:
-            print(f"[crowdsec] WARNING: could not create allowlist '{CROWDSEC_ALLOWLIST_NAME}'. Commands may fail.")
+            print(
+                f"[crowdsec] WARNING: could not create allowlist '{CROWDSEC_ALLOWLIST_NAME}'. Commands may fail."
+            )
     _crowdsec_allowlist_ready = True
 
 
@@ -198,9 +217,18 @@ def crowdsec_add_ip(ip: str) -> None:
     crowdsec_ensure_allowlist()
     # If we already know this IP is present, skip calling cscli add
     if _crowdsec_ip_known_or_refresh(ip):
-        print(f"[crowdsec] already present {ip} in allowlist '{CROWDSEC_ALLOWLIST_NAME}' (cache)")
+        print(
+            f"[crowdsec] already present {ip} in allowlist '{CROWDSEC_ALLOWLIST_NAME}' (cache)"
+        )
         return
-    args = ["allowlist", "add", CROWDSEC_ALLOWLIST_NAME, ip, "-d", "added on " + _now_utc_iso() + " by pangolin-ip-rule-manager"]
+    args = [
+        "allowlist",
+        "add",
+        CROWDSEC_ALLOWLIST_NAME,
+        ip,
+        "-d",
+        "added on " + _now_utc_iso() + " by pangolin-ip-rule-manager",
+    ]
     backoff = 1.0
     rc, out, err = 1, "", ""
     for attempt in range(3):
@@ -213,17 +241,27 @@ def crowdsec_add_ip(ip: str) -> None:
                     _crowdsec_cache["ts"] = time.time()
             return
         if attempt < 2:
-            print(f"[crowdsec] add attempt {attempt + 1}/3 failed (rc={rc}) — retrying in {backoff:.1f}s")
+            print(
+                f"[crowdsec] add attempt {attempt + 1}/3 failed (rc={rc}) — retrying in {backoff:.1f}s"
+            )
             time.sleep(backoff)
             backoff *= 2
     # All attempts failed: maybe it already existed; re-list once to confirm
     refreshed = _crowdsec_refresh_allowlist_ip_set()
     if ip in refreshed:
-        print(f"[crowdsec] add reported failure but IP already present {ip} in '{CROWDSEC_ALLOWLIST_NAME}'")
+        print(
+            f"[crowdsec] add reported failure but IP already present {ip} in '{CROWDSEC_ALLOWLIST_NAME}'"
+        )
         return
-    print(f"[crowdsec] WARNING: failed to add {ip} to allowlist '{CROWDSEC_ALLOWLIST_NAME}'", rc, out, err)
-    raise RuntimeError(f"CrowdSec: failed to add {ip} to allowlist '{CROWDSEC_ALLOWLIST_NAME}' after 3 attempts (rc={rc}): {err}")
-
+    print(
+        f"[crowdsec] WARNING: failed to add {ip} to allowlist '{CROWDSEC_ALLOWLIST_NAME}'",
+        rc,
+        out,
+        err,
+    )
+    raise RuntimeError(
+        f"CrowdSec: failed to add {ip} to allowlist '{CROWDSEC_ALLOWLIST_NAME}' after 3 attempts (rc={rc}): {err}"
+    )
 
 
 def crowdsec_remove_ip(ip: str) -> None:
@@ -246,7 +284,11 @@ def crowdsec_remove_ip(ip: str) -> None:
                 _crowdsec_cache.setdefault("ip_set", set()).discard(ip)
             return
         if attempt < 2:
-            print(f"[crowdsec] remove attempt {attempt + 1}/3 failed (rc={rc}) — retrying in {backoff:.1f}s")
+            print(
+                f"[crowdsec] remove attempt {attempt + 1}/3 failed (rc={rc}) — retrying in {backoff:.1f}s"
+            )
             time.sleep(backoff)
             backoff *= 2
-    print(f"[crowdsec] WARNING: failed to remove {ip} from allowlist '{CROWDSEC_ALLOWLIST_NAME}'")
+    print(
+        f"[crowdsec] WARNING: failed to remove {ip} from allowlist '{CROWDSEC_ALLOWLIST_NAME}'"
+    )

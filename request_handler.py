@@ -36,7 +36,11 @@ def _build_checkin_html(
     else:
         hero = "Access may not work right now."
 
-    pangolin_badge = '<span class="badge ok">Added</span>' if pangolin_ok else '<span class="badge err">Failed</span>'
+    pangolin_badge = (
+        '<span class="badge ok">Added</span>'
+        if pangolin_ok
+        else '<span class="badge err">Failed</span>'
+    )
 
     if not crowdsec_enabled:
         crowdsec_badge = '<span class="badge skip">Not enabled</span>'
@@ -68,8 +72,7 @@ def _build_checkin_html(
             protocol = "https" if ssl else "http"
             raw_url = f"{protocol}://{domain}"
             safe_url = (
-                raw_url
-                .replace("&", "&amp;")
+                raw_url.replace("&", "&amp;")
                 .replace('"', "&quot;")
                 .replace("'", "&#39;")
                 .replace("<", "&lt;")
@@ -77,20 +80,22 @@ def _build_checkin_html(
             )
             safe_name = name.replace("<", "&lt;").replace(">", "&gt;")
             rows.append(
-                "      <a class=\"access-link\" href=\"" + safe_url + "\" target=\"_blank\" rel=\"noopener noreferrer\">\n"
-                "        <span class=\"access-link-left\">\n"
-                "          <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" style=\"flex-shrink:0;\">"
-                "<path d=\"M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6\"/>"
-                "<polyline points=\"15 3 21 3 21 9\"/><line x1=\"10\" y1=\"14\" x2=\"21\" y2=\"3\"/>"
+                '      <a class="access-link" href="'
+                + safe_url
+                + '" target="_blank" rel="noopener noreferrer">\n'
+                '        <span class="access-link-left">\n'
+                '          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;">'
+                '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
+                '<polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>'
                 "</svg>\n"
-                "          <span class=\"access-link-text\">\n"
-                f"            <span class=\"access-link-label\">Open {safe_name}</span>\n"
-                f"            <span class=\"access-link-url\">{safe_url}</span>\n"
+                '          <span class="access-link-text">\n'
+                f'            <span class="access-link-label">Open {safe_name}</span>\n'
+                f'            <span class="access-link-url">{safe_url}</span>\n'
                 "          </span>\n"
                 "        </span>\n"
-                "        <svg class=\"access-link-arrow\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\">"
-                "<line x1=\"5\" y1=\"12\" x2=\"19\" y2=\"12\"/>"
-                "<polyline points=\"12 5 19 12 12 19\"/>"
+                '        <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
+                '<line x1="5" y1="12" x2="19" y2="12"/>'
+                '<polyline points="12 5 19 12 12 19"/>'
                 "</svg>\n"
                 "      </a>"
             )
@@ -98,30 +103,34 @@ def _build_checkin_html(
 
     # Bookmark row — always shown on success, uses current page URL via JS
     bookmark_row = (
-        "      <button class=\"bookmark-btn\" onclick=\"bookmarkPage()\">\n"
-        "        <span class=\"access-link-left\">\n"
-        "          <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" style=\"flex-shrink:0;\">"
-        "<path d=\"M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z\"/>"
-        "</svg>\n"
-        "          <span class=\"access-link-text\">\n"
-        "            <span class=\"access-link-label\">Bookmark this page</span>\n"
-        "            <span class=\"access-link-url\">Save for one-tap access next time</span>\n"
-        "          </span>\n"
-        "        </span>\n"
-        "        <svg class=\"access-link-arrow\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\">"
-        "<line x1=\"5\" y1=\"12\" x2=\"19\" y2=\"12\"/>"
-        "<polyline points=\"12 5 19 12 12 19\"/>"
-        "</svg>\n"
-        "      </button>"
-    ) if overall_ok else ""
+        (
+            '      <button class="bookmark-btn" onclick="bookmarkPage()">\n'
+            '        <span class="access-link-left">\n'
+            '          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;">'
+            '<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>'
+            "</svg>\n"
+            '          <span class="access-link-text">\n'
+            '            <span class="access-link-label">Bookmark this page</span>\n'
+            '            <span class="access-link-url">Save for one-tap access next time</span>\n'
+            "          </span>\n"
+            "        </span>\n"
+            '        <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
+            '<line x1="5" y1="12" x2="19" y2="12"/>'
+            '<polyline points="12 5 19 12 12 19"/>'
+            "</svg>\n"
+            "      </button>"
+        )
+        if overall_ok
+        else ""
+    )
 
     site_name_sub = f'      <div class="sub">{site_name}</div>\n' if site_name else ""
     html = (
         "<!DOCTYPE html>\n"
-        "<html lang=\"en\">\n"
+        '<html lang="en">\n'
         "<head>\n"
-        "<meta charset=\"UTF-8\">\n"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+        '<meta charset="UTF-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
         "<title>Network Check-in</title>\n"
         "<style>\n"
         "  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap');\n"
@@ -253,7 +262,7 @@ def _build_checkin_html(
         "  }\n"
         "  .details-toggle:hover { border-color: var(--border-hi); color: var(--text); }\n"
         "  .chevron { display: inline-block; transition: transform .2s; font-size: 10px; opacity: .6; }\n"
-        "  .details-toggle[aria-expanded=\"true\"] .chevron { transform: rotate(180deg); }\n"
+        '  .details-toggle[aria-expanded="true"] .chevron { transform: rotate(180deg); }\n'
         "  .details-body {\n"
         "    display: none; margin-top: 8px; background: var(--bg); border: 1px solid var(--border);\n"
         "    border-radius: 8px; padding: 14px; font-family: var(--mono); font-size: 12px; line-height: 1.7; color: var(--muted);\n"
@@ -269,31 +278,29 @@ def _build_checkin_html(
         "</style>\n"
         "</head>\n"
         "<body>\n"
-        "<div class=\"card\">\n"
-        "  <div class=\"card-header\">\n"
-        f"    <div class=\"{dot_class}\"></div>\n"
+        '<div class="card">\n'
+        '  <div class="card-header">\n'
+        f'    <div class="{dot_class}"></div>\n'
         "    <div>\n"
-        "      <h1>Network Check-in</h1>\n"
-        + site_name_sub
-        + "    </div>\n"
+        "      <h1>Network Check-in</h1>\n" + site_name_sub + "    </div>\n"
         "  </div>\n"
-        "  <div class=\"card-body\">\n"
-        f"    <p class=\"hero\">{hero}</p>\n"
-        "    <div class=\"ip-row\">\n"
-        "      <span class=\"ip-label\">Your IP</span>\n"
-        f"      <span class=\"ip-value\">{ip}</span>\n"
+        '  <div class="card-body">\n'
+        f'    <p class="hero">{hero}</p>\n'
+        '    <div class="ip-row">\n'
+        '      <span class="ip-label">Your IP</span>\n'
+        f'      <span class="ip-value">{ip}</span>\n'
         "    </div>\n"
-        "    <div class=\"status-list\">\n"
-        "      <div class=\"status-row\">\n"
-        "        <span class=\"label\">\n"
-        "          <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z\"/></svg>\n"
+        '    <div class="status-list">\n'
+        '      <div class="status-row">\n'
+        '        <span class="label">\n'
+        '          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>\n'
         "          Pangolin access rule\n"
         "        </span>\n"
         f"        {pangolin_badge}\n"
         "      </div>\n"
-        "      <div class=\"status-row\">\n"
-        "        <span class=\"label\">\n"
-        "          <svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 8v4l3 3\"/></svg>\n"
+        '      <div class="status-row">\n'
+        '        <span class="label">\n'
+        '          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>\n'
         "          CrowdSec allowlist\n"
         "        </span>\n"
         f"        {crowdsec_badge}\n"
@@ -301,23 +308,23 @@ def _build_checkin_html(
         f"{resource_rows}\n"
         f"{bookmark_row}\n"
         "    </div>\n"
-        "    <p class=\"expiry\">\n"
+        '    <p class="expiry">\n'
         f"      Access expires <span>{expires_str}</span><br>\n"
         f"      (after {retention_minutes} minutes of inactivity)\n"
         "    </p>\n"
-        f"    <button class=\"details-toggle\" aria-expanded=\"false\" onclick=\"toggleDetails('details', this)\">\n"
-        f"      {details_label} <span class=\"chevron\">&#9660;</span>\n"
+        f'    <button class="details-toggle" aria-expanded="false" onclick="toggleDetails(\'details\', this)">\n'
+        f'      {details_label} <span class="chevron">&#9660;</span>\n'
         "    </button>\n"
-        "    <div class=\"details-body\" id=\"details\">\n"
-        f"      <div class=\"row\"><span class=\"key\">ip&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\">{ip}</span></div>\n"
-        f"      <div class=\"row\"><span class=\"key\">pangolin&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"{pangolin_detail_class}\">{pangolin_detail}</span></div>\n"
-        f"      <div class=\"row\"><span class=\"key\">crowdsec&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"{crowdsec_detail_class}\">{crowdsec_detail_display}</span></div>\n"
-        f"      <div class=\"row\"><span class=\"key\">retention&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\">{retention_minutes} min</span></div>\n"
-        f"      <div class=\"row\"><span class=\"key\">expires_at&nbsp;&nbsp;&nbsp;</span><span class=\"val\">{expires_iso}</span></div>\n"
-        f"      <div class=\"row\"><span class=\"key\">last_seen&nbsp;&nbsp;&nbsp;&nbsp;</span><span class=\"val\">{last_seen}</span></div>\n"
+        '    <div class="details-body" id="details">\n'
+        f'      <div class="row"><span class="key">ip&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{ip}</span></div>\n'
+        f'      <div class="row"><span class="key">pangolin&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="{pangolin_detail_class}">{pangolin_detail}</span></div>\n'
+        f'      <div class="row"><span class="key">crowdsec&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="{crowdsec_detail_class}">{crowdsec_detail_display}</span></div>\n'
+        f'      <div class="row"><span class="key">retention&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{retention_minutes} min</span></div>\n'
+        f'      <div class="row"><span class="key">expires_at&nbsp;&nbsp;&nbsp;</span><span class="val">{expires_iso}</span></div>\n'
+        f'      <div class="row"><span class="key">last_seen&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{last_seen}</span></div>\n'
         "    </div>\n"
         "  </div>\n"
-        "  <div class=\"card-footer\">Requests are logged &nbsp;&middot;&nbsp; Access resets on each visit</div>\n"
+        '  <div class="card-footer">Requests are logged &nbsp;&middot;&nbsp; Access resets on each visit</div>\n'
         "</div>\n"
         "<script>\n"
         "  function toggleDetails(id, btn) {\n"
@@ -347,13 +354,13 @@ def _build_checkin_html(
 def _build_error_html(title: str, message: str, site_name: str = "") -> str:
     """Build a minimal HTML error page matching the checkin page style."""
     site_name_sub = f'      <div class="sub">{site_name}</div>\n' if site_name else ""
-    site_name_footer = f'{site_name} &nbsp;&middot;&nbsp; ' if site_name else ""
+    site_name_footer = f"{site_name} &nbsp;&middot;&nbsp; " if site_name else ""
     html = (
         "<!DOCTYPE html>\n"
-        "<html lang=\"en\">\n"
+        '<html lang="en">\n'
         "<head>\n"
-        "<meta charset=\"UTF-8\">\n"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+        '<meta charset="UTF-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
         f"<title>{title}</title>\n"
         "<style>\n"
         "  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap');\n"
@@ -399,19 +406,17 @@ def _build_error_html(title: str, message: str, site_name: str = "") -> str:
         "</style>\n"
         "</head>\n"
         "<body>\n"
-        "<div class=\"card\">\n"
-        "  <div class=\"card-header\">\n"
-        "    <div class=\"err-dot\"></div>\n"
+        '<div class="card">\n'
+        '  <div class="card-header">\n'
+        '    <div class="err-dot"></div>\n'
         "    <div>\n"
-        "      <h1>Network Check-in</h1>\n"
-        + site_name_sub
-        + "    </div>\n"
+        "      <h1>Network Check-in</h1>\n" + site_name_sub + "    </div>\n"
         "  </div>\n"
-        "  <div class=\"card-body\">\n"
-        f"    <p class=\"hero\"><strong>{title}</strong></p>\n"
-        f"    <p class=\"detail\">{message}</p>\n"
+        '  <div class="card-body">\n'
+        f'    <p class="hero"><strong>{title}</strong></p>\n'
+        f'    <p class="detail">{message}</p>\n'
         "  </div>\n"
-        f"  <div class=\"card-footer\">{site_name_footer}Requests are logged</div>\n"
+        f'  <div class="card-footer">{site_name_footer}Requests are logged</div>\n'
         "</div>\n"
         "</body>\n"
         "</html>"
@@ -453,11 +458,15 @@ def create_image_request_handler(ctx: dict):
                 try:
                     ip_obj = ipaddress.ip_address(raw.strip())
                     if not ip_obj.is_global:
-                        print(f"[warn] Rejected non-global IP from header: {raw.strip()!r}")
+                        print(
+                            f"[warn] Rejected non-global IP from header: {raw.strip()!r}"
+                        )
                         return None
                     return str(ip_obj)
                 except ValueError:
-                    print(f"[warn] Rejected unparseable IP from header: {raw.strip()!r}")
+                    print(
+                        f"[warn] Rejected unparseable IP from header: {raw.strip()!r}"
+                    )
                     return None
 
             xr = self.headers.get("X-Real-IP")
@@ -483,7 +492,9 @@ def create_image_request_handler(ctx: dict):
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header(
+                "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0"
+            )
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
             self.end_headers()
@@ -492,7 +503,7 @@ def create_image_request_handler(ctx: dict):
         def do_GET(self):
             ip = self._get_real_ip()
             parsed_path = urlparse(self.path)
-            path = (parsed_path.path or "/")
+            path = parsed_path.path or "/"
             remote_user = self.headers.get("Remote-User", "")
 
             print(f"New request from {ip}  user: {remote_user}  path: {path}")
@@ -513,63 +524,86 @@ def create_image_request_handler(ctx: dict):
                 raw_ip = (qs.get("ip", [""])[0] or "").strip()
                 if not raw_ip:
                     print(f"[error] Missing 'ip' query parameter: {self.path}")
-                    self._send_html(400, _build_error_html(
-                        "Bad request",
-                        "Missing required <code>ip</code> query parameter. "
-                        "Expected format: /update?ip=1.2.3.4",
-                        site_name=ctx.get("site_name", ""),
-                    ))
+                    self._send_html(
+                        400,
+                        _build_error_html(
+                            "Bad request",
+                            "Missing required <code>ip</code> query parameter. "
+                            "Expected format: /update?ip=1.2.3.4",
+                            site_name=ctx.get("site_name", ""),
+                        ),
+                    )
                     return
 
                 try:
                     normalized_ip = str(ipaddress.ip_address(raw_ip))
                 except Exception:
                     print(f"[error] Invalid IP address: {raw_ip}")
-                    self._send_html(400, _build_error_html(
-                        "Bad request",
-                        f"&#39;{raw_ip}&#39; is not a valid IP address.",
-                        site_name=ctx.get("site_name", ""),
-                    ))
+                    self._send_html(
+                        400,
+                        _build_error_html(
+                            "Bad request",
+                            f"&#39;{raw_ip}&#39; is not a valid IP address.",
+                            site_name=ctx.get("site_name", ""),
+                        ),
+                    )
                     return
 
                 if not ipaddress.ip_address(normalized_ip).is_global:
-                    print(f"[error] Rejected non-global IP in /update: {normalized_ip!r}")
-                    self._send_html(400, _build_error_html(
-                        "Bad request",
-                        f"&#39;{normalized_ip}&#39; is a non-routable IP address and cannot be allowlisted.",
-                        site_name=ctx.get("site_name", ""),
-                    ))
+                    print(
+                        f"[error] Rejected non-global IP in /update: {normalized_ip!r}"
+                    )
+                    self._send_html(
+                        400,
+                        _build_error_html(
+                            "Bad request",
+                            f"&#39;{normalized_ip}&#39; is a non-routable IP address and cannot be allowlisted.",
+                            site_name=ctx.get("site_name", ""),
+                        ),
+                    )
                     return
 
                 with ctx["state_lock"]:
-                    rec = ctx["state"].setdefault(normalized_ip, {"last_seen": ctx["now_utc_iso"](), "resources": {}})
+                    rec = ctx["state"].setdefault(
+                        normalized_ip,
+                        {"last_seen": ctx["now_utc_iso"](), "resources": {}},
+                    )
                     rec["last_seen"] = ctx["now_utc_iso"]()
                 ctx["save_state"]()
 
                 update_results = {}
                 try:
-                    update_results = ctx["add_ip_to_targets"](normalized_ip, remote_user=remote_user)
+                    update_results = ctx["add_ip_to_targets"](
+                        normalized_ip, remote_user=remote_user
+                    )
                 except Exception as e:
                     print(f"[error] add_ip_to_targets failed for {normalized_ip}: {e}")
                     update_results = {
                         "pangolin": {"ok": False, "detail": str(e), "enabled": True},
-                        "crowdsec": {"ok": False, "detail": "not reached", "enabled": ctx.get("crowdsec_enabled", False)},
+                        "crowdsec": {
+                            "ok": False,
+                            "detail": "not reached",
+                            "enabled": ctx.get("crowdsec_enabled", False),
+                        },
                     }
 
                 if self._wants_html():
-                    self._send_html(200, _build_checkin_html(
-                        ip=normalized_ip,
-                        results=update_results,
-                        retention_minutes=ctx.get("retention_minutes", 0),
-                        last_seen=ctx["now_utc_iso"](),
-                        crowdsec_enabled=ctx.get("crowdsec_enabled", False),
-                        resources=update_results.get("resources", []),
-                        site_name=ctx.get("site_name", ""),
-                    ))
+                    self._send_html(
+                        200,
+                        _build_checkin_html(
+                            ip=normalized_ip,
+                            results=update_results,
+                            retention_minutes=ctx.get("retention_minutes", 0),
+                            last_seen=ctx["now_utc_iso"](),
+                            crowdsec_enabled=ctx.get("crowdsec_enabled", False),
+                            resources=update_results.get("resources", []),
+                            site_name=ctx.get("site_name", ""),
+                        ),
+                    )
                 else:
                     payload = (
                         "{"
-                        f"\"ok\":true,\"ip\":\"{normalized_ip}\",\"retention_minutes\":{ctx.get('retention_minutes', 0)}"
+                        f'"ok":true,"ip":"{normalized_ip}","retention_minutes":{ctx.get("retention_minutes", 0)}'
                         "}"
                     ).encode("utf-8")
                     self.send_response(200)
@@ -593,12 +627,15 @@ def create_image_request_handler(ctx: dict):
             if not (is_png or is_gif):
                 print(f"[error] Invalid path (not .png/.gif): {self.path}")
                 if self._wants_html():
-                    self._send_html(404, _build_error_html(
-                        "Page not found",
-                        "This URL isn&#39;t a valid check-in path. "
-                        "Make sure you&#39;re using the correct link ending in .png or .gif.",
-                        site_name=ctx.get("site_name", ""),
-                    ))
+                    self._send_html(
+                        404,
+                        _build_error_html(
+                            "Page not found",
+                            "This URL isn&#39;t a valid check-in path. "
+                            "Make sure you&#39;re using the correct link ending in .png or .gif.",
+                            site_name=ctx.get("site_name", ""),
+                        ),
+                    )
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -608,7 +645,9 @@ def create_image_request_handler(ctx: dict):
             # Update state
             now_iso = ctx["now_utc_iso"]()
             with ctx["state_lock"]:
-                rec = ctx["state"].setdefault(ip, {"last_seen": now_iso, "resources": {}})
+                rec = ctx["state"].setdefault(
+                    ip, {"last_seen": now_iso, "resources": {}}
+                )
                 rec["last_seen"] = now_iso
             ctx["save_state"]()
 
@@ -620,27 +659,36 @@ def create_image_request_handler(ctx: dict):
                 print(f"[error] add_ip_to_targets failed for {ip}: {e}")
                 results = {
                     "pangolin": {"ok": False, "detail": str(e), "enabled": True},
-                    "crowdsec": {"ok": False, "detail": "not reached", "enabled": ctx.get("crowdsec_enabled", False)},
+                    "crowdsec": {
+                        "ok": False,
+                        "detail": "not reached",
+                        "enabled": ctx.get("crowdsec_enabled", False),
+                    },
                 }
 
             # Browser gets the HTML page; everything else gets the transparent image
             if self._wants_html():
-                self._send_html(200, _build_checkin_html(
-                    ip=ip,
-                    results=results,
-                    retention_minutes=ctx.get("retention_minutes", 0),
-                    last_seen=now_iso,
-                    crowdsec_enabled=ctx.get("crowdsec_enabled", False),
-                    resources=results.get("resources", []),
-                    site_name=ctx.get("site_name", ""),
-                ))
+                self._send_html(
+                    200,
+                    _build_checkin_html(
+                        ip=ip,
+                        results=results,
+                        retention_minutes=ctx.get("retention_minutes", 0),
+                        last_seen=now_iso,
+                        crowdsec_enabled=ctx.get("crowdsec_enabled", False),
+                        resources=results.get("resources", []),
+                        site_name=ctx.get("site_name", ""),
+                    ),
+                )
             else:
                 body = ctx["banner_gif"] if is_gif else ctx["banner_png"]
                 ctype = "image/gif" if is_gif else "image/png"
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                self.send_header(
+                    "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0"
+                )
                 self.send_header("Pragma", "no-cache")
                 self.send_header("Expires", "0")
                 self.end_headers()

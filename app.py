@@ -27,23 +27,40 @@ PANGOLIN_URL = os.getenv("PANGOLIN_URL", "").rstrip("/")
 PANGOLIN_TOKEN = os.getenv("PANGOLIN_TOKEN", "")
 ORG_ID = os.getenv("ORG_ID", "")
 RESOURCE_IDS = [int(x) for x in os.getenv("RESOURCE_IDS", "").split(",") if x.strip()]
-RETENTION_MINUTES = int(os.getenv("RETENTION_MINUTES", "1440"))  # default 1 day in minutes
+RETENTION_MINUTES = int(
+    os.getenv("RETENTION_MINUTES", "1440")
+)  # default 1 day in minutes
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", "8080"))
 STATE_FILE = os.getenv("STATE_FILE", "/data/state.json")
-CLEANUP_INTERVAL_MINUTES = int(os.getenv("CLEANUP_INTERVAL_MINUTES", "60"))  # default 1 hour in minutes
+CLEANUP_INTERVAL_MINUTES = int(
+    os.getenv("CLEANUP_INTERVAL_MINUTES", "60")
+)  # default 1 hour in minutes
 RULE_PRIORITY = int(os.getenv("RULE_PRIORITY", "0"))
-RULES_CACHE_TTL_SECONDS = int(os.getenv("RULES_CACHE_TTL_SECONDS", "3600"))  # cache for existence checks (~1h)
+RULES_CACHE_TTL_SECONDS = int(
+    os.getenv("RULES_CACHE_TTL_SECONDS", "3600")
+)  # cache for existence checks (~1h)
 # CrowdSec optional integration via cscli
-CROWDSEC_ENABLED = os.getenv("CROWDSEC_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+CROWDSEC_ENABLED = os.getenv("CROWDSEC_ENABLED", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 CROWDSEC_CSCLI_BIN = os.getenv("CROWDSEC_CSCLI_BIN", "cscli").strip()
 # Optional: a command prefix to run cscli in a container, e.g. "docker exec crowdsec"
 CROWDSEC_CMD_PREFIX = os.getenv("CROWDSEC_CMD_PREFIX", "").strip()
-CROWDSEC_ALLOWLIST_NAME = os.getenv("CROWDSEC_ALLOWLIST_NAME", "pangolin-ip-rule-manager").strip()
-CROWDSEC_CACHE_TTL_SECONDS = int(os.getenv("CROWDSEC_CACHE_TTL_SECONDS", "3600"))  # cache TTL for CrowdSec allowlist entries (~1h)
+CROWDSEC_ALLOWLIST_NAME = os.getenv(
+    "CROWDSEC_ALLOWLIST_NAME", "pangolin-ip-rule-manager"
+).strip()
+CROWDSEC_CACHE_TTL_SECONDS = int(
+    os.getenv("CROWDSEC_CACHE_TTL_SECONDS", "3600")
+)  # cache TTL for CrowdSec allowlist entries (~1h)
 # Optional: site name shown in the HTML check-in and error pages
 SITE_NAME = os.getenv("SITE_NAME", "").strip()
 # Optional: allow overriding the caller IP via /update?ip=...
-UPDATE_ENDPOINT_ENABLED = os.getenv("UPDATE_ENDPOINT_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+UPDATE_ENDPOINT_ENABLED = os.getenv(
+    "UPDATE_ENDPOINT_ENABLED", "false"
+).strip().lower() in ("1", "true", "yes", "on")
 
 # Minimal 1x1 PNG (transparent) as bytes
 BANNER_PNG = base64.b64decode(
@@ -163,6 +180,7 @@ class PangolinTarget(Target):
 
     def add_ip(self, ip: str, resource_ids: list[int] | None = None) -> None:
         from dataclasses import replace as _dc_replace
+
         ctx = self._ctx_factory()
         if resource_ids is not None:
             ctx = _dc_replace(ctx, resource_ids=resource_ids)
@@ -217,6 +235,7 @@ def _get_ip_set_for_resource_cached(rid: int):
 # Target aggregation (extensibility point)
 # --------------------------
 
+
 def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
     """Add/allow this IP across configured targets (Pangolin, CrowdSec, etc.).
     Requires remote_user (value of the Remote-User header forwarded by Pangolin).
@@ -224,11 +243,16 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
     be identified or is not authorised for any configured resource.
     Returns a dict of per-target results for display purposes.
     """
+
     def _fail(detail: str) -> dict:
         print(f"[targets] fail-closed: {detail}")
         return {
             "pangolin": {"ok": False, "detail": detail, "enabled": True},
-            "crowdsec": {"ok": False, "detail": "not reached", "enabled": CROWDSEC_ENABLED},
+            "crowdsec": {
+                "ok": False,
+                "detail": "not reached",
+                "enabled": CROWDSEC_ENABLED,
+            },
         }
 
     if not remote_user:
@@ -244,7 +268,9 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
         return _fail(f"User authorization failed for {remote_user!r}: {e}")
 
     if not effective_resources:
-        return _fail(f"User {remote_user!r} is not authorised for any configured resource.")
+        return _fail(
+            f"User {remote_user!r} is not authorised for any configured resource."
+        )
 
     effective_ids = [r["resourceId"] for r in effective_resources]
     results = {
@@ -295,7 +321,11 @@ def cleanup_old_ips():
             last_seen_str = rec.get("last_seen")
             resources = rec.get("resources", {})
         try:
-            last_seen = datetime.fromisoformat(last_seen_str.replace("Z", "+00:00")) if last_seen_str else None
+            last_seen = (
+                datetime.fromisoformat(last_seen_str.replace("Z", "+00:00"))
+                if last_seen_str
+                else None
+            )
         except ValueError:
             print(f"[cleanup] Invalid datetime format in last_seen: {last_seen_str}")
             last_seen = None
@@ -315,9 +345,13 @@ def cleanup_old_ips():
                     if rec2 and rid_str in rec2.get("resources", {}):
                         rec2["resources"].pop(rid_str, None)
                         changed = True
-                print(f"[cleanup] deleted rule for {ip} on resource {rid} (last_seen={last_seen_str})")
+                print(
+                    f"[cleanup] deleted rule for {ip} on resource {rid} (last_seen={last_seen_str})"
+                )
             else:
-                print(f"[cleanup] delete failed for {ip} on resource {rid} — will retry next cycle")
+                print(
+                    f"[cleanup] delete failed for {ip} on resource {rid} — will retry next cycle"
+                )
         # If no resources remain, drop the IP record
         with state_lock:
             rec3 = state.get(ip)
@@ -331,13 +365,16 @@ def cleanup_old_ips():
             rec4 = state.get(ip)
             if rec4:
                 expired_unowned = [
-                    rid_str for rid_str, meta in rec4.get("resources", {}).items()
+                    rid_str
+                    for rid_str, meta in rec4.get("resources", {}).items()
                     if not meta.get("created_by_us")
                 ]
                 for rid_str in expired_unowned:
                     rec4["resources"].pop(rid_str, None)
                     changed = True
-                    print(f"[cleanup] dropped unowned state entry for {ip} on resource {rid_str} (last_seen={last_seen_str})")
+                    print(
+                        f"[cleanup] dropped unowned state entry for {ip} on resource {rid_str} (last_seen={last_seen_str})"
+                    )
                 # If that emptied the record entirely, drop the IP
                 if not rec4.get("resources"):
                     state.pop(ip, None)
@@ -395,7 +432,10 @@ def self_check():
     if not RESOURCE_IDS:
         missing.append("RESOURCE_IDS")
     if missing:
-        print("[self-check] WARNING: Missing required environment variables: " + ", ".join(missing))
+        print(
+            "[self-check] WARNING: Missing required environment variables: "
+            + ", ".join(missing)
+        )
         raise RuntimeError(
             "Missing required environment variables: " + ", ".join(missing)
         )
@@ -418,7 +458,7 @@ def self_check():
         print("")
         print("=" * 60)
         print(f"[WARN] State file directory does not exist: {state_dir}")
-        print(f"       State will be lost on restart.")
+        print("       State will be lost on restart.")
         print(f"       Check your volume mount for STATE_FILE={STATE_FILE}")
         print("=" * 60)
         print("")
@@ -432,14 +472,15 @@ def self_check():
             print("")
             print("=" * 60)
             print(f"[WARN] State file directory is not writable: {state_dir}")
-            print(f"       State will be lost on restart.")
+            print("       State will be lost on restart.")
             print(f"       Error: {e}")
             print("=" * 60)
             print("")
 
     cs_status = (
         f"enabled name='{CROWDSEC_ALLOWLIST_NAME}' bin='{CROWDSEC_CSCLI_BIN}' prefix='{CROWDSEC_CMD_PREFIX}'"
-        if CROWDSEC_ENABLED else "disabled"
+        if CROWDSEC_ENABLED
+        else "disabled"
     )
 
     print(
@@ -470,11 +511,15 @@ def main():
         print("=" * 60)
         if "401" in err_str or "403" in err_str:
             print("[WARN] Pangolin API auth failed at startup.")
-            print("       Check that PANGOLIN_TOKEN is correct and has the required permissions.")
+            print(
+                "       Check that PANGOLIN_TOKEN is correct and has the required permissions."
+            )
         else:
             print(f"[WARN] Pangolin API unreachable at startup: {e}")
             print("       Check PANGOLIN_URL and network connectivity.")
-        print("       The service will still start, but Pangolin rules will fail until resolved.")
+        print(
+            "       The service will still start, but Pangolin rules will fail until resolved."
+        )
         print("=" * 60)
         print("")
 
@@ -491,7 +536,9 @@ def main():
 
     addr = ("0.0.0.0", LISTEN_PORT)
     httpd = HTTPServer(addr, ImageRequestHandler)
-    print(f"[start] Listening on {addr[0]}:{addr[1]} | resources={RESOURCE_IDS} | retention_minutes={RETENTION_MINUTES} | cleanup_interval_minutes={CLEANUP_INTERVAL_MINUTES}")
+    print(
+        f"[start] Listening on {addr[0]}:{addr[1]} | resources={RESOURCE_IDS} | retention_minutes={RETENTION_MINUTES} | cleanup_interval_minutes={CLEANUP_INTERVAL_MINUTES}"
+    )
 
     httpd.serve_forever()
 

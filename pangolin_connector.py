@@ -24,8 +24,10 @@ def _retry(fn, *, attempts: int = 3, backoff: float = 1.0, label: str = ""):
                 print(f"[retry] {label} aborted — auth error (will not retry): {e}")
                 raise
             if attempt < attempts - 1:
-                wait = backoff * (2 ** attempt)
-                print(f"[retry] {label} attempt {attempt + 1}/{attempts} failed: {e} — retrying in {wait:.1f}s")
+                wait = backoff * (2**attempt)
+                print(
+                    f"[retry] {label} attempt {attempt + 1}/{attempts} failed: {e} — retrying in {wait:.1f}s"
+                )
                 time.sleep(wait)
     raise last_exc
 
@@ -77,7 +79,9 @@ def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> Set[str]:
 
 def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
     if not ctx.token:
-        raise RuntimeError("PANGOLIN_TOKEN is not set — Pangolin API calls are disabled. Check your environment configuration.")
+        raise RuntimeError(
+            "PANGOLIN_TOKEN is not set — Pangolin API calls are disabled. Check your environment configuration."
+        )
     failures: list[str] = []
     for rid in ctx.resource_ids:
         try:
@@ -87,7 +91,9 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
                 print(f"[pangolin] rule already exists for IP {ip} on resource {rid}")
                 # Track presence but not created_by_us
                 with ctx.state_lock:
-                    rec = ctx.state.setdefault(ip, {"last_seen": ctx.now_utc_iso(), "resources": {}})
+                    rec = ctx.state.setdefault(
+                        ip, {"last_seen": ctx.now_utc_iso(), "resources": {}}
+                    )
                     rec["last_seen"] = ctx.now_utc_iso()
                     rec["resources"].setdefault(str(rid), {"created_by_us": False})
                 continue
@@ -100,7 +106,9 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
                 "enabled": True,
             }
             _ = _retry(
-                lambda: ctx.http_json("PUT", f"{ctx.url}/v1/resource/{rid}/rule", payload),
+                lambda: ctx.http_json(
+                    "PUT", f"{ctx.url}/v1/resource/{rid}/rule", payload
+                ),
                 label=f"PUT rule ip={ip} resource={rid}",
             )
             print(f"[pangolin] created rule for IP {ip} on resource {rid}")
@@ -113,7 +121,9 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
                     ctx.rules_cache[rid] = {"ts": time.time(), "ip_set": {ip}}
             # Update persistent state
             with ctx.state_lock:
-                rec = ctx.state.setdefault(ip, {"last_seen": ctx.now_utc_iso(), "resources": {}})
+                rec = ctx.state.setdefault(
+                    ip, {"last_seen": ctx.now_utc_iso(), "resources": {}}
+                )
                 rec["last_seen"] = ctx.now_utc_iso()
                 rec["resources"][str(rid)] = {"created_by_us": True}
             ctx.save_state()
@@ -121,7 +131,9 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
             print(f"[pangolin] ensure rule failed for resource {rid}, ip {ip}: {e}")
             failures.append(f"resource {rid}: {e}")
     if failures:
-        raise RuntimeError(f"Pangolin: rule creation failed for {len(failures)}/{len(ctx.resource_ids)} resource(s): {'; '.join(failures)}")
+        raise RuntimeError(
+            f"Pangolin: rule creation failed for {len(failures)}/{len(ctx.resource_ids)} resource(s): {'; '.join(failures)}"
+        )
 
 
 def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> bool:
@@ -131,14 +143,20 @@ def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> 
     retain the IP in state and retry on the next cleanup cycle."""
     try:
         rules_resp = _retry(
-            lambda: ctx.http_json("GET", f"{ctx.url}/v1/resource/{rid}/rules?limit=10000"),
+            lambda: ctx.http_json(
+                "GET", f"{ctx.url}/v1/resource/{rid}/rules?limit=10000"
+            ),
             label=f"GET rules (delete phase) resource={rid}",
         )
         rules = rules_resp.get("data", {}).get("rules", [])
-        to_delete = [r for r in rules if r.get("match") == "IP" and r.get("value") == ip]
+        to_delete = [
+            r for r in rules if r.get("match") == "IP" and r.get("value") == ip
+        ]
         if not to_delete:
             # Rule is already absent — safe to clear this entry from state
-            print(f"[pangolin] no rule found for IP {ip} on resource {rid} (already absent — clearing state)")
+            print(
+                f"[pangolin] no rule found for IP {ip} on resource {rid} (already absent — clearing state)"
+            )
             return True
         deleted_any = False
         for r in to_delete:
@@ -147,10 +165,14 @@ def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> 
                 continue
             try:
                 _ = _retry(
-                    lambda: ctx.http_json("DELETE", f"{ctx.url}/v1/resource/{rid}/rule/{rule_id}"),
+                    lambda: ctx.http_json(
+                        "DELETE", f"{ctx.url}/v1/resource/{rid}/rule/{rule_id}"
+                    ),
                     label=f"DELETE rule={rule_id} ip={ip} resource={rid}",
                 )
-                print(f"[pangolin] deleted rule {rule_id} for IP {ip} on resource {rid}")
+                print(
+                    f"[pangolin] deleted rule {rule_id} for IP {ip} on resource {rid}"
+                )
                 deleted_any = True
             except Exception as e:
                 print(f"[pangolin] delete failed for rule {rule_id} on {rid}: {e}")
@@ -165,11 +187,13 @@ def list_org_resources(ctx: PangolinContext, org_id: str) -> None:
         url = f"{ctx.url}/v1/org/{org_id}/resources?limit=1000&offset=0"
         resp = ctx.http_json("GET", url)
         resources = (
-            resp.get("data", {}).get("resources")
-            if isinstance(resp, dict)
-            else []
-        ) or resp.get("resources", []) or []
-        print(f"[pangolin] These are the resources for org '{org_id}'. Use the resourceId numbers for your configuration:")
+            (resp.get("data", {}).get("resources") if isinstance(resp, dict) else [])
+            or resp.get("resources", [])
+            or []
+        )
+        print(
+            f"[pangolin] These are the resources for org '{org_id}'. Use the resourceId numbers for your configuration:"
+        )
         if not resources:
             print("  (no resources found or empty response)")
             return
@@ -182,7 +206,9 @@ def list_org_resources(ctx: PangolinContext, org_id: str) -> None:
         raise e
 
 
-def get_user_info(ctx: PangolinContext, org_id: str, username: str) -> tuple[str, list[int]]:
+def get_user_info(
+    ctx: PangolinContext, org_id: str, username: str
+) -> tuple[str, list[int]]:
     """Return (userId, roleIds) for the given username in the org.
     Raises RuntimeError on any failure (caller is responsible for fail-closed behaviour).
 
@@ -201,7 +227,9 @@ def get_user_info(ctx: PangolinContext, org_id: str, username: str) -> tuple[str
     role_ids = data.get("roleIds")
     user_id = data.get("userId")
     if role_ids is None or user_id is None:
-        raise RuntimeError(f"User {username!r} not found in org {org_id!r} (or unexpected response shape)")
+        raise RuntimeError(
+            f"User {username!r} not found in org {org_id!r} (or unexpected response shape)"
+        )
     return user_id, role_ids
 
 
@@ -259,7 +287,9 @@ def get_resource(ctx: PangolinContext, rid: int) -> dict:
     }
 
 
-def filter_resources_for_user(ctx: PangolinContext, org_id: str, username: str) -> list[dict]:
+def filter_resources_for_user(
+    ctx: PangolinContext, org_id: str, username: str
+) -> list[dict]:
     """Return the subset of ctx.resource_ids the user is authorised for, with metadata.
     Each entry is {"resourceId": int, "name": str, "fullDomain": str, "ssl": bool}.
 
@@ -282,8 +312,12 @@ def filter_resources_for_user(ctx: PangolinContext, org_id: str, username: str) 
         if role_match or user_match:
             reason = "role" if role_match else "direct-user"
             meta = get_resource(ctx, rid)
-            print(f"[pangolin] user {username!r} authorised for resource {rid} ({meta.get('name')}) via {reason}")
+            print(
+                f"[pangolin] user {username!r} authorised for resource {rid} ({meta.get('name')}) via {reason}"
+            )
             effective.append(meta)
         else:
-            print(f"[pangolin] user {username!r} not authorised for resource {rid} — skipping")
+            print(
+                f"[pangolin] user {username!r} not authorised for resource {rid} — skipping"
+            )
     return effective
