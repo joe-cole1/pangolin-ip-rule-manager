@@ -2,6 +2,7 @@ import contextlib
 import http.client
 import importlib
 import threading
+import time as _time_mod
 
 import pytest
 
@@ -481,9 +482,6 @@ def test_add_ip_to_targets_intersection_filters_by_role(monkeypatch, app_module)
         assert "6" not in state_resources, (
             "resource 6 should be skipped (role mismatch)"
         )
-
-
-import time as _time_mod
 
 
 def _reload_app_with_crowdsec(monkeypatch, temp_state_file):
