@@ -42,14 +42,19 @@ no pip dependencies at runtime.
 All configuration is injected at runtime via environment variables.
 **Never hardcode credentials.** See `config.env.sample` for the canonical reference.
 
-### Required — app will not start without these
+### Hard required — startup aborts without these
 
 | Variable | Description |
 |---|---|
 | `PANGOLIN_URL` | Pangolin Integration API base URL, e.g. `https://api.yourdomain.com` |
-| `PANGOLIN_TOKEN` | Pangolin API token |
-| `ORG_ID` | Pangolin organisation ID |
 | `RESOURCE_IDS` | Comma-separated resource IDs to protect, e.g. `1,2` |
+
+### Required for core functionality — startup warns and continues without these
+
+| Variable | Description |
+|---|---|
+| `PANGOLIN_TOKEN` | Pangolin API token. Missing → prominent warning; all API calls raise immediately. |
+| `ORG_ID` | Pangolin organisation ID. Missing → startup resource listing skipped. |
 
 ### Optional with defaults
 
@@ -116,22 +121,10 @@ changes. On a PR build it checks without fixing and fails if violations remain.
 
 ## Current state and next release
 
-**Current release:** `v2.2.2` on `master`
+**Current release:** `v2.3.0` on `master`
 
-**Next: `v2.2.3`** — lint fixes only, no logic changes.
-
-Two E402 violations exist (module-level import not at top of file):
-
-- `tests/test_app.py` line 486: `import time as _time_mod` placed mid-file.
-  Fix: move to top of file with the other imports. It is actively used —
-  do not delete it.
-
-- `app.py` line 403: `from request_handler import create_image_request_handler`
-  is an intentional late import (the import drives an immediate module-level
-  instantiation that depends on functions defined above it in the file).
-  Fix: add `# noqa: E402` to suppress rather than moving the import.
-
-Do not bundle anything else into v2.2.3.
+No outstanding planned changes. Start the next release cycle by creating a fresh
+`dev` branch from `master`.
 
 ---
 
@@ -168,8 +161,9 @@ These apply to every session. Do not deviate without explicit instruction.
 - **Python 3.14, stdlib only.** No new pip runtime dependencies.
 - **Linter:** ruff. Run `ruff check .` before presenting changes.
 - **Fail-closed everywhere.** If `Remote-User` is absent or any Pangolin API
-  call fails, nothing is whitelisted and nothing is written to state.
-  This is intentional and must be preserved.
+  call fails, nothing is whitelisted and no resources are written to state.
+  (`last_seen` is stamped before auth so the request is logged, but `resources`
+  remains empty. This is intentional and must be preserved.)
 - **OR logic for access.** A user is authorised for a resource if their role
   matches OR they are directly assigned. Both paths must be checked.
   This mirrors Pangolin's `isUserAllowedToAccessResource()`.
@@ -234,7 +228,8 @@ OS-controlled, not caller-controlled).
 ### Authorization chain (`app.py` → `add_ip_to_targets`)
 
 1. `Remote-User` header must be present (set by Pangolin SSO).
-   Absent → fail-closed. Nothing is written.
+   Absent → fail-closed. No rules are created; no resources are written to state.
+   (`last_seen` is stamped for logging purposes, but `resources` stays empty.)
 2. `pg_filter_resources_for_user` is called: username → role IDs → for each
    configured resource, role match OR direct-user assignment is checked.
    Any API error → fail-closed.
@@ -249,6 +244,27 @@ The cleanup thread runs every `CLEANUP_INTERVAL_MINUTES`. Pangolin rules are
 only deleted if `created_by_us: true`. If deletion fails, the record is
 retained and retried next cycle. CrowdSec expiration is always attempted
 regardless of `created_by_us`.
+
+When `ensure_ip_rule` finds a pre-existing rule in Pangolin (created externally
+or from a previous run), it records `created_by_us: false` and calls
+`save_state()` immediately. This keeps the on-disk state consistent with
+in-memory state even when no new rule is created.
+
+### Late import in `app.py`
+
+`from request_handler import create_image_request_handler` at the bottom of
+`app.py` carries `# noqa: E402`. This is intentional: importing `request_handler`
+triggers module-level code that depends on functions defined earlier in `app.py`.
+Moving the import to the top of the file would break startup. Do not move it;
+do not remove the `# noqa` suppression.
+
+### XSS guard in `/update` error page (`request_handler.py`)
+
+User-supplied values embedded in HTML responses must be escaped with
+`html.escape()`. The `raw_ip` parameter in the `/update?ip=...` error path
+is a deliberate example — it uses `html.escape(raw_ip)` to prevent reflected
+XSS. Do not remove this or inline user-controlled strings into HTML without
+escaping them first.
 
 ### Known limitations (not bugs, do not treat as defects)
 
