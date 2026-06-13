@@ -1,6 +1,7 @@
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta
+import html
 import ipaddress
 
 
@@ -543,7 +544,7 @@ def create_image_request_handler(ctx: dict):
                         400,
                         _build_error_html(
                             "Bad request",
-                            f"&#39;{raw_ip}&#39; is not a valid IP address.",
+                            f"&#39;{html.escape(raw_ip)}&#39; is not a valid IP address.",
                             site_name=ctx.get("site_name", ""),
                         ),
                     )
