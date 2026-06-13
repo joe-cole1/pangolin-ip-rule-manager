@@ -96,6 +96,7 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
                     )
                     rec["last_seen"] = ctx.now_utc_iso()
                     rec["resources"].setdefault(str(rid), {"created_by_us": False})
+                ctx.save_state()
                 continue
             # 2) create rule
             payload = {
