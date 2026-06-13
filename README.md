@@ -175,12 +175,12 @@ services:
       # Optional endpoints (disabled by default)
       UPDATE_ENDPOINT_ENABLED: "false"
 
-      healthcheck:
-        test: ["CMD-SHELL", "pgrep -f app.py || exit 1"]
-        interval: 60s
-        timeout: 5s
-        retries: 3
-        start_period: 15s
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f app.py || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
     volumes:
       - pangolin-ip-rule-manager-data:/data
@@ -349,9 +349,9 @@ On startup the service:
 1. Validates that `PANGOLIN_URL` and `RESOURCE_IDS` are set — exits with an error if not
 2. Warns (but does not exit) if `PANGOLIN_TOKEN` is empty or `ORG_ID` is unset
 3. Checks that the state file directory exists and is writable
-4. Queries Pangolin and prints all resources for `ORG_ID` with their IDs, which also serves as a startup connectivity/auth check
-5. If CrowdSec is enabled, ensures the named allowlist exists (creates it if needed)
-6. Loads existing state from the state file
+4. Loads existing state from the state file
+5. Queries Pangolin and prints all resources for `ORG_ID` with their IDs, which also serves as a startup connectivity/auth check
+6. If CrowdSec is enabled, ensures the named allowlist exists (creates it if needed)
 7. Starts the background cleanup thread
 8. Begins serving HTTP on `LISTEN_PORT`
 
