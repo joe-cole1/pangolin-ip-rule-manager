@@ -24,7 +24,7 @@ pangolin-ip-rule-manager/
 ├── pangolin_connector.py    # All Pangolin API interaction: PangolinContext dataclass, retry logic
 ├── crowdsec_connector.py    # CrowdSec integration via cscli subprocess
 ├── requirements.txt         # Dev dependencies (pytest, ruff) — not used in the runtime image
-├── Dockerfile               # python:3.14-alpine; docker-cli (Mode B) + cscli (Mode A, multi-stage from crowdsecurity/crowdsec)
+├── Dockerfile               # python:3.14-alpine; docker-cli included for CrowdSec integration via docker exec
 ├── docker-compose.yml       # Reference compose file — actual deployment uses Portainer
 ├── config.env.sample        # Every environment variable with inline documentation
 └── tests/
@@ -77,11 +77,6 @@ All configuration is injected at runtime via environment variables.
 | `CROWDSEC_ENABLED` | `false` | Enable CrowdSec integration |
 | `CROWDSEC_ALLOWLIST_NAME` | `pangolin-ip-rule-manager` | Allowlist name in CrowdSec |
 | `CROWDSEC_CACHE_TTL_SECONDS` | `3600` | Cache TTL for CrowdSec allowlist membership checks |
-| **Mode A — LAPI** | | |
-| `CROWDSEC_LAPI_URL` | _(empty)_ | CrowdSec LAPI URL, e.g. `http://crowdsec:8080`. Setting this + `CROWDSEC_LAPI_LOGIN` activates LAPI mode. |
-| `CROWDSEC_LAPI_LOGIN` | _(empty)_ | Machine login from `cscli machines add` |
-| `CROWDSEC_LAPI_PASSWORD` | _(empty)_ | Machine password from `cscli machines add` |
-| **Mode B — Docker exec** | | |
 | `CROWDSEC_CMD_PREFIX` | _(empty)_ | Command prefix, e.g. `docker exec crowdsec` |
 | `CROWDSEC_CSCLI_BIN` | `cscli` | Path to the cscli binary inside the CrowdSec container |
 
