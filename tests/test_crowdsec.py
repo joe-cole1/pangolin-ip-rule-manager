@@ -239,6 +239,9 @@ def test_ensure_allowlist_already_exists(monkeypatch):
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
     monkeypatch.setattr(
+        crowdsec_connector, "_crowdsec_check_connectivity", lambda: None
+    )
+    monkeypatch.setattr(
         crowdsec_connector, "crowdsec_allowlist_exists", lambda name: True
     )
     created = []
@@ -259,6 +262,9 @@ def test_ensure_allowlist_creates_when_missing(monkeypatch):
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
     monkeypatch.setattr(
+        crowdsec_connector, "_crowdsec_check_connectivity", lambda: None
+    )
+    monkeypatch.setattr(
         crowdsec_connector, "crowdsec_allowlist_exists", lambda name: False
     )
     created = []
@@ -278,6 +284,9 @@ def test_ensure_allowlist_create_fails_warns_continues(monkeypatch, capsys):
 
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
+    monkeypatch.setattr(
+        crowdsec_connector, "_crowdsec_check_connectivity", lambda: None
+    )
     monkeypatch.setattr(
         crowdsec_connector, "crowdsec_allowlist_exists", lambda name: False
     )
@@ -780,6 +789,9 @@ def test_ensure_allowlist_warns_on_empty_prefix(monkeypatch, capsys):
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CMD_PREFIX", "")
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
     monkeypatch.setattr(
+        crowdsec_connector, "_crowdsec_check_connectivity", lambda: None
+    )
+    monkeypatch.setattr(
         crowdsec_connector, "crowdsec_allowlist_exists", lambda name: True
     )
     crowdsec_connector.crowdsec_ensure_allowlist()
@@ -807,3 +819,39 @@ def test_ensure_allowlist_invalid_name_raises(monkeypatch):
         crowdsec_connector.crowdsec_ensure_allowlist()
     assert exists_calls == []
     assert not crowdsec_connector._crowdsec_allowlist_ready
+
+
+# ---------------------------------------------------------------------------
+# _crowdsec_check_connectivity
+# ---------------------------------------------------------------------------
+
+
+def test_check_connectivity_success_logs_version(monkeypatch, capsys):
+    """Successful 'cscli version' logs 'connectivity OK' with the first output line."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: (0, "v1.6.3\nextra line", ""),
+    )
+    crowdsec_connector._crowdsec_check_connectivity()
+    out = capsys.readouterr().out
+    assert "connectivity OK" in out
+    assert "v1.6.3" in out
+
+
+def test_check_connectivity_failure_logs_warning(monkeypatch, capsys):
+    """Failed 'cscli version' logs a WARNING with the error and config hints."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: (1, "", "Cannot connect to the Docker daemon"),
+    )
+    crowdsec_connector._crowdsec_check_connectivity()
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "connectivity check failed" in out
+    assert "DOCKER_HOST" in out

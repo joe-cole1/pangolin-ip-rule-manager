@@ -52,6 +52,19 @@ def _validate_allowlist_name(name: str) -> None:
         )
 
 
+def _crowdsec_check_connectivity() -> None:
+    """Run 'cscli version' to verify the full exec chain is reachable at startup."""
+    rc, out, err = run_cscli(["version"])
+    if rc == 0:
+        version_line = out.splitlines()[0] if out else "unknown"
+        print(f"[crowdsec] connectivity OK — {version_line}")
+    else:
+        print(
+            f"[crowdsec] WARNING: connectivity check failed (rc={rc}): "
+            f"{err or 'no output'} — check DOCKER_HOST and CROWDSEC_CMD_PREFIX"
+        )
+
+
 def _build_cscli_cmd(args: list[str]) -> list[str]:
     parts: list[str] = []
     if CROWDSEC_CMD_PREFIX:
@@ -149,6 +162,7 @@ def crowdsec_ensure_allowlist() -> None:
             "or point DOCKER_HOST at a socket proxy."
         )
     _validate_allowlist_name(CROWDSEC_ALLOWLIST_NAME)
+    _crowdsec_check_connectivity()
     exists = crowdsec_allowlist_exists(CROWDSEC_ALLOWLIST_NAME)
     if not exists:
         ok = crowdsec_create_allowlist(CROWDSEC_ALLOWLIST_NAME)
