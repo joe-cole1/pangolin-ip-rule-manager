@@ -801,6 +801,8 @@ def test_write_lapi_config_includes_config_paths(monkeypatch, tmp_path):
     assert cs_dir in config_content
     assert (tmp_path / "cs" / "data").is_dir()
     assert (tmp_path / "cs" / "hub").is_dir()
+    assert "api:" in config_content
+    assert "enable: true" in config_content
 
 
 def test_ensure_allowlist_calls_write_lapi_config_in_lapi_mode(monkeypatch, tmp_path):
