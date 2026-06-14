@@ -81,6 +81,8 @@ def _write_lapi_config() -> None:
             f"  data_dir: {_LAPI_CS_DIR}/data\n"
             f"  hub_dir: {_LAPI_CS_DIR}/hub\n"
             "api:\n"
+            "  server:\n"
+            "    enable: true\n"
             "  client:\n"
             "    insecure_skip_verify: false\n"
             f"    credentials_path: {_LAPI_CREDENTIALS_PATH}\n"
