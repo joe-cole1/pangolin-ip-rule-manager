@@ -39,6 +39,7 @@ if _LAPI_MODE and CROWDSEC_CMD_PREFIX:
 # These are module-level constants so tests can patch them to a tmp directory.
 _LAPI_CONFIG_PATH = "/tmp/pangolin-cs-config.yaml"
 _LAPI_CREDENTIALS_PATH = "/tmp/pangolin-cs-credentials.yaml"
+_LAPI_CS_DIR = "/tmp/pangolin-cs"  # cscli requires config_paths dirs to exist
 
 # Runtime flags/caches (local to this module)
 _cache_lock = threading.Lock()
@@ -58,6 +59,8 @@ def _write_lapi_config() -> None:
     via the -c flag. The password is written only to the credentials file, never
     to the config file.
     """
+    os.makedirs(os.path.join(_LAPI_CS_DIR, "data"), exist_ok=True)
+    os.makedirs(os.path.join(_LAPI_CS_DIR, "hub"), exist_ok=True)
     credentials_fd = os.open(
         _LAPI_CREDENTIALS_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
     )
@@ -73,6 +76,10 @@ def _write_lapi_config() -> None:
             "common:\n"
             "  log_level: warning\n"
             "  log_media: stdout\n"
+            "config_paths:\n"
+            f"  config_dir: {_LAPI_CS_DIR}\n"
+            f"  data_dir: {_LAPI_CS_DIR}/data\n"
+            f"  hub_dir: {_LAPI_CS_DIR}/hub\n"
             "api:\n"
             "  client:\n"
             "    insecure_skip_verify: false\n"
