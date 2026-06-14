@@ -28,28 +28,12 @@ services:
       # ---------------------------------------------------------------------------
       # CrowdSec integration (optional — disabled by default)
       # ---------------------------------------------------------------------------
+      # Requires the Docker socket mounted read-only (see volumes below).
+      # Set CROWDSEC_CMD_PREFIX to the name of your CrowdSec container.
       CROWDSEC_ENABLED: "false"
       CROWDSEC_ALLOWLIST_NAME: pangolin-ip-rule-manager
       CROWDSEC_CACHE_TTL_SECONDS: "3600"
-
-      # --- Mode A: LAPI (recommended) ---
-      # cscli runs inside this container and authenticates to the CrowdSec LAPI
-      # over the Docker network. No docker socket mount required.
-      #
-      # One-time setup on your CrowdSec host:
-      #   docker exec crowdsec cscli machines add pangolin-ip-rule-manager --auto -f -
-      #   (prefix with sudo if your Docker setup requires it)
-      # Copy the printed login and password into the vars below.
-      # The container must be on the same Docker network as CrowdSec (see below).
-      CROWDSEC_LAPI_URL: ${CROWDSEC_LAPI_URL}       # e.g. http://crowdsec:8080 — required for LAPI mode
-      CROWDSEC_LAPI_LOGIN: ${CROWDSEC_LAPI_LOGIN}   # machine login from cscli machines add
-      CROWDSEC_LAPI_PASSWORD: ${CROWDSEC_LAPI_PASSWORD} # machine password from cscli machines add
-
-      # --- Mode B: Docker exec (legacy) ---
-      # Runs cscli inside the CrowdSec container via `docker exec`. Requires the
-      # Docker socket to be mounted (see volumes below) and docker-cli in the image.
-      # Leave these empty when using Mode A.
-      CROWDSEC_CMD_PREFIX: ""   # set to "docker exec crowdsec" for Mode B
+      CROWDSEC_CMD_PREFIX: "docker exec crowdsec"
       CROWDSEC_CSCLI_BIN: cscli
 
       # ---------------------------------------------------------------------------
@@ -60,11 +44,8 @@ services:
     volumes:
       - pangolin-ip-rule-manager-data:/data
 
-      # Required for Mode B (docker exec) only. Remove or leave commented for Mode A.
+      # Required for CrowdSec integration. Mount the Docker socket read-only.
       # - /var/run/docker.sock:/var/run/docker.sock:ro
-
-    networks:
-      - pangolin
 
     restart: unless-stopped
 
@@ -77,10 +58,3 @@ services:
 
 volumes:
   pangolin-ip-rule-manager-data: {}
-
-networks:
-  pangolin:
-    external: true
-    # This network must include the CrowdSec container so the LAPI URL
-    # (e.g. http://crowdsec:8080) is reachable. Required for Mode A.
-    # If your network has a different name, update both here and in CROWDSEC_LAPI_URL.
