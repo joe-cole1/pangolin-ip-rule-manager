@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shlex
 import subprocess
 import threading
@@ -26,9 +27,29 @@ _cache_lock = threading.Lock()
 _crowdsec_allowlist_ready = False
 _crowdsec_cache = {"ts": 0.0, "ip_set": set()}
 
+# Allowlist names must be alphanumeric + hyphens/underscores, 1–63 chars.
+_ALLOWLIST_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$")
+
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _validate_ip(ip: str) -> None:
+    """Raise ValueError if ip is not a valid IPv4 or IPv6 address."""
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        raise ValueError(f"invalid IP address passed to CrowdSec connector: {ip!r}")
+
+
+def _validate_allowlist_name(name: str) -> None:
+    """Raise ValueError if name contains characters that are not safe for cscli arguments."""
+    if not name or not _ALLOWLIST_NAME_RE.match(name):
+        raise ValueError(
+            f"invalid CrowdSec allowlist name {name!r} — "
+            "use alphanumeric characters, hyphens, or underscores only (max 63 chars)"
+        )
 
 
 def _build_cscli_cmd(args: list[str]) -> list[str]:
@@ -36,7 +57,11 @@ def _build_cscli_cmd(args: list[str]) -> list[str]:
     if CROWDSEC_CMD_PREFIX:
         try:
             parts.extend(shlex.split(CROWDSEC_CMD_PREFIX))
-        except Exception:
+        except Exception as e:
+            print(
+                f"[crowdsec] WARNING: could not parse CROWDSEC_CMD_PREFIX with shlex ({e}); "
+                "treating as single token"
+            )
             parts.append(CROWDSEC_CMD_PREFIX)
     parts.append(CROWDSEC_CSCLI_BIN)
     parts.extend(args)
@@ -116,6 +141,14 @@ def crowdsec_ensure_allowlist() -> None:
         return
     if _crowdsec_allowlist_ready:
         return
+    if not CROWDSEC_CMD_PREFIX:
+        print(
+            "[crowdsec] WARNING: CROWDSEC_ENABLED=true but CROWDSEC_CMD_PREFIX is not set. "
+            "The container image does not ship cscli locally; all cscli calls will fail. "
+            "Set CROWDSEC_CMD_PREFIX='docker exec <crowdsec-container>' "
+            "or point DOCKER_HOST at a socket proxy."
+        )
+    _validate_allowlist_name(CROWDSEC_ALLOWLIST_NAME)
     exists = crowdsec_allowlist_exists(CROWDSEC_ALLOWLIST_NAME)
     if not exists:
         ok = crowdsec_create_allowlist(CROWDSEC_ALLOWLIST_NAME)
@@ -214,6 +247,7 @@ def _crowdsec_ip_known_or_refresh(ip: str) -> bool:
 def crowdsec_add_ip(ip: str) -> None:
     if not CROWDSEC_ENABLED:
         return
+    _validate_ip(ip)
     crowdsec_ensure_allowlist()
     # If we already know this IP is present, skip calling cscli add
     if _crowdsec_ip_known_or_refresh(ip):
@@ -267,6 +301,7 @@ def crowdsec_add_ip(ip: str) -> None:
 def crowdsec_remove_ip(ip: str) -> None:
     if not CROWDSEC_ENABLED:
         return
+    _validate_ip(ip)
     # Only attempt removal if we know it's present; otherwise refresh once and re-check
     present = ip in _get_crowdsec_ip_set_cached()
     if not present:
