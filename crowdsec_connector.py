@@ -52,16 +52,84 @@ def _validate_allowlist_name(name: str) -> None:
         )
 
 
+def _run_docker_cmd(args: list[str]) -> tuple[int, str, str]:
+    """Run a docker command directly, respecting DOCKER_HOST from the environment."""
+    try:
+        proc = subprocess.run(
+            ["docker"] + args,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except FileNotFoundError:
+        return 127, "", "docker not found"
+    except Exception as e:
+        return 1, "", str(e)
+
+
 def _crowdsec_check_connectivity() -> None:
-    """Run 'cscli version' to verify the full exec chain is reachable at startup."""
-    rc, out, err = run_cscli(["version"])
-    if rc == 0:
-        version_line = out.splitlines()[0] if out else "unknown"
-        print(f"[crowdsec] connectivity OK — {version_line}")
+    """Staged startup check to isolate socket-proxy, container, and cscli failures.
+
+    Stage 1 (docker exec prefix only): docker version — proves Docker API / socket proxy.
+    Stage 2 (docker exec prefix only): docker inspect <container> — proves container exists
+      and is running.
+    Stage 3 (always): cscli version via run_cscli — proves the full exec chain works.
+    Stages 1 and 2 are skipped when CROWDSEC_CMD_PREFIX is not a docker exec command.
+    All failures are warnings; the function never raises.
+    """
+    prefix_parts: list[str] = []
+    if CROWDSEC_CMD_PREFIX:
+        try:
+            prefix_parts = shlex.split(CROWDSEC_CMD_PREFIX)
+        except Exception:
+            prefix_parts = [CROWDSEC_CMD_PREFIX]
+
+    is_docker_exec = (
+        len(prefix_parts) >= 2
+        and prefix_parts[0] == "docker"
+        and "exec" in prefix_parts
+    )
+
+    if is_docker_exec:
+        # Stage 1: Docker API / socket proxy reachability
+        rc, out, err = _run_docker_cmd(["version", "--format", "{{.Server.Version}}"])
+        if rc != 0:
+            docker_host = os.environ.get("DOCKER_HOST", "(not set)")
+            print(
+                f"[crowdsec] WARNING: Docker API unreachable (rc={rc}): "
+                f"{err or 'no output'} — DOCKER_HOST={docker_host}"
+            )
+            return
+        print(f"[crowdsec] Docker API OK — server v{out}")
+
+        # Stage 2: CrowdSec container existence and running state
+        container = prefix_parts[-1]
+        rc2, out2, _ = _run_docker_cmd(
+            ["inspect", "--format", "{{.State.Running}}", container]
+        )
+        if rc2 != 0:
+            print(
+                f"[crowdsec] WARNING: container '{container}' not found — "
+                "check CROWDSEC_CMD_PREFIX"
+            )
+            return
+        if out2 != "true":
+            print(
+                f"[crowdsec] WARNING: container '{container}' exists but is not running"
+            )
+            return
+        print(f"[crowdsec] container '{container}' is running")
+
+    # Stage 3: cscli reachability via the full exec chain
+    rc3, out3, err3 = run_cscli(["version"])
+    if rc3 == 0:
+        version_line = out3.splitlines()[0] if out3 else "unknown"
+        print(f"[crowdsec] cscli OK — {version_line}")
     else:
         print(
-            f"[crowdsec] WARNING: connectivity check failed (rc={rc}): "
-            f"{err or 'no output'} — check DOCKER_HOST and CROWDSEC_CMD_PREFIX"
+            f"[crowdsec] WARNING: cscli check failed (rc={rc3}): "
+            f"{err3 or 'no output'} — check DOCKER_HOST and CROWDSEC_CMD_PREFIX"
         )
 
 

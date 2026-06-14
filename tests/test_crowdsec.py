@@ -822,36 +822,179 @@ def test_ensure_allowlist_invalid_name_raises(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _crowdsec_check_connectivity
+# _crowdsec_check_connectivity — staged checks
 # ---------------------------------------------------------------------------
 
 
-def test_check_connectivity_success_logs_version(monkeypatch, capsys):
-    """Successful 'cscli version' logs 'connectivity OK' with the first output line."""
+def test_check_connectivity_full_success(monkeypatch, capsys):
+    """All three stages pass — Docker API, container running, cscli OK."""
     import crowdsec_connector
 
     monkeypatch.setattr(
-        crowdsec_connector,
-        "run_cscli",
-        lambda args: (0, "v1.6.3\nextra line", ""),
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec crowdsec"
+    )
+
+    def fake_docker(args):
+        if args[0] == "version":
+            return 0, "26.1.3", ""
+        if args[0] == "inspect":
+            return 0, "true", ""
+        return 1, "", "unexpected"
+
+    monkeypatch.setattr(crowdsec_connector, "_run_docker_cmd", fake_docker)
+    monkeypatch.setattr(
+        crowdsec_connector, "run_cscli", lambda args: (0, "v1.6.3\nextra", "")
     )
     crowdsec_connector._crowdsec_check_connectivity()
     out = capsys.readouterr().out
-    assert "connectivity OK" in out
+    assert "Docker API OK" in out
+    assert "26.1.3" in out
+    assert "crowdsec' is running" in out
+    assert "cscli OK" in out
     assert "v1.6.3" in out
 
 
-def test_check_connectivity_failure_logs_warning(monkeypatch, capsys):
-    """Failed 'cscli version' logs a WARNING with the error and config hints."""
+def test_check_connectivity_docker_api_failure(monkeypatch, capsys):
+    """Stage 1 fails — Docker API unreachable; DOCKER_HOST shown; stages 2 and 3 skipped."""
     import crowdsec_connector
 
     monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec crowdsec"
+    )
+    monkeypatch.setenv("DOCKER_HOST", "tcp://socket-proxy:2375")
+    docker_calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "_run_docker_cmd",
+        lambda args: docker_calls.append(args) or (1, "", "connection refused"),
+    )
+    cscli_calls = []
+    monkeypatch.setattr(
         crowdsec_connector,
         "run_cscli",
-        lambda args: (1, "", "Cannot connect to the Docker daemon"),
+        lambda args: cscli_calls.append(args) or (0, "", ""),
     )
     crowdsec_connector._crowdsec_check_connectivity()
     out = capsys.readouterr().out
     assert "WARNING" in out
-    assert "connectivity check failed" in out
+    assert "Docker API unreachable" in out
+    assert "tcp://socket-proxy:2375" in out
+    assert len(docker_calls) == 1  # only the version call; inspect skipped
+    assert cscli_calls == []  # stage 3 skipped after stage 1 failure
+
+
+def test_check_connectivity_container_not_found(monkeypatch, capsys):
+    """Stage 1 passes, stage 2 fails (container absent); stage 3 skipped."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec crowdsec"
+    )
+
+    def fake_docker(args):
+        if args[0] == "version":
+            return 0, "26.1.3", ""
+        return 1, "", "No such container: crowdsec"
+
+    monkeypatch.setattr(crowdsec_connector, "_run_docker_cmd", fake_docker)
+    cscli_calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: cscli_calls.append(args) or (0, "", ""),
+    )
+    crowdsec_connector._crowdsec_check_connectivity()
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "not found" in out
+    assert "crowdsec" in out
+    assert cscli_calls == []
+
+
+def test_check_connectivity_container_stopped(monkeypatch, capsys):
+    """Stage 1 passes, stage 2 finds container stopped; stage 3 skipped."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec crowdsec"
+    )
+
+    def fake_docker(args):
+        if args[0] == "version":
+            return 0, "26.1.3", ""
+        return 0, "false", ""  # container exists but not running
+
+    monkeypatch.setattr(crowdsec_connector, "_run_docker_cmd", fake_docker)
+    cscli_calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: cscli_calls.append(args) or (0, "", ""),
+    )
+    crowdsec_connector._crowdsec_check_connectivity()
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "not running" in out
+    assert cscli_calls == []
+
+
+def test_check_connectivity_cscli_failure(monkeypatch, capsys):
+    """Stages 1 and 2 pass; stage 3 (cscli) fails — warning names both config knobs."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec crowdsec"
+    )
+
+    def fake_docker(args):
+        if args[0] == "version":
+            return 0, "26.1.3", ""
+        return 0, "true", ""
+
+    monkeypatch.setattr(crowdsec_connector, "_run_docker_cmd", fake_docker)
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: (1, "", "cscli: not found"),
+    )
+    crowdsec_connector._crowdsec_check_connectivity()
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "cscli check failed" in out
     assert "DOCKER_HOST" in out
+    assert "CROWDSEC_CMD_PREFIX" in out
+
+
+def test_check_connectivity_non_docker_prefix_success(monkeypatch, capsys):
+    """Non-docker prefix — stages 1 and 2 are skipped; only cscli is checked."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CMD_PREFIX", "")
+    docker_calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "_run_docker_cmd",
+        lambda args: docker_calls.append(args) or (0, "", ""),
+    )
+    monkeypatch.setattr(crowdsec_connector, "run_cscli", lambda args: (0, "v1.6.3", ""))
+    crowdsec_connector._crowdsec_check_connectivity()
+    out = capsys.readouterr().out
+    assert docker_calls == []
+    assert "cscli OK" in out
+    assert "v1.6.3" in out
+
+
+def test_check_connectivity_non_docker_prefix_failure(monkeypatch, capsys):
+    """Non-docker prefix — stages 1 and 2 skipped; cscli failure logged as warning."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CMD_PREFIX", "")
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: (127, "", "cscli not found"),
+    )
+    crowdsec_connector._crowdsec_check_connectivity()
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "cscli check failed" in out
