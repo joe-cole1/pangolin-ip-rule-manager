@@ -21,6 +21,25 @@ CROWDSEC_ALLOWLIST_NAME = os.getenv(
 ).strip()
 CROWDSEC_CACHE_TTL_SECONDS = int(os.getenv("CROWDSEC_CACHE_TTL_SECONDS", "3600"))
 
+# LAPI mode — cscli runs inside this container and authenticates to the
+# CrowdSec LAPI over the network. Takes precedence over CMD_PREFIX mode.
+CROWDSEC_LAPI_URL = os.getenv("CROWDSEC_LAPI_URL", "").strip()
+CROWDSEC_LAPI_LOGIN = os.getenv("CROWDSEC_LAPI_LOGIN", "").strip()
+CROWDSEC_LAPI_PASSWORD = os.getenv("CROWDSEC_LAPI_PASSWORD", "").strip()
+
+_LAPI_MODE = bool(CROWDSEC_LAPI_URL and CROWDSEC_LAPI_LOGIN)
+
+if _LAPI_MODE and CROWDSEC_CMD_PREFIX:
+    print(
+        "[crowdsec] WARNING: both CROWDSEC_LAPI_URL and CROWDSEC_CMD_PREFIX are set. "
+        "LAPI mode takes precedence; CROWDSEC_CMD_PREFIX will be ignored."
+    )
+
+# Paths for the cscli config files written at startup in LAPI mode.
+# These are module-level constants so tests can patch them to a tmp directory.
+_LAPI_CONFIG_PATH = "/tmp/pangolin-cs-config.yaml"
+_LAPI_CREDENTIALS_PATH = "/tmp/pangolin-cs-credentials.yaml"
+
 # Runtime flags/caches (local to this module)
 _cache_lock = threading.Lock()
 _crowdsec_allowlist_ready = False
@@ -31,7 +50,39 @@ def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _write_lapi_config() -> None:
+    """Write cscli config and credentials files for LAPI mode.
+
+    Called once at startup from crowdsec_ensure_allowlist(). The files live in
+    /tmp/ (inside the container) and are referenced by every cscli invocation
+    via the -c flag. The password is written only to the credentials file, never
+    to the config file.
+    """
+    with open(_LAPI_CREDENTIALS_PATH, "w", encoding="utf-8") as f:
+        f.write(
+            f"url: {CROWDSEC_LAPI_URL}\n"
+            f"login: {CROWDSEC_LAPI_LOGIN}\n"
+            f"password: {CROWDSEC_LAPI_PASSWORD}\n"
+        )
+    with open(_LAPI_CONFIG_PATH, "w", encoding="utf-8") as f:
+        f.write(
+            "common:\n"
+            "  log_level: warning\n"
+            "  log_media: stdout\n"
+            "api:\n"
+            "  client:\n"
+            "    insecure_skip_verify: false\n"
+            f"    credentials_path: {_LAPI_CREDENTIALS_PATH}\n"
+        )
+    print(
+        f"[crowdsec] LAPI mode: wrote cscli config to {_LAPI_CONFIG_PATH} "
+        f"(url={CROWDSEC_LAPI_URL} login={CROWDSEC_LAPI_LOGIN})"
+    )
+
+
 def _build_cscli_cmd(args: list[str]) -> list[str]:
+    if _LAPI_MODE:
+        return ["cscli", "-c", _LAPI_CONFIG_PATH] + args
     parts: list[str] = []
     if CROWDSEC_CMD_PREFIX:
         try:
@@ -116,6 +167,8 @@ def crowdsec_ensure_allowlist() -> None:
         return
     if _crowdsec_allowlist_ready:
         return
+    if _LAPI_MODE:
+        _write_lapi_config()
     exists = crowdsec_allowlist_exists(CROWDSEC_ALLOWLIST_NAME)
     if not exists:
         ok = crowdsec_create_allowlist(CROWDSEC_ALLOWLIST_NAME)

@@ -55,6 +55,9 @@ CROWDSEC_ALLOWLIST_NAME = os.getenv(
 CROWDSEC_CACHE_TTL_SECONDS = int(
     os.getenv("CROWDSEC_CACHE_TTL_SECONDS", "3600")
 )  # cache TTL for CrowdSec allowlist entries (~1h)
+# LAPI mode vars — used only in self_check() logging; actual logic is in crowdsec_connector
+CROWDSEC_LAPI_URL = os.getenv("CROWDSEC_LAPI_URL", "").strip()
+CROWDSEC_LAPI_LOGIN = os.getenv("CROWDSEC_LAPI_LOGIN", "").strip()
 # Optional: site name shown in the HTML check-in and error pages
 SITE_NAME = os.getenv("SITE_NAME", "").strip()
 # Optional: allow overriding the caller IP via /update?ip=...
@@ -477,11 +480,18 @@ def self_check():
             print("=" * 60)
             print("")
 
-    cs_status = (
-        f"enabled name='{CROWDSEC_ALLOWLIST_NAME}' bin='{CROWDSEC_CSCLI_BIN}' prefix='{CROWDSEC_CMD_PREFIX}'"
-        if CROWDSEC_ENABLED
-        else "disabled"
-    )
+    if not CROWDSEC_ENABLED:
+        cs_status = "disabled"
+    elif CROWDSEC_LAPI_URL and CROWDSEC_LAPI_LOGIN:
+        cs_status = (
+            f"enabled mode=lapi url='{CROWDSEC_LAPI_URL}' "
+            f"login='{CROWDSEC_LAPI_LOGIN}' name='{CROWDSEC_ALLOWLIST_NAME}'"
+        )
+    else:
+        cs_status = (
+            f"enabled mode=docker-exec bin='{CROWDSEC_CSCLI_BIN}' "
+            f"prefix='{CROWDSEC_CMD_PREFIX}' name='{CROWDSEC_ALLOWLIST_NAME}'"
+        )
 
     print(
         f"[self-check] OK. listen_port={LISTEN_PORT} state_file={STATE_FILE} "
