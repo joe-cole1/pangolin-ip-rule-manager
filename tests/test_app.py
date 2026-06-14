@@ -1282,6 +1282,21 @@ def test_build_cscli_cmd_custom_bin(monkeypatch):
     assert result == ["/usr/local/bin/cscli", "allowlist", "list"]
 
 
+def test_build_cscli_cmd_malformed_prefix_warns_and_falls_back(monkeypatch, capsys):
+    """Malformed prefix (unterminated quote) logs a WARNING and falls back to single token."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec 'crowdsec"
+    )
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CSCLI_BIN", "cscli")
+    result = crowdsec_connector._build_cscli_cmd(["allowlist", "list"])
+    assert result[0] == "docker exec 'crowdsec"
+    assert result[-2:] == ["allowlist", "list"]
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+
+
 # ---------------------------------------------------------------------------
 # _parse_crowdsec_entries_from_json — pure function, multiple input shapes
 # ---------------------------------------------------------------------------

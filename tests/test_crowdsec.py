@@ -613,3 +613,197 @@ def test_remove_ip_all_retries_fail_no_raise(monkeypatch):
     monkeypatch.setattr(_time, "sleep", lambda s: None)
     monkeypatch.setattr(crowdsec_connector, "run_cscli", lambda args: (1, "", "error"))
     crowdsec_connector.crowdsec_remove_ip("1.2.3.4")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# _validate_ip
+# ---------------------------------------------------------------------------
+
+
+def test_validate_ip_valid_ipv4():
+    """Valid IPv4 address passes without raising."""
+    import crowdsec_connector
+
+    crowdsec_connector._validate_ip("1.2.3.4")
+
+
+def test_validate_ip_valid_ipv6():
+    """Valid IPv6 address passes without raising."""
+    import crowdsec_connector
+
+    crowdsec_connector._validate_ip("2001:db8::1")
+
+
+def test_validate_ip_hostname_raises():
+    """Non-IP hostname raises ValueError."""
+    import crowdsec_connector
+
+    with pytest.raises(ValueError, match="invalid IP address"):
+        crowdsec_connector._validate_ip("not-an-ip")
+
+
+def test_validate_ip_flag_like_raises():
+    """Flag-like string raises ValueError — prevents flag injection via cscli arguments."""
+    import crowdsec_connector
+
+    with pytest.raises(ValueError, match="invalid IP address"):
+        crowdsec_connector._validate_ip("--output")
+
+
+def test_validate_ip_empty_raises():
+    """Empty string raises ValueError."""
+    import crowdsec_connector
+
+    with pytest.raises(ValueError):
+        crowdsec_connector._validate_ip("")
+
+
+# ---------------------------------------------------------------------------
+# _validate_allowlist_name
+# ---------------------------------------------------------------------------
+
+
+def test_validate_allowlist_name_valid():
+    """Standard alphanumeric-hyphen name passes without raising."""
+    import crowdsec_connector
+
+    crowdsec_connector._validate_allowlist_name("pangolin-ip-rule-manager")
+
+
+def test_validate_allowlist_name_underscores():
+    """Name with underscores passes without raising."""
+    import crowdsec_connector
+
+    crowdsec_connector._validate_allowlist_name("my_allowlist_1")
+
+
+def test_validate_allowlist_name_empty_raises():
+    """Empty name raises ValueError."""
+    import crowdsec_connector
+
+    with pytest.raises(ValueError, match="invalid CrowdSec allowlist name"):
+        crowdsec_connector._validate_allowlist_name("")
+
+
+def test_validate_allowlist_name_spaces_raises():
+    """Name containing spaces raises ValueError."""
+    import crowdsec_connector
+
+    with pytest.raises(ValueError, match="invalid CrowdSec allowlist name"):
+        crowdsec_connector._validate_allowlist_name("my list")
+
+
+def test_validate_allowlist_name_flag_like_raises():
+    """Name starting with '--' raises ValueError."""
+    import crowdsec_connector
+
+    with pytest.raises(ValueError, match="invalid CrowdSec allowlist name"):
+        crowdsec_connector._validate_allowlist_name("--dry-run")
+
+
+def test_validate_allowlist_name_too_long_raises():
+    """Name longer than 63 chars raises ValueError."""
+    import crowdsec_connector
+
+    with pytest.raises(ValueError, match="invalid CrowdSec allowlist name"):
+        crowdsec_connector._validate_allowlist_name("a" * 64)
+
+
+# ---------------------------------------------------------------------------
+# crowdsec_add_ip — IP validation guard
+# ---------------------------------------------------------------------------
+
+
+def test_add_ip_invalid_raises_before_subprocess(monkeypatch):
+    """Non-IP string raises ValueError before any subprocess call."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: calls.append(args) or (0, "", ""),
+    )
+    with pytest.raises(ValueError, match="invalid IP address"):
+        crowdsec_connector.crowdsec_add_ip("not-an-ip")
+    assert calls == []
+
+
+def test_add_ip_flag_like_raises_before_subprocess(monkeypatch):
+    """Flag-like string raises ValueError before any subprocess call."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: calls.append(args) or (0, "", ""),
+    )
+    with pytest.raises(ValueError, match="invalid IP address"):
+        crowdsec_connector.crowdsec_add_ip("--output")
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# crowdsec_remove_ip — IP validation guard
+# ---------------------------------------------------------------------------
+
+
+def test_remove_ip_invalid_raises_before_subprocess(monkeypatch):
+    """Non-IP string raises ValueError before any subprocess call."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: calls.append(args) or (0, "", ""),
+    )
+    with pytest.raises(ValueError, match="invalid IP address"):
+        crowdsec_connector.crowdsec_remove_ip("not-an-ip")
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# crowdsec_ensure_allowlist — startup warnings and name validation
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_allowlist_warns_on_empty_prefix(monkeypatch, capsys):
+    """Empty CROWDSEC_CMD_PREFIX with CrowdSec enabled prints a WARNING."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CMD_PREFIX", "")
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
+    monkeypatch.setattr(
+        crowdsec_connector, "crowdsec_allowlist_exists", lambda name: True
+    )
+    crowdsec_connector.crowdsec_ensure_allowlist()
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "CROWDSEC_CMD_PREFIX" in out
+
+
+def test_ensure_allowlist_invalid_name_raises(monkeypatch):
+    """Invalid CROWDSEC_ALLOWLIST_NAME raises ValueError before allowlist check."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec crowdsec"
+    )
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "bad name!")
+    exists_calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "crowdsec_allowlist_exists",
+        lambda name: exists_calls.append(name) or False,
+    )
+    with pytest.raises(ValueError, match="invalid CrowdSec allowlist name"):
+        crowdsec_connector.crowdsec_ensure_allowlist()
+    assert exists_calls == []
+    assert not crowdsec_connector._crowdsec_allowlist_ready
