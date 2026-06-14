@@ -175,7 +175,7 @@ services:
       # over the Docker network. No Docker socket mount required.
       #
       # One-time setup on your CrowdSec host:
-      #   docker exec crowdsec cscli machines add pangolin-ip-rule-manager -f -
+      #   docker exec crowdsec cscli machines add pangolin-ip-rule-manager --auto -f -
       # Copy the printed login and password into the vars below.
       # The container must be on the same Docker network as CrowdSec (see below).
       CROWDSEC_LAPI_URL: ${CROWDSEC_LAPI_URL}           # e.g. http://crowdsec:8080
@@ -325,10 +325,12 @@ Pangolin and CrowdSec are handled independently. If one succeeds and the other f
 **One-time setup on your CrowdSec host:**
 
 ```bash
-docker exec crowdsec cscli machines add pangolin-ip-rule-manager -f -
+docker exec crowdsec cscli machines add pangolin-ip-rule-manager --auto -f -
 ```
 
-This prints a login and password. Store them securely (e.g., Bitwarden) and inject them as environment variables:
+> Depending on your Docker setup you may need to prefix with `sudo`.
+
+This prints a login and password to stdout. Store them securely (e.g., Bitwarden) and inject them as environment variables:
 
 ```yaml
 CROWDSEC_ENABLED: "true"
