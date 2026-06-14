@@ -58,13 +58,17 @@ def _write_lapi_config() -> None:
     via the -c flag. The password is written only to the credentials file, never
     to the config file.
     """
-    with open(_LAPI_CREDENTIALS_PATH, "w", encoding="utf-8") as f:
+    credentials_fd = os.open(
+        _LAPI_CREDENTIALS_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+    )
+    with os.fdopen(credentials_fd, "w", encoding="utf-8") as f:
         f.write(
             f"url: {CROWDSEC_LAPI_URL}\n"
             f"login: {CROWDSEC_LAPI_LOGIN}\n"
             f"password: {CROWDSEC_LAPI_PASSWORD}\n"
         )
-    with open(_LAPI_CONFIG_PATH, "w", encoding="utf-8") as f:
+    config_fd = os.open(_LAPI_CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(config_fd, "w", encoding="utf-8") as f:
         f.write(
             "common:\n"
             "  log_level: warning\n"
