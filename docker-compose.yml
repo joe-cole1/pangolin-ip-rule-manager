@@ -28,13 +28,24 @@ services:
       # ---------------------------------------------------------------------------
       # CrowdSec integration (optional — disabled by default)
       # ---------------------------------------------------------------------------
-      # Requires the Docker socket mounted read-only (see volumes below).
-      # Set CROWDSEC_CMD_PREFIX to the name of your CrowdSec container.
       CROWDSEC_ENABLED: "false"
       CROWDSEC_ALLOWLIST_NAME: pangolin-ip-rule-manager
       CROWDSEC_CACHE_TTL_SECONDS: "3600"
       CROWDSEC_CMD_PREFIX: "docker exec crowdsec"
       CROWDSEC_CSCLI_BIN: cscli
+
+      # ---------------------------------------------------------------------------
+      # Socket proxy (STRONGLY RECOMMENDED when CrowdSec is enabled)
+      # ---------------------------------------------------------------------------
+      # A socket proxy limits Docker API access to exec operations only, preventing
+      # this container from acting as a backdoor to the full Docker daemon.
+      #
+      # To use: uncomment DOCKER_HOST below, uncomment the socket-proxy service
+      # and networks section at the bottom of this file, and remove the direct
+      # docker.sock volume mount. No code changes are required — the docker CLI
+      # picks up DOCKER_HOST automatically.
+      #
+      # DOCKER_HOST: tcp://socket-proxy:2375
 
       # ---------------------------------------------------------------------------
       # Optional endpoints
@@ -44,8 +55,24 @@ services:
     volumes:
       - pangolin-ip-rule-manager-data:/data
 
-      # Required for CrowdSec integration. Mount the Docker socket read-only.
+      # ---------------------------------------------------------------------------
+      # Docker socket — choose ONE of the two options below when CrowdSec is enabled
+      # ---------------------------------------------------------------------------
+      #
+      # Option A — Direct socket mount (not recommended)
+      # Gives this container full Docker API access (equivalent to root on the host).
+      # Use only if you cannot run a socket proxy.
+      #
       # - /var/run/docker.sock:/var/run/docker.sock:ro
+      #
+      # Option B — Socket proxy (STRONGLY RECOMMENDED)
+      # Uncomment DOCKER_HOST above and the socket-proxy service below instead.
+      # This option requires no volume mount here.
+
+    # Uncomment when using the socket proxy:
+    # networks:
+    #   - default
+    #   - socket-proxy
 
     restart: unless-stopped
 
@@ -56,5 +83,42 @@ services:
       retries: 3
       start_period: 15s
 
+  # ---------------------------------------------------------------------------
+  # Docker socket proxy (STRONGLY RECOMMENDED for CrowdSec integration)
+  # ---------------------------------------------------------------------------
+  # Restricts Docker API access to exec operations only. The pangolin-ip-rule-manager
+  # container runs 'docker exec crowdsec cscli ...' via subprocess; the docker CLI
+  # reads DOCKER_HOST and routes through the proxy instead of the raw socket.
+  #
+  # Required permissions for 'docker exec':
+  #   CONTAINERS=1  — resolve container name to ID (GET /containers/{name}/json)
+  #   EXEC=1        — create and start exec instances (POST /containers/{id}/exec,
+  #                   POST /exec/{id}/start)
+  #   POST=1        — allow POST methods for the above
+  #   All other APIs remain disabled (default 0).
+  #
+  # Uncomment this entire block and the networks section below to enable.
+  #
+  # socket-proxy:
+  #   image: tecnativa/docker-socket-proxy:latest
+  #   container_name: socket-proxy
+  #   environment:
+  #     CONTAINERS: 1
+  #     EXEC: 1
+  #     POST: 1
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   networks:
+  #     - socket-proxy
+  #   restart: unless-stopped
+
 volumes:
   pangolin-ip-rule-manager-data: {}
+
+# Uncomment when using the socket proxy.
+# The 'internal: true' flag prevents the proxy from having outbound internet access —
+# it only needs to reach the Docker socket on the host.
+#
+# networks:
+#   socket-proxy:
+#     internal: true
