@@ -37,7 +37,8 @@ services:
       # over the Docker network. No docker socket mount required.
       #
       # One-time setup on your CrowdSec host:
-      #   docker exec crowdsec cscli machines add pangolin-ip-rule-manager -f -
+      #   docker exec crowdsec cscli machines add pangolin-ip-rule-manager --auto -f -
+      #   (prefix with sudo if your Docker setup requires it)
       # Copy the printed login and password into the vars below.
       # The container must be on the same Docker network as CrowdSec (see below).
       CROWDSEC_LAPI_URL: ${CROWDSEC_LAPI_URL}       # e.g. http://crowdsec:8080 — required for LAPI mode
