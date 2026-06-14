@@ -24,12 +24,13 @@ pangolin-ip-rule-manager/
 ├── pangolin_connector.py    # All Pangolin API interaction: PangolinContext dataclass, retry logic
 ├── crowdsec_connector.py    # CrowdSec integration via cscli subprocess
 ├── requirements.txt         # Dev dependencies (pytest, ruff) — not used in the runtime image
-├── Dockerfile               # python:3.14-alpine; includes docker-cli for CrowdSec integration
+├── Dockerfile               # python:3.14-alpine; docker-cli (Mode B) + cscli (Mode A, multi-stage from crowdsecurity/crowdsec)
 ├── docker-compose.yml       # Reference compose file — actual deployment uses Portainer
 ├── config.env.sample        # Every environment variable with inline documentation
 └── tests/
     ├── conftest.py          # sys.path setup for pytest
-    └── test_app.py          # All tests (unit + integration)
+    ├── test_app.py          # App-level unit + integration tests
+    └── test_crowdsec.py     # CrowdSec connector unit tests
 ```
 
 There is no `Makefile` and no `pyproject.toml`. The application uses Python stdlib only —
@@ -75,9 +76,14 @@ All configuration is injected at runtime via environment variables.
 |---|---|---|
 | `CROWDSEC_ENABLED` | `false` | Enable CrowdSec integration |
 | `CROWDSEC_ALLOWLIST_NAME` | `pangolin-ip-rule-manager` | Allowlist name in CrowdSec |
-| `CROWDSEC_CSCLI_BIN` | `cscli` | Path to the cscli binary |
-| `CROWDSEC_CMD_PREFIX` | _(empty)_ | Command prefix, e.g. `docker exec crowdsec` |
 | `CROWDSEC_CACHE_TTL_SECONDS` | `3600` | Cache TTL for CrowdSec allowlist membership checks |
+| **Mode A — LAPI** | | |
+| `CROWDSEC_LAPI_URL` | _(empty)_ | CrowdSec LAPI URL, e.g. `http://crowdsec:8080`. Setting this + `CROWDSEC_LAPI_LOGIN` activates LAPI mode. |
+| `CROWDSEC_LAPI_LOGIN` | _(empty)_ | Machine login from `cscli machines add` |
+| `CROWDSEC_LAPI_PASSWORD` | _(empty)_ | Machine password from `cscli machines add` |
+| **Mode B — Docker exec** | | |
+| `CROWDSEC_CMD_PREFIX` | _(empty)_ | Command prefix, e.g. `docker exec crowdsec` |
+| `CROWDSEC_CSCLI_BIN` | `cscli` | Path to the cscli binary inside the CrowdSec container |
 
 ---
 
@@ -87,12 +93,10 @@ All configuration is injected at runtime via environment variables.
 pytest
 ```
 
-Tests live in `tests/test_app.py`. `conftest.py` handles `sys.path`. All tests use
-`monkeypatch` to avoid real network calls — no live instance or credentials are needed
-to run the suite.
-
-`tests/test_crowdsec.py` does not exist yet. CrowdSec unit tests are explicitly
-deferred pending a CrowdSec refactor.
+Tests live in `tests/test_app.py` (app-level) and `tests/test_crowdsec.py` (CrowdSec
+connector). `conftest.py` handles `sys.path`. All tests use `monkeypatch` to avoid
+real subprocess or network calls — no live instance or credentials are needed to run
+the suite.
 
 ---
 
@@ -209,6 +213,19 @@ Branch protection is active on `master` (PR required, no force push, no
 deletion). A GitHub Actions workflow auto-force-resets `dev` to `master` on
 release publish. Release notes are auto-generated from PR labels per
 `.github/release.yml`.
+
+**PR labels for release notes** — each PR must carry exactly one label so the
+auto-generated release notes are accurate. Valid labels and their categories:
+
+| Label | Release notes category |
+|---|---|
+| `enhancement` / `feature` / `new` | Enhancements |
+| `bug` / `fix` | Bug Fixes |
+| `security` | Security |
+| `dependencies` / `chore` / `documentation` | Miscellaneous |
+
+One concern per PR. Bundling multiple concerns into one PR causes inaccurate
+release notes regardless of labels.
 
 ---
 
