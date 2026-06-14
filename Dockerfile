@@ -1,8 +1,12 @@
 # Minimal Python stdlib-only image
+FROM crowdsecurity/crowdsec AS crowdsec
+
 FROM python:3.14-alpine
 
-# Install Docker CLI for optional CrowdSec integration via 'docker exec crowdsec cscli ...'
+# docker-cli: supports CrowdSec Mode B (docker exec). cscli: supports Mode A (LAPI).
+# Both are inert unless the corresponding env vars are set at runtime.
 RUN apk add --no-cache docker-cli
+COPY --from=crowdsec /usr/local/bin/cscli /usr/local/bin/cscli
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
