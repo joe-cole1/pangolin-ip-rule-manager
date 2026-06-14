@@ -708,6 +708,7 @@ def test_write_lapi_config_creates_files(monkeypatch, tmp_path):
     creds = str(tmp_path / "credentials.yaml")
     monkeypatch.setattr(crowdsec_connector, "_LAPI_CONFIG_PATH", cfg)
     monkeypatch.setattr(crowdsec_connector, "_LAPI_CREDENTIALS_PATH", creds)
+    monkeypatch.setattr(crowdsec_connector, "_LAPI_CS_DIR", str(tmp_path / "cs"))
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_URL", "http://crowdsec:8080")
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_LOGIN", "pangolin-test")
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_PASSWORD", "s3cr3t")
@@ -726,6 +727,7 @@ def test_write_lapi_config_credentials_content(monkeypatch, tmp_path):
     creds = str(tmp_path / "credentials.yaml")
     monkeypatch.setattr(crowdsec_connector, "_LAPI_CONFIG_PATH", cfg)
     monkeypatch.setattr(crowdsec_connector, "_LAPI_CREDENTIALS_PATH", creds)
+    monkeypatch.setattr(crowdsec_connector, "_LAPI_CS_DIR", str(tmp_path / "cs"))
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_URL", "http://crowdsec:8080")
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_LOGIN", "pangolin-test")
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_PASSWORD", "s3cr3t")
@@ -746,6 +748,7 @@ def test_write_lapi_config_password_not_in_config_file(monkeypatch, tmp_path):
     creds = str(tmp_path / "credentials.yaml")
     monkeypatch.setattr(crowdsec_connector, "_LAPI_CONFIG_PATH", cfg)
     monkeypatch.setattr(crowdsec_connector, "_LAPI_CREDENTIALS_PATH", creds)
+    monkeypatch.setattr(crowdsec_connector, "_LAPI_CS_DIR", str(tmp_path / "cs"))
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_URL", "http://crowdsec:8080")
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_LOGIN", "pangolin-test")
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_PASSWORD", "s3cr3t")
@@ -764,6 +767,7 @@ def test_write_lapi_config_references_credentials_path(monkeypatch, tmp_path):
     creds = str(tmp_path / "credentials.yaml")
     monkeypatch.setattr(crowdsec_connector, "_LAPI_CONFIG_PATH", cfg)
     monkeypatch.setattr(crowdsec_connector, "_LAPI_CREDENTIALS_PATH", creds)
+    monkeypatch.setattr(crowdsec_connector, "_LAPI_CS_DIR", str(tmp_path / "cs"))
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_URL", "http://crowdsec:8080")
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_LOGIN", "pangolin-test")
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_PASSWORD", "s3cr3t")
@@ -772,6 +776,31 @@ def test_write_lapi_config_references_credentials_path(monkeypatch, tmp_path):
 
     config_content = (tmp_path / "config.yaml").read_text()
     assert creds in config_content
+
+
+def test_write_lapi_config_includes_config_paths(monkeypatch, tmp_path):
+    """config.yaml includes a config_paths section so cscli can find its directories."""
+    import crowdsec_connector
+
+    cs_dir = str(tmp_path / "cs")
+    monkeypatch.setattr(
+        crowdsec_connector, "_LAPI_CONFIG_PATH", str(tmp_path / "config.yaml")
+    )
+    monkeypatch.setattr(
+        crowdsec_connector, "_LAPI_CREDENTIALS_PATH", str(tmp_path / "creds.yaml")
+    )
+    monkeypatch.setattr(crowdsec_connector, "_LAPI_CS_DIR", cs_dir)
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_URL", "http://crowdsec:8080")
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_LOGIN", "pangolin-test")
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_PASSWORD", "s3cr3t")
+
+    crowdsec_connector._write_lapi_config()
+
+    config_content = (tmp_path / "config.yaml").read_text()
+    assert "config_paths:" in config_content
+    assert cs_dir in config_content
+    assert (tmp_path / "cs" / "data").is_dir()
+    assert (tmp_path / "cs" / "hub").is_dir()
 
 
 def test_ensure_allowlist_calls_write_lapi_config_in_lapi_mode(monkeypatch, tmp_path):
@@ -784,6 +813,7 @@ def test_ensure_allowlist_calls_write_lapi_config_in_lapi_mode(monkeypatch, tmp_
     monkeypatch.setattr(crowdsec_connector, "_LAPI_MODE", True)
     monkeypatch.setattr(crowdsec_connector, "_LAPI_CONFIG_PATH", cfg)
     monkeypatch.setattr(crowdsec_connector, "_LAPI_CREDENTIALS_PATH", creds)
+    monkeypatch.setattr(crowdsec_connector, "_LAPI_CS_DIR", str(tmp_path / "cs"))
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_URL", "http://crowdsec:8080")
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_LOGIN", "pangolin-test")
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_LAPI_PASSWORD", "s3cr3t")
