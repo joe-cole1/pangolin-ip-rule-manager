@@ -2,10 +2,10 @@ name: Python package
 
 on:
   workflow_dispatch:
-  #push:
-#    branches: [ "master" ]
-#  pull_request:
-#    branches: [ "master" ]
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
 
 # Elevate write permissions globally so the action can create branches and PRs
 permissions:
