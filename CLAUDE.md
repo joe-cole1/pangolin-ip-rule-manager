@@ -155,6 +155,16 @@ These apply to every session. Do not deviate without explicit instruction.
   chain must be validated against the test instance before going to production.
 - **Never rewrite a file unnecessarily.** Prefer targeted edits.
 
+### Before pushing to an existing branch
+
+- **Always verify the PR is still open before pushing.** Use `pull_request_read`
+  (GitHub MCP) to check `state` and `merged` before adding commits to any branch
+  that has or had a PR. If the PR is merged or closed, create a new branch from
+  the current `master` and open a fresh PR instead.
+- **Treat "Create a pull request" in push output as a red flag.** This message
+  means the branch did not previously exist on the remote — the original was
+  likely deleted after merge. Stop, check master, and open a new PR.
+
 ### Code conventions
 
 - **Python 3.14, stdlib only.** No new pip runtime dependencies.
