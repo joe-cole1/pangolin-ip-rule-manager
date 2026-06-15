@@ -1520,3 +1520,267 @@ def test_get_real_ip_ipv6_accepted():
     """Valid global IPv6 in X-Real-IP → returned normalised."""
     h = _make_handler_for_ip_test({"X-Real-IP": "2606:4700:4700::1111"})
     assert h._get_real_ip() == "2606:4700:4700::1111"
+
+
+# ---------------------------------------------------------------------------
+# pangolin_connector unit tests
+# ---------------------------------------------------------------------------
+
+
+def _make_pg_ctx(
+    http_json=None,
+    token="test-token",
+    resource_ids=None,
+    rules_cache=None,
+    state=None,
+    save_calls=None,
+):
+    """Construct a PangolinContext with all injected dependencies faked."""
+    import pangolin_connector
+
+    _state = state if state is not None else {}
+    _cache = rules_cache if rules_cache is not None else {}
+    _saves = save_calls if save_calls is not None else []
+    return pangolin_connector.PangolinContext(
+        url="https://pg.test",
+        token=token,
+        resource_ids=resource_ids or [5],
+        rule_priority=0,
+        rules_cache_ttl_seconds=3600,
+        rules_cache=_cache,
+        state=_state,
+        state_lock=threading.Lock(),
+        save_state=lambda: _saves.append(1),
+        now_utc_iso=lambda: "2025-01-01T00:00:00+00:00",
+        http_json=http_json or (lambda m, u, b=None: {}),
+    )
+
+
+# --- delete_ip_rule_if_created_by_us ---
+
+
+def test_delete_rule_absent_returns_true():
+    """GET returns no matching IP rules — rule already gone, returns True."""
+    import pangolin_connector
+
+    ctx = _make_pg_ctx(http_json=lambda m, u, b=None: {"data": {"rules": []}})
+    assert pangolin_connector.delete_ip_rule_if_created_by_us(ctx, "1.2.3.4", 5) is True
+
+
+def test_delete_rule_success_returns_true():
+    """Rule with ruleId=42 found; DELETE issued and succeeds; returns True."""
+    import pangolin_connector
+
+    calls = []
+
+    def fake_http(method, url, body=None):
+        calls.append((method, url))
+        if method == "GET":
+            return {
+                "data": {"rules": [{"match": "IP", "value": "1.2.3.4", "ruleId": 42}]}
+            }
+        return {}
+
+    ctx = _make_pg_ctx(http_json=fake_http)
+    result = pangolin_connector.delete_ip_rule_if_created_by_us(ctx, "1.2.3.4", 5)
+    assert result is True
+    assert any("DELETE" == m and "rule/42" in u for m, u in calls), (
+        "DELETE must be called with the correct rule URL"
+    )
+
+
+def test_delete_rule_no_rule_id_returns_false():
+    """Matching rule has no ruleId field — skipped, deleted_any stays False, returns False."""
+    import pangolin_connector
+
+    def fake_http(method, url, body=None):
+        if method == "GET":
+            return {"data": {"rules": [{"match": "IP", "value": "1.2.3.4"}]}}
+        return {}
+
+    ctx = _make_pg_ctx(http_json=fake_http)
+    assert (
+        pangolin_connector.delete_ip_rule_if_created_by_us(ctx, "1.2.3.4", 5) is False
+    )
+
+
+def test_delete_multiple_matching_rules_all_deleted():
+    """Two rules for same IP — both DELETEs called, returns True."""
+    import pangolin_connector
+
+    deleted_ids = []
+
+    def fake_http(method, url, body=None):
+        if method == "GET":
+            return {
+                "data": {
+                    "rules": [
+                        {"match": "IP", "value": "1.2.3.4", "ruleId": 10},
+                        {"match": "IP", "value": "1.2.3.4", "ruleId": 11},
+                    ]
+                }
+            }
+        if method == "DELETE":
+            deleted_ids.append(url.split("/")[-1])
+        return {}
+
+    ctx = _make_pg_ctx(http_json=fake_http)
+    result = pangolin_connector.delete_ip_rule_if_created_by_us(ctx, "1.2.3.4", 5)
+    assert result is True
+    assert set(deleted_ids) == {"10", "11"}
+
+
+def test_delete_get_fails_returns_false(monkeypatch):
+    """GET raises RuntimeError — outer except catches it, returns False without propagating."""
+    import pangolin_connector
+
+    monkeypatch.setattr(_time_mod, "sleep", lambda _: None)
+
+    def fake_http(method, url, body=None):
+        raise RuntimeError("HTTP 500 Internal Server Error")
+
+    ctx = _make_pg_ctx(http_json=fake_http)
+    assert (
+        pangolin_connector.delete_ip_rule_if_created_by_us(ctx, "1.2.3.4", 5) is False
+    )
+
+
+# --- ensure_ip_rule ---
+
+
+def test_ensure_ip_rule_no_token_raises():
+    """Empty token raises RuntimeError immediately — http_json never called."""
+    import pangolin_connector
+
+    calls = []
+    ctx = _make_pg_ctx(
+        http_json=lambda m, u, b=None: calls.append((m, u)) or {},
+        token="",
+    )
+    with pytest.raises(RuntimeError, match="PANGOLIN_TOKEN"):
+        pangolin_connector.ensure_ip_rule(ctx, "1.2.3.4")
+    assert calls == [], "http_json must not be called when token is empty"
+
+
+def test_ensure_ip_rule_existing_rule_not_created_by_us():
+    """IP already in cached ip_set — state written with created_by_us=False, no PUT."""
+    import pangolin_connector
+
+    put_calls = []
+
+    def fake_http(method, url, body=None):
+        if method == "PUT":
+            put_calls.append(url)
+        return {}
+
+    save_calls = []
+    state = {}
+    rules_cache = {5: {"ts": _time_mod.time(), "ip_set": {"1.2.3.4"}}}
+    ctx = _make_pg_ctx(
+        http_json=fake_http,
+        rules_cache=rules_cache,
+        state=state,
+        save_calls=save_calls,
+    )
+    pangolin_connector.ensure_ip_rule(ctx, "1.2.3.4")
+
+    assert put_calls == [], "No PUT should be issued when rule already exists in cache"
+    assert state["1.2.3.4"]["resources"]["5"]["created_by_us"] is False
+    assert save_calls, (
+        "save_state must be called to persist the not-created-by-us record"
+    )
+
+
+def test_ensure_ip_rule_partial_failure_raises(monkeypatch):
+    """Resource 5 PUT succeeds, resource 6 PUT fails → RuntimeError 1/2; resource 5 in state."""
+    import pangolin_connector
+
+    monkeypatch.setattr(_time_mod, "sleep", lambda _: None)
+
+    state = {}
+    save_calls = []
+
+    def fake_http(method, url, body=None):
+        if method == "GET":
+            return {"data": {"rules": []}}
+        if method == "PUT" and "/resource/5/rule" in url:
+            return {"success": True}
+        if method == "PUT" and "/resource/6/rule" in url:
+            raise RuntimeError("HTTP 500 rule creation failed")
+        return {}
+
+    ctx = _make_pg_ctx(
+        http_json=fake_http,
+        resource_ids=[5, 6],
+        state=state,
+        save_calls=save_calls,
+    )
+    with pytest.raises(RuntimeError, match="1/2"):
+        pangolin_connector.ensure_ip_rule(ctx, "1.2.3.4")
+
+    resources = state.get("1.2.3.4", {}).get("resources", {})
+    assert resources.get("5", {}).get("created_by_us") is True, (
+        "Resource 5 succeeded — must be recorded in state"
+    )
+    assert "6" not in resources, "Resource 6 failed — must not appear in state"
+
+
+# --- get_ip_set_for_resource_cached ---
+
+
+def test_cache_expired_triggers_refresh():
+    """Cache entry with ts=0 (epoch) is expired — http_json called, fresh ip_set returned."""
+    import pangolin_connector
+
+    call_count = {"n": 0}
+
+    def fake_http(method, url, body=None):
+        call_count["n"] += 1
+        return {"data": {"rules": [{"match": "IP", "value": "fresh-ip"}]}}
+
+    rules_cache = {5: {"ts": 0, "ip_set": {"stale-ip"}}}
+    ctx = _make_pg_ctx(http_json=fake_http, rules_cache=rules_cache)
+
+    result = pangolin_connector.get_ip_set_for_resource_cached(ctx, 5)
+    assert "fresh-ip" in result
+    assert "stale-ip" not in result
+    assert call_count["n"] == 1, "http_json must be called exactly once for the refresh"
+
+
+# --- no-token guards ---
+
+
+def test_get_user_info_no_token_raises():
+    """get_user_info raises RuntimeError immediately when token is empty."""
+    import pangolin_connector
+
+    ctx = _make_pg_ctx(token="")
+    with pytest.raises(RuntimeError, match="PANGOLIN_TOKEN"):
+        pangolin_connector.get_user_info(ctx, "org1", "user@test.com")
+
+
+def test_get_resource_allowed_role_ids_no_token_raises():
+    """get_resource_allowed_role_ids raises RuntimeError immediately when token is empty."""
+    import pangolin_connector
+
+    ctx = _make_pg_ctx(token="")
+    with pytest.raises(RuntimeError, match="PANGOLIN_TOKEN"):
+        pangolin_connector.get_resource_allowed_role_ids(ctx, 5)
+
+
+def test_get_resource_allowed_user_ids_no_token_raises():
+    """get_resource_allowed_user_ids raises RuntimeError immediately when token is empty."""
+    import pangolin_connector
+
+    ctx = _make_pg_ctx(token="")
+    with pytest.raises(RuntimeError, match="PANGOLIN_TOKEN"):
+        pangolin_connector.get_resource_allowed_user_ids(ctx, 5)
+
+
+def test_get_resource_no_token_raises():
+    """get_resource raises RuntimeError immediately when token is empty."""
+    import pangolin_connector
+
+    ctx = _make_pg_ctx(token="")
+    with pytest.raises(RuntimeError, match="PANGOLIN_TOKEN"):
+        pangolin_connector.get_resource(ctx, 5)
