@@ -1964,3 +1964,213 @@ def test_self_check_empty_org_id_warns_not_raises(
     app.self_check()  # must not raise
     out = capsys.readouterr().out
     assert "ORG_ID" in out
+
+
+# ---------------------------------------------------------------------------
+# /update — non-global IP rejection
+# ---------------------------------------------------------------------------
+
+
+def test_update_endpoint_non_global_ip_400(monkeypatch, temp_state_file):
+    """/update?ip= with a private IP → 400."""
+    app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=True)
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/update?ip=192.168.1.1")
+        resp = conn.getresponse()
+        _ = resp.read()
+        assert resp.status == 400
+
+
+# ---------------------------------------------------------------------------
+# _build_checkin_html — unit tests
+# ---------------------------------------------------------------------------
+
+_RESULTS_OK = {
+    "pangolin": {"ok": True, "detail": "ok"},
+    "crowdsec": {"ok": False, "detail": "disabled"},
+}
+_RESULTS_FAIL = {
+    "pangolin": {"ok": False, "detail": "auth error"},
+    "crowdsec": {"ok": False, "detail": "not reached"},
+}
+_LAST_SEEN_ISO = "2025-01-01T00:00:00+00:00"
+
+
+def test_checkin_html_success_hero_and_dot():
+    """Success path → 'has access' hero text and green (non-error) dot class."""
+    from request_handler import _build_checkin_html
+
+    page = _build_checkin_html(
+        ip="1.2.3.4",
+        results=_RESULTS_OK,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+    )
+    assert "has access" in page
+    assert 'class="status-dot">' in page
+    assert 'class="status-dot err">' not in page
+
+
+def test_checkin_html_failure_hero_and_dot():
+    """Failure path → 'may not work' hero text and error dot class."""
+    from request_handler import _build_checkin_html
+
+    page = _build_checkin_html(
+        ip="1.2.3.4",
+        results=_RESULTS_FAIL,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+    )
+    assert "may not work" in page
+    assert 'class="status-dot err">' in page
+
+
+def test_checkin_html_crowdsec_disabled_badge():
+    """crowdsec_enabled=False → 'Not enabled' badge rendered."""
+    from request_handler import _build_checkin_html
+
+    page = _build_checkin_html(
+        ip="1.2.3.4",
+        results=_RESULTS_OK,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+    )
+    assert "Not enabled" in page
+
+
+def test_checkin_html_crowdsec_ok_badge():
+    """crowdsec_enabled=True and ok=True → both Pangolin and CrowdSec show 'Added'."""
+    from request_handler import _build_checkin_html
+
+    results = {
+        "pangolin": {"ok": True, "detail": "ok"},
+        "crowdsec": {"ok": True, "detail": "ok"},
+    }
+    page = _build_checkin_html(
+        ip="1.2.3.4",
+        results=results,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=True,
+    )
+    assert page.count('<span class="badge ok">Added</span>') == 2
+
+
+def test_checkin_html_resource_link_rendered():
+    """Resource with fullDomain → anchor href present in output."""
+    from request_handler import _build_checkin_html
+
+    page = _build_checkin_html(
+        ip="1.2.3.4",
+        results=_RESULTS_OK,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+        resources=[
+            {"name": "Jellyfin", "fullDomain": "jellyfin.example.com", "ssl": True}
+        ],
+    )
+    assert 'href="https://jellyfin.example.com"' in page
+    assert "Jellyfin" in page
+
+
+def test_checkin_html_resource_name_xss_escaped():
+    """Resource name with HTML special chars → escaped in output, raw tag absent."""
+    from request_handler import _build_checkin_html
+
+    page = _build_checkin_html(
+        ip="1.2.3.4",
+        results=_RESULTS_OK,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+        resources=[
+            {
+                "name": "<script>alert(1)</script>",
+                "fullDomain": "t.example.com",
+                "ssl": True,
+            }
+        ],
+    )
+    assert "<script>alert(1)</script>" not in page  # raw injection must not appear
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page  # must be escaped
+
+
+def test_checkin_html_malformed_last_seen_shows_unknown():
+    """Malformed last_seen → expiry falls back to 'unknown'."""
+    from request_handler import _build_checkin_html
+
+    page = _build_checkin_html(
+        ip="1.2.3.4",
+        results=_RESULTS_OK,
+        retention_minutes=1440,
+        last_seen="not-a-datetime",
+        crowdsec_enabled=False,
+    )
+    assert "unknown" in page
+
+
+def test_checkin_html_site_name_present():
+    """site_name set → appears in the sub div under the header."""
+    from request_handler import _build_checkin_html
+
+    page = _build_checkin_html(
+        ip="1.2.3.4",
+        results=_RESULTS_OK,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+        site_name="My Home",
+    )
+    assert 'class="sub"' in page
+    assert "My Home" in page
+
+
+def test_checkin_html_site_name_absent():
+    """site_name empty → no sub div rendered."""
+    from request_handler import _build_checkin_html
+
+    page = _build_checkin_html(
+        ip="1.2.3.4",
+        results=_RESULTS_OK,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+        site_name="",
+    )
+    assert 'class="sub"' not in page
+
+
+# ---------------------------------------------------------------------------
+# _build_error_html — unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_build_error_html_site_name_in_footer():
+    """site_name set → name and middot separator appear in footer."""
+    from request_handler import _build_error_html
+
+    page = _build_error_html("Oops", "Something broke", site_name="My Site")
+    assert "My Site" in page
+    assert "&middot;" in page
+
+
+def test_build_error_html_no_site_name_footer():
+    """site_name empty → no separator in footer, only 'Requests are logged'."""
+    from request_handler import _build_error_html
+
+    page = _build_error_html("Oops", "Something broke", site_name="")
+    assert "Requests are logged" in page
+    assert "&middot;" not in page
+
+
+def test_build_error_html_title_injected_as_is():
+    """title is injected into the page without HTML-escaping — documents current behaviour."""
+    from request_handler import _build_error_html
+
+    page = _build_error_html("Error <b>type</b>", "details")
+    assert "<b>type</b>" in page
