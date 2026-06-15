@@ -1429,3 +1429,94 @@ def test_cleanup_skips_ip_with_invalid_last_seen_format(monkeypatch, app_module)
     assert delete_calls == [], (
         "No delete must be attempted for IP with invalid last_seen"
     )
+
+
+# ---------------------------------------------------------------------------
+# _get_real_ip — IP header extraction and fallback chain
+# ---------------------------------------------------------------------------
+
+
+def _make_handler_for_ip_test(headers: dict, socket_ip: str = "10.20.30.40"):
+    """Return an ImageRequestHandler instance with fake headers and socket address.
+    Uses object.__new__ to bypass BaseHTTPRequestHandler.__init__ (which requires
+    a live socket).
+    """
+    from request_handler import create_image_request_handler
+
+    ctx = {
+        "update_enabled": False,
+        "retention_minutes": 1440,
+        "crowdsec_enabled": False,
+        "site_name": "",
+        "state": {},
+        "state_lock": threading.Lock(),
+        "now_utc_iso": lambda: "2025-01-01T00:00:00+00:00",
+        "save_state": lambda: None,
+        "add_ip_to_targets": lambda ip, remote_user="": {},
+        "banner_png": b"",
+        "banner_gif": b"",
+        "redact_headers_for_log": lambda h: h,
+    }
+    HandlerClass = create_image_request_handler(ctx)
+    instance = object.__new__(HandlerClass)
+    instance.headers = headers
+    instance.client_address = (socket_ip, 54321)
+    return instance
+
+
+def test_get_real_ip_x_real_ip_global():
+    """Valid global X-Real-IP → returned directly."""
+    h = _make_handler_for_ip_test({"X-Real-IP": "1.2.3.4"})
+    assert h._get_real_ip() == "1.2.3.4"
+
+
+def test_get_real_ip_private_x_real_ip_falls_to_xff():
+    """Private X-Real-IP rejected; valid X-Forwarded-For first entry returned."""
+    h = _make_handler_for_ip_test(
+        {"X-Real-IP": "192.168.1.1", "X-Forwarded-For": "5.6.7.8"},
+    )
+    assert h._get_real_ip() == "5.6.7.8"
+
+
+def test_get_real_ip_xff_first_entry_used():
+    """X-Forwarded-For with multiple entries: only the first is used."""
+    h = _make_handler_for_ip_test({"X-Forwarded-For": "1.2.3.4, 5.6.7.8, 9.9.9.9"})
+    assert h._get_real_ip() == "1.2.3.4"
+
+
+def test_get_real_ip_private_xff_falls_to_socket():
+    """Private X-Forwarded-For rejected; socket address returned."""
+    h = _make_handler_for_ip_test(
+        {"X-Forwarded-For": "10.0.0.1"},
+        socket_ip="9.9.9.9",
+    )
+    assert h._get_real_ip() == "9.9.9.9"
+
+
+def test_get_real_ip_no_headers_socket_fallback():
+    """Both headers absent; socket address returned."""
+    h = _make_handler_for_ip_test({}, socket_ip="8.8.8.8")
+    assert h._get_real_ip() == "8.8.8.8"
+
+
+def test_get_real_ip_both_headers_non_global_socket_fallback():
+    """Both headers carry non-global IPs; socket address returned."""
+    h = _make_handler_for_ip_test(
+        {"X-Real-IP": "192.168.0.1", "X-Forwarded-For": "172.16.0.1"},
+        socket_ip="7.7.7.7",
+    )
+    assert h._get_real_ip() == "7.7.7.7"
+
+
+def test_get_real_ip_malformed_x_real_ip_skipped():
+    """Unparseable X-Real-IP rejected; valid X-Forwarded-For used instead."""
+    h = _make_handler_for_ip_test(
+        {"X-Real-IP": "not-an-ip", "X-Forwarded-For": "3.3.3.3"},
+    )
+    assert h._get_real_ip() == "3.3.3.3"
+
+
+def test_get_real_ip_ipv6_accepted():
+    """Valid global IPv6 in X-Real-IP → returned normalised."""
+    h = _make_handler_for_ip_test({"X-Real-IP": "2606:4700:4700::1111"})
+    assert h._get_real_ip() == "2606:4700:4700::1111"
