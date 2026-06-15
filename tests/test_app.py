@@ -1784,3 +1784,183 @@ def test_get_resource_no_token_raises():
     ctx = _make_pg_ctx(token="")
     with pytest.raises(RuntimeError, match="PANGOLIN_TOKEN"):
         pangolin_connector.get_resource(ctx, 5)
+
+
+# ---------------------------------------------------------------------------
+# cleanup_old_ips — multiple resources per IP
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_multi_resource_partial_delete(monkeypatch, app_module):
+    """One resource deletes successfully, one fails — IP record stays with failing resource."""
+    app = app_module
+    monkeypatch.setattr(app, "RETENTION_MINUTES", 0)
+    monkeypatch.setattr(app, "expire_ip_from_targets", lambda _ip: None)
+
+    ip = "1.2.3.4"
+    with app.state_lock:
+        app.state[ip] = {
+            "last_seen": "2000-01-01T00:00:00Z",
+            "resources": {
+                "5": {"created_by_us": True},
+                "6": {"created_by_us": True},
+            },
+        }
+
+    def fake_delete(ip_arg, rid):
+        return rid == 5  # resource 5 succeeds, resource 6 fails
+
+    monkeypatch.setattr(app, "delete_ip_rule_if_created_by_us", fake_delete)
+    app.cleanup_old_ips()
+
+    with app.state_lock:
+        assert ip in app.state, "IP must remain when one resource delete failed"
+        resources = app.state[ip]["resources"]
+        assert "5" not in resources, "Resource 5 delete succeeded — must be removed"
+        assert "6" in resources, "Resource 6 delete failed — must remain for retry"
+
+
+def test_cleanup_multi_resource_full_delete(monkeypatch, app_module):
+    """Both resources deleted successfully — IP record fully removed."""
+    app = app_module
+    monkeypatch.setattr(app, "RETENTION_MINUTES", 0)
+    monkeypatch.setattr(app, "expire_ip_from_targets", lambda _ip: None)
+
+    ip = "2.3.4.5"
+    with app.state_lock:
+        app.state[ip] = {
+            "last_seen": "2000-01-01T00:00:00Z",
+            "resources": {
+                "5": {"created_by_us": True},
+                "6": {"created_by_us": True},
+            },
+        }
+
+    monkeypatch.setattr(
+        app, "delete_ip_rule_if_created_by_us", lambda ip_arg, rid: True
+    )
+    app.cleanup_old_ips()
+
+    with app.state_lock:
+        assert ip not in app.state, "IP must be fully removed when all deletes succeed"
+
+
+# ---------------------------------------------------------------------------
+# http_json — error handling
+# ---------------------------------------------------------------------------
+
+
+def test_http_json_http_error_raises(monkeypatch, app_module):
+    """HTTPError from urlopen → RuntimeError with status code and body in message."""
+    from io import BytesIO
+    from urllib.error import HTTPError as _HTTPError
+
+    app = app_module
+
+    def fake_urlopen(req, timeout=None):
+        raise _HTTPError(
+            url="https://pg.test/foo",
+            code=500,
+            msg="Internal Server Error",
+            hdrs={},
+            fp=BytesIO(b"something went wrong"),
+        )
+
+    monkeypatch.setattr(app, "urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError) as exc_info:
+        app.http_json("GET", "https://pg.test/foo")
+    assert "HTTP 500" in str(exc_info.value)
+    assert "something went wrong" in str(exc_info.value)
+
+
+def test_http_json_url_error_raises(monkeypatch, app_module):
+    """URLError from urlopen → RuntimeError with 'Network error' in message."""
+    from urllib.error import URLError as _URLError
+
+    app = app_module
+
+    monkeypatch.setattr(
+        app,
+        "urlopen",
+        lambda req, timeout=None: (_ for _ in ()).throw(
+            _URLError("connection refused")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="Network error"):
+        app.http_json("GET", "https://pg.test/foo")
+
+
+def test_http_json_non_json_response_returns_raw(monkeypatch, app_module):
+    """Non-JSON response body → returns {'raw': text} without raising."""
+    app = app_module
+
+    class _FakeResp:
+        class headers:
+            @staticmethod
+            def get_content_charset():
+                return "utf-8"
+
+        def read(self):
+            return b"not json at all"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    monkeypatch.setattr(app, "urlopen", lambda req, timeout=None: _FakeResp())
+    result = app.http_json("GET", "https://pg.test/foo")
+    assert result == {"raw": "not json at all"}
+
+
+# ---------------------------------------------------------------------------
+# self_check — startup validation
+# ---------------------------------------------------------------------------
+
+
+def test_self_check_missing_pangolin_url_raises(monkeypatch, app_module):
+    """Missing PANGOLIN_URL → RuntimeError at startup."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    with pytest.raises(RuntimeError, match="PANGOLIN_URL"):
+        app.self_check()
+
+
+def test_self_check_missing_resource_ids_raises(monkeypatch, app_module):
+    """Empty RESOURCE_IDS → RuntimeError at startup."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [])
+    with pytest.raises(RuntimeError, match="RESOURCE_IDS"):
+        app.self_check()
+
+
+def test_self_check_empty_token_warns_not_raises(
+    monkeypatch, app_module, capsys, tmp_path
+):
+    """Empty PANGOLIN_TOKEN → warning printed, no exception raised."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "")
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
+    app.self_check()  # must not raise
+    out = capsys.readouterr().out
+    assert "PANGOLIN_TOKEN" in out
+
+
+def test_self_check_empty_org_id_warns_not_raises(
+    monkeypatch, app_module, capsys, tmp_path
+):
+    """Empty ORG_ID → warning printed, no exception raised."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "some-token")
+    monkeypatch.setattr(app, "ORG_ID", "")
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
+    app.self_check()  # must not raise
+    out = capsys.readouterr().out
+    assert "ORG_ID" in out
