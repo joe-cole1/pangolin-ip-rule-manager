@@ -119,27 +119,35 @@ def _build_checkin_html(
 
     resource_rows = _render_resource_rows(resources or [], overall_ok)
 
-    bookmark_row = (
+    bookmark_html = (
         (
-            '      <button class="bookmark-btn" onclick="bookmarkPage()">\n'
-            '        <span class="access-link-left">\n'
-            '          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;">'
+            '  <button class="bookmark-btn" onclick="bookmarkPage()">\n'
+            '    <span class="access-link-left">\n'
+            '      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;">'
             '<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>'
             "</svg>\n"
-            '          <span class="access-link-text">\n'
-            '            <span class="access-link-label">Bookmark this page</span>\n'
-            '            <span class="access-link-url">Save for one-tap access next time</span>\n'
-            "          </span>\n"
-            "        </span>\n"
-            '        <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
+            '      <span class="access-link-text">\n'
+            '        <span class="access-link-label">Bookmark this page</span>\n'
+            '        <span class="access-link-url">Save for one-tap access next time</span>\n'
+            "      </span>\n"
+            "    </span>\n"
+            '    <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
             '<line x1="5" y1="12" x2="19" y2="12"/>'
             '<polyline points="12 5 19 12 12 19"/>'
             "</svg>\n"
-            "      </button>"
+            "  </button>"
         )
         if overall_ok
         else ""
     )
+
+    action_items = [x for x in [bookmark_html, resource_rows] if x]
+    if action_items:
+        actions_section = (
+            '    <div class="action-list">\n' + "\n".join(action_items) + "\n    </div>"
+        )
+    else:
+        actions_section = ""
 
     site_name_sub = f'      <div class="sub">{site_name}</div>\n' if site_name else ""
 
@@ -152,8 +160,7 @@ def _build_checkin_html(
             "IP": ip,
             "PANGOLIN_BADGE": pangolin_badge,
             "CROWDSEC_BADGE": crowdsec_badge,
-            "RESOURCE_ROWS": resource_rows,
-            "BOOKMARK_ROW": bookmark_row,
+            "ACTIONS_SECTION": actions_section,
             "EXPIRY_STR": expires_str,
             "RETENTION_LABEL": _format_retention(retention_minutes),
             "RETENTION_MINUTES": str(retention_minutes),

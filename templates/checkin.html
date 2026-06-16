@@ -17,6 +17,8 @@
     --accent:          oklch(0.6717 0.1946 41.93);
     --accent-dim:      oklch(0.22 0.06 41.93);
     --accent-hover-bg: oklch(0.17 0.04 41.93);
+    --status-ok:       #4ade80;
+    --status-ok-dim:   #1a3d28;
     --warn:            #fbbf24;
     --warn-dim:        #3d2e0a;
     --err:             oklch(0.5382 0.1949 22.216);
@@ -67,21 +69,22 @@
   .status-dot {
     width: 10px; height: 10px;
     border-radius: 50%;
-    background: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-dim);
+    background: var(--status-ok);
+    box-shadow: 0 0 0 3px var(--status-ok-dim);
     flex-shrink: 0;
     animation: pulse 2.4s ease-in-out infinite;
   }
   .status-dot.err { background: var(--err); box-shadow: 0 0 0 3px var(--err-dim); animation: none; }
   @keyframes pulse {
-    0%,100% { box-shadow: 0 0 0 3px var(--accent-dim); }
-    50%      { box-shadow: 0 0 0 6px var(--accent-dim); }
+    0%,100% { box-shadow: 0 0 0 3px var(--status-ok-dim); }
+    50%      { box-shadow: 0 0 0 6px var(--status-ok-dim); }
   }
   .card-header h1 { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 15px; font-weight: 500; letter-spacing: .01em; color: var(--text); }
   .card-header .sub { font-size: 12px; color: var(--muted); margin-top: 1px; }
   .card-body { padding: 24px; }
-  .hero { font-size: 22px; font-weight: 300; line-height: 1.35; margin-bottom: 20px; color: var(--text); }
+  .hero { font-size: 22px; font-weight: 300; line-height: 1.35; margin-bottom: 16px; color: var(--text); }
   .hero strong { color: var(--accent); font-weight: 500; }
+  .action-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
   .ip-row {
     display: flex; align-items: center; gap: 10px;
     background: var(--inner-bg); border: 1px solid var(--border-hi);
@@ -89,19 +92,11 @@
   }
   .ip-label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); flex-shrink: 0; }
   .ip-value { font-family: var(--mono); font-size: 15px; font-weight: 500; color: var(--text); letter-spacing: .02em; }
-  .status-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
-  .status-row {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 14px; border-radius: calc(var(--radius) - 2px);
-    border: 1px solid var(--border); background: var(--inner-bg);
-  }
-  .status-row .label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
-  .status-row .label svg { opacity: .5; flex-shrink: 0; }
   .badge { font-family: var(--mono); font-size: 11px; font-weight: 500; padding: 3px 9px; border-radius: 4px; letter-spacing: .04em; text-transform: uppercase; }
-  .badge.ok      { background: var(--accent-dim); color: var(--accent); }
-  .badge.skip    { background: var(--border);     color: var(--muted); }
-  .badge.err     { background: var(--err-dim);    color: var(--err); }
-  .badge.warn    { background: var(--warn-dim);   color: var(--warn); }
+  .badge.ok      { background: var(--status-ok-dim); color: var(--status-ok); }
+  .badge.skip    { background: var(--border);        color: var(--muted); }
+  .badge.err     { background: var(--err-dim);       color: var(--err); }
+  .badge.warn    { background: var(--warn-dim);      color: var(--warn); }
   .access-link {
     display: flex; align-items: center; justify-content: space-between;
     padding: 10px 14px; border-radius: calc(var(--radius) - 2px);
@@ -145,15 +140,23 @@
   .details-body {
     display: none; margin-top: 8px; background: var(--inner-bg); border: 1px solid var(--border);
     border-radius: calc(var(--radius) - 2px); padding: 14px;
-    font-family: var(--mono); font-size: 12px; line-height: 1.7; color: var(--muted);
   }
   .details-body.open { display: block; animation: fadein .15s ease; }
   @keyframes fadein { from { opacity:0 } to { opacity:1 } }
-  .details-body .key { color: var(--muted); }
-  .details-body .val { color: var(--text); }
-  .details-body .ok  { color: var(--accent); }
-  .details-body .bad { color: var(--err); }
-  .details-body .row { display: flex; gap: 8px; margin-bottom: 2px; }
+  .details-status-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); margin-bottom: 6px;
+  }
+  .details-status-row .label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .details-status-row .label svg { opacity: .5; flex-shrink: 0; }
+  .details-divider { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+  .details-mono { font-family: var(--mono); font-size: 12px; line-height: 1.7; color: var(--muted); }
+  .details-mono .key { color: var(--muted); }
+  .details-mono .val { color: var(--text); }
+  .details-mono .ok  { color: var(--status-ok); }
+  .details-mono .bad { color: var(--err); }
+  .details-mono .row { display: flex; gap: 8px; margin-bottom: 2px; }
   .card-footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); text-align: center; letter-spacing: .02em; }
 </style>
 </head>
@@ -167,27 +170,10 @@
   </div>
   <div class="card-body">
     <p class="hero">{{HERO}}</p>
+{{ACTIONS_SECTION}}
     <div class="ip-row">
       <span class="ip-label">Your IP</span>
       <span class="ip-value">{{IP}}</span>
-    </div>
-    <div class="status-list">
-      <div class="status-row">
-        <span class="label">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          Pangolin access rule
-        </span>
-        {{PANGOLIN_BADGE}}
-      </div>
-      <div class="status-row">
-        <span class="label">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
-          CrowdSec allowlist
-        </span>
-        {{CROWDSEC_BADGE}}
-      </div>
-{{RESOURCE_ROWS}}
-{{BOOKMARK_ROW}}
     </div>
     <p class="expiry">
       Access expires <span>{{EXPIRY_STR}}</span><br>
@@ -197,12 +183,29 @@
       {{DETAILS_LABEL}} <span class="chevron">&#9660;</span>
     </button>
     <div class="details-body" id="details">
-      <div class="row"><span class="key">ip&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{DETAILS_IP}}</span></div>
-      <div class="row"><span class="key">pangolin&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="{{PANGOLIN_DETAIL_CLASS}}">{{PANGOLIN_DETAIL}}</span></div>
-      <div class="row"><span class="key">crowdsec&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="{{CROWDSEC_DETAIL_CLASS}}">{{CROWDSEC_DETAIL}}</span></div>
-      <div class="row"><span class="key">retention&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{RETENTION_MINUTES}} min</span></div>
-      <div class="row"><span class="key">expires_at&nbsp;&nbsp;&nbsp;</span><span class="val">{{EXPIRES_ISO}}</span></div>
-      <div class="row"><span class="key">last_seen&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{LAST_SEEN}}</span></div>
+      <div class="details-status-row">
+        <span class="label">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Pangolin access rule
+        </span>
+        {{PANGOLIN_BADGE}}
+      </div>
+      <div class="details-status-row">
+        <span class="label">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+          CrowdSec allowlist
+        </span>
+        {{CROWDSEC_BADGE}}
+      </div>
+      <hr class="details-divider">
+      <div class="details-mono">
+        <div class="row"><span class="key">ip&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{DETAILS_IP}}</span></div>
+        <div class="row"><span class="key">pangolin&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="{{PANGOLIN_DETAIL_CLASS}}">{{PANGOLIN_DETAIL}}</span></div>
+        <div class="row"><span class="key">crowdsec&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="{{CROWDSEC_DETAIL_CLASS}}">{{CROWDSEC_DETAIL}}</span></div>
+        <div class="row"><span class="key">retention&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{RETENTION_MINUTES}} min</span></div>
+        <div class="row"><span class="key">expires_at&nbsp;&nbsp;&nbsp;</span><span class="val">{{EXPIRES_ISO}}</span></div>
+        <div class="row"><span class="key">last_seen&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{LAST_SEEN}}</span></div>
+      </div>
     </div>
   </div>
   <div class="card-footer">Requests are logged &nbsp;&middot;&nbsp; Access resets on each visit</div>
