@@ -84,8 +84,8 @@
   .hero strong { color: var(--accent); font-weight: 500; }
   .ip-row {
     display: flex; align-items: center; gap: 10px;
-    background: var(--inner-bg); border: 1px solid var(--border-hi);
-    border-radius: calc(var(--radius) - 2px); padding: 10px 14px; margin-bottom: 20px;
+    background: var(--surface); border: 1px solid var(--border-hi);
+    border-radius: calc(var(--radius) - 2px); padding: 10px 14px; margin-bottom: 10px;
   }
   .ip-label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); flex-shrink: 0; }
   .ip-value { font-family: var(--mono); font-size: 15px; font-weight: 500; color: var(--text); letter-spacing: .02em; }
@@ -167,10 +167,6 @@
   </div>
   <div class="card-body">
     <p class="hero">{{HERO}}</p>
-    <div class="ip-row">
-      <span class="ip-label">Your IP</span>
-      <span class="ip-value">{{IP}}</span>
-    </div>
     <div class="status-list">
       <div class="status-row">
         <span class="label">
@@ -197,7 +193,10 @@
       {{DETAILS_LABEL}} <span class="chevron">&#9660;</span>
     </button>
     <div class="details-body" id="details">
-      <div class="row"><span class="key">ip&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{DETAILS_IP}}</span></div>
+      <div class="ip-row">
+        <span class="ip-label">Your IP</span>
+        <span class="ip-value">{{IP}}</span>
+      </div>
       <div class="row"><span class="key">pangolin&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="{{PANGOLIN_DETAIL_CLASS}}">{{PANGOLIN_DETAIL}}</span></div>
       <div class="row"><span class="key">crowdsec&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="{{CROWDSEC_DETAIL_CLASS}}">{{CROWDSEC_DETAIL}}</span></div>
       <div class="row"><span class="key">retention&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{RETENTION_MINUTES}} min</span></div>
@@ -205,7 +204,7 @@
       <div class="row"><span class="key">last_seen&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{LAST_SEEN}}</span></div>
     </div>
   </div>
-  <div class="card-footer">Requests are logged &nbsp;&middot;&nbsp; Access resets on each visit</div>
+  <div class="card-footer">Requests are logged</div>
 </div>
 <script>
   function toggleDetails(id, btn) {
