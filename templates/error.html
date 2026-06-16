@@ -7,26 +7,43 @@
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Space+Grotesk:wght@300..700&display=swap');
   :root {
-    --bg:        #0C0C0D;
-    --surface:   #141415;
-    --border:    oklch(1 0 0 / 18%);
-    --border-hi: oklch(1 0 0 / 24%);
-    --text:      oklch(0.985 0 0);
-    --muted:     oklch(0.705 0.015 286.067);
-    --err:       oklch(0.5382 0.1949 22.216);
-    --err-dim:   oklch(0.2 0.05 22.216);
-    --radius:    0.75rem;
-    --sans:      'Inter', 'Space Grotesk', sans-serif;
+    --bg:              #0C0C0D;
+    --surface:         #141415;
+    --inner-bg:        #171717;
+    --border:          oklch(1 0 0 / 18%);
+    --border-hi:       oklch(1 0 0 / 24%);
+    --text:            oklch(0.985 0 0);
+    --muted:           oklch(0.705 0.015 286.067);
+    --accent:          oklch(0.6717 0.1946 41.93);
+    --accent-dim:      oklch(0.22 0.06 41.93);
+    --accent-hover-bg: oklch(0.17 0.04 41.93);
+    --status-ok:       #4ade80;
+    --status-ok-dim:   #1a3d28;
+    --warn:            #fbbf24;
+    --warn-dim:        #3d2e0a;
+    --err:             oklch(0.5382 0.1949 22.216);
+    --err-dim:         oklch(0.2 0.05 22.216);
+    --radius:          0.75rem;
+    --mono:            ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+    --sans:            'Inter', 'Space Grotesk', sans-serif;
   }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    background: var(--bg); color: var(--text); font-family: var(--sans); font-weight: 300;
-    min-height: 100vh; display: flex; align-items: flex-start; justify-content: center;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-weight: 300;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
     padding: 40px 16px 48px;
     background-image:
       linear-gradient(var(--border) 1px, transparent 1px),
       linear-gradient(90deg, var(--border) 1px, transparent 1px);
     background-size: 32px 32px;
+    background-position: center center;
   }
   .card {
     width: 100%; max-width: 440px; background: var(--surface);
@@ -39,13 +56,13 @@
   }
   .card-header { padding: 20px 24px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
   .err-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--err); box-shadow: 0 0 0 3px var(--err-dim); flex-shrink: 0; }
-  .card-header h1 { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 15px; font-weight: 500; color: var(--text); }
+  .card-header h1 { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 15px; font-weight: 500; letter-spacing: .01em; color: var(--text); }
   .card-header .sub { font-size: 12px; color: var(--muted); margin-top: 1px; }
   .card-body { padding: 24px; }
   .hero { font-size: 20px; font-weight: 300; line-height: 1.35; margin-bottom: 12px; color: var(--text); }
   .hero strong { color: var(--err); font-weight: 500; }
   .detail { font-size: 13px; color: var(--muted); line-height: 1.6; }
-  .card-footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); text-align: center; }
+  .card-footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); text-align: center; letter-spacing: .02em; }
 </style>
 </head>
 <body>
