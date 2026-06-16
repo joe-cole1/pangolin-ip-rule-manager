@@ -126,19 +126,16 @@
   .bookmark-btn .access-link-url { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .bookmark-btn .access-link-arrow { color: var(--accent); stroke: var(--accent); opacity: .7; flex-shrink: 0; transition: transform .15s; }
   .bookmark-btn:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }
-  .expiry { font-size: 12px; color: var(--muted); text-align: center; margin-top: 20px; margin-bottom: 0; line-height: 1.5; }
-  .expiry span { color: var(--text); font-family: var(--mono); font-size: 12px; }
   .details-toggle {
     width: 100%; background: none; border: 1px solid var(--border);
     border-radius: calc(var(--radius) - 2px);
-    color: var(--muted); font-family: var(--sans); font-size: 12px; font-weight: 400;
-    padding: 9px 14px; cursor: pointer; display: flex; align-items: center;
-    justify-content: space-between; transition: border-color .15s, color .15s;
+    padding: 10px 14px; cursor: pointer; display: flex; align-items: center; text-align: left;
+    justify-content: space-between; transition: border-color .15s, background .15s;
     margin-top: 8px;
   }
-  .details-toggle:hover { border-color: var(--border-hi); color: var(--text); }
-  .chevron { display: inline-block; transition: transform .2s; font-size: 10px; opacity: .6; }
-  .details-toggle[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+  .details-toggle:hover { border-color: var(--accent); background: var(--accent-hover-bg); }
+  .details-toggle:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }
+  .details-toggle[aria-expanded="true"] .access-link-arrow { transform: rotate(90deg); opacity: 1; }
   .details-body {
     display: none; margin-top: 8px; background: var(--inner-bg); border: 1px solid var(--border);
     border-radius: calc(var(--radius) - 2px); padding: 14px;
@@ -175,7 +172,14 @@
 {{ACTIONS_SECTION}}
 {{BOOKMARK_SECTION}}
     <button class="details-toggle" aria-expanded="false" onclick="toggleDetails('details', this)">
-      {{DETAILS_LABEL}} <span class="chevron">&#9660;</span>
+      <span class="access-link-left">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span class="access-link-text">
+          <span class="access-link-label">{{DETAILS_LABEL}}</span>
+          <span class="access-link-url">View connection details</span>
+        </span>
+      </span>
+      <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
     </button>
     <div class="details-body" id="details">
       <div class="ip-row">
@@ -205,12 +209,8 @@
         <div class="row"><span class="key">last_seen&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{LAST_SEEN}}</span></div>
       </div>
     </div>
-    <p class="expiry">
-      Access expires after <span>{{RETENTION_LABEL}}</span><br>
-      ({{EXPIRY_STR}})
-    </p>
   </div>
-  <div class="card-footer">Requests are logged</div>
+  <div class="card-footer">Access expires after {{RETENTION_LABEL}} &nbsp;·&nbsp; {{EXPIRY_STR}}</div>
 </div>
 <script>
   function toggleDetails(id, btn) {
