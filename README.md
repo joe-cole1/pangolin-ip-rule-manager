@@ -238,6 +238,7 @@ The app will **refuse to start** if `PANGOLIN_URL` or `RESOURCE_IDS` are missing
 | `CLEANUP_INTERVAL_MINUTES` | `60` | No | How frequently (in minutes) the cleanup background thread runs. |
 | `RULE_PRIORITY` | `0` | No | Priority assigned to created Pangolin IP rules. |
 | `RULES_CACHE_TTL_SECONDS` | `3600` | No | How long (in seconds) to cache Pangolin rule existence checks before re-querying. Reduces API traffic. |
+| `RATE_LIMIT_SECONDS` | `300` | No | Minimum seconds between Pangolin API fan-out calls for the same IP. Repeat check-ins within this window return a cached result without calling Pangolin. Set to `0` to disable. |
 | `STATE_FILE` | `/data/state.json` | No | Path to the persistent state file. Mount a volume at the parent directory to survive restarts. |
 
 ### CrowdSec
