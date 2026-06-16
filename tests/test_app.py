@@ -2449,7 +2449,7 @@ def test_render_resource_rows_missing_domain_skipped():
         overall_ok=True,
     )
     assert "NoDomain" not in result
-    assert "v.example.com" in result
+    assert 'href="https://v.example.com"' in result
 
 
 def test_render_resource_rows_multiple_resources():
@@ -2462,5 +2462,5 @@ def test_render_resource_rows_multiple_resources():
         ],
         overall_ok=True,
     )
-    assert "j.example.com" in result
-    assert "r.example.com" in result
+    assert 'href="https://j.example.com"' in result
+    assert 'href="https://r.example.com"' in result
