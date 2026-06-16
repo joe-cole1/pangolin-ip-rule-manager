@@ -2267,3 +2267,200 @@ def test_build_error_html_title_injected_as_is():
 
     page = _build_error_html("Error <b>type</b>", "details")
     assert "<b>type</b>" in page
+
+
+# ---------------------------------------------------------------------------
+# _format_retention — pure function
+# ---------------------------------------------------------------------------
+
+
+def test_format_retention_1_minute_singular():
+    from request_handler import _format_retention
+
+    assert _format_retention(1) == "1 minute"
+
+
+def test_format_retention_plural_minutes():
+    from request_handler import _format_retention
+
+    assert _format_retention(59) == "59 minutes"
+
+
+def test_format_retention_non_divisible_by_60_stays_minutes():
+    from request_handler import _format_retention
+
+    assert _format_retention(90) == "90 minutes"
+
+
+def test_format_retention_1_hour_singular():
+    from request_handler import _format_retention
+
+    assert _format_retention(60) == "1 hour"
+
+
+def test_format_retention_plural_hours():
+    from request_handler import _format_retention
+
+    assert _format_retention(120) == "2 hours"
+
+
+def test_format_retention_non_divisible_by_1440_uses_hours():
+    from request_handler import _format_retention
+
+    assert _format_retention(1500) == "25 hours"
+
+
+def test_format_retention_1_day_singular():
+    from request_handler import _format_retention
+
+    assert _format_retention(1440) == "1 day"
+
+
+def test_format_retention_plural_days():
+    from request_handler import _format_retention
+
+    assert _format_retention(43200) == "30 days"
+
+
+def test_format_retention_2_minutes():
+    from request_handler import _format_retention
+
+    assert _format_retention(2) == "2 minutes"
+
+
+# ---------------------------------------------------------------------------
+# _load_template — token substitution
+# ---------------------------------------------------------------------------
+
+
+def test_load_template_substitutes_single_token(tmp_path, monkeypatch):
+    import request_handler
+
+    (tmp_path / "t.html").write_text("hello {{NAME}}", encoding="utf-8")
+    monkeypatch.setattr(request_handler, "_TEMPLATE_DIR", str(tmp_path))
+    from request_handler import _load_template
+
+    assert _load_template("t.html", {"NAME": "world"}) == "hello world"
+
+
+def test_load_template_substitutes_multiple_tokens(tmp_path, monkeypatch):
+    import request_handler
+
+    (tmp_path / "t.html").write_text("{{A}} and {{B}}", encoding="utf-8")
+    monkeypatch.setattr(request_handler, "_TEMPLATE_DIR", str(tmp_path))
+    from request_handler import _load_template
+
+    assert _load_template("t.html", {"A": "foo", "B": "bar"}) == "foo and bar"
+
+
+def test_load_template_unknown_placeholder_left_intact(tmp_path, monkeypatch):
+    import request_handler
+
+    (tmp_path / "t.html").write_text("{{UNKNOWN}}", encoding="utf-8")
+    monkeypatch.setattr(request_handler, "_TEMPLATE_DIR", str(tmp_path))
+    from request_handler import _load_template
+
+    assert "{{UNKNOWN}}" in _load_template("t.html", {})
+
+
+def test_load_template_empty_value_replaces_token(tmp_path, monkeypatch):
+    import request_handler
+
+    (tmp_path / "t.html").write_text("before{{X}}after", encoding="utf-8")
+    monkeypatch.setattr(request_handler, "_TEMPLATE_DIR", str(tmp_path))
+    from request_handler import _load_template
+
+    assert _load_template("t.html", {"X": ""}) == "beforeafter"
+
+
+# ---------------------------------------------------------------------------
+# _render_resource_rows — link generation and XSS escaping
+# ---------------------------------------------------------------------------
+
+
+def test_render_resource_rows_empty_list_returns_empty():
+    from request_handler import _render_resource_rows
+
+    assert _render_resource_rows([], overall_ok=True) == ""
+
+
+def test_render_resource_rows_overall_not_ok_returns_empty():
+    from request_handler import _render_resource_rows
+
+    rows = [{"name": "Jellyfin", "fullDomain": "j.example.com", "ssl": True}]
+    assert _render_resource_rows(rows, overall_ok=False) == ""
+
+
+def test_render_resource_rows_https_when_ssl_true():
+    from request_handler import _render_resource_rows
+
+    result = _render_resource_rows(
+        [{"name": "Jellyfin", "fullDomain": "j.example.com", "ssl": True}],
+        overall_ok=True,
+    )
+    assert 'href="https://j.example.com"' in result
+
+
+def test_render_resource_rows_http_when_ssl_false():
+    from request_handler import _render_resource_rows
+
+    result = _render_resource_rows(
+        [{"name": "Jellyfin", "fullDomain": "j.example.com", "ssl": False}],
+        overall_ok=True,
+    )
+    assert 'href="http://j.example.com"' in result
+
+
+def test_render_resource_rows_xss_in_name_escaped():
+    from request_handler import _render_resource_rows
+
+    result = _render_resource_rows(
+        [
+            {
+                "name": "<script>alert(1)</script>",
+                "fullDomain": "t.example.com",
+                "ssl": True,
+            }
+        ],
+        overall_ok=True,
+    )
+    assert "<script>" not in result
+    assert "&lt;script&gt;" in result
+
+
+def test_render_resource_rows_xss_in_domain_escaped():
+    from request_handler import _render_resource_rows
+
+    result = _render_resource_rows(
+        [{"name": "Evil", "fullDomain": 'evil.com"><script>', "ssl": True}],
+        overall_ok=True,
+    )
+    assert "<script>" not in result
+
+
+def test_render_resource_rows_missing_domain_skipped():
+    from request_handler import _render_resource_rows
+
+    result = _render_resource_rows(
+        [
+            {"name": "NoDomain", "fullDomain": "", "ssl": True},
+            {"name": "Valid", "fullDomain": "v.example.com", "ssl": True},
+        ],
+        overall_ok=True,
+    )
+    assert "NoDomain" not in result
+    assert 'href="https://v.example.com"' in result
+
+
+def test_render_resource_rows_multiple_resources():
+    from request_handler import _render_resource_rows
+
+    result = _render_resource_rows(
+        [
+            {"name": "Jellyfin", "fullDomain": "j.example.com", "ssl": True},
+            {"name": "Radarr", "fullDomain": "r.example.com", "ssl": True},
+        ],
+        overall_ok=True,
+    )
+    assert 'href="https://j.example.com"' in result
+    assert 'href="https://r.example.com"' in result
