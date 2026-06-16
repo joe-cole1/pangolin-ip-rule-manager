@@ -75,7 +75,7 @@ def _build_checkin_html(
     try:
         seen_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
         expires_dt = seen_dt + timedelta(minutes=retention_minutes)
-        expires_str = expires_dt.strftime("%Y-%m-%d %H:%M UTC")
+        expires_str = expires_dt.strftime(f"%B {expires_dt.day}, %Y at %H:%M")
         expires_iso = expires_dt.isoformat()
     except Exception:
         expires_str = "unknown"
