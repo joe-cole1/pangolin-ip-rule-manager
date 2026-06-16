@@ -36,6 +36,7 @@ CLEANUP_INTERVAL_MINUTES = int(
     os.getenv("CLEANUP_INTERVAL_MINUTES", "60")
 )  # default 1 hour in minutes
 RULE_PRIORITY = int(os.getenv("RULE_PRIORITY", "0"))
+RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "300"))
 RULES_CACHE_TTL_SECONDS = int(
     os.getenv("RULES_CACHE_TTL_SECONDS", "3600")
 )  # cache for existence checks (~1h)
@@ -88,6 +89,10 @@ rules_cache = {
 _crowdsec_allowlist_ready = False
 # Cache of IPs currently in the CrowdSec allowlist (with TTL)
 crowdsec_cache = {"ts": 0.0, "ip_set": set()}
+
+# Per-IP rate limit cache: {ip: (monotonic_timestamp, last_result)}
+_api_rate_limit: dict[str, tuple[float, dict]] = {}
+_api_rate_limit_lock = threading.Lock()
 
 
 def now_utc_iso() -> str:
@@ -261,6 +266,14 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
             "Ensure this resource uses SSO authentication in Pangolin."
         )
 
+    # Skip API fan-out if this IP was successfully processed recently
+    if RATE_LIMIT_SECONDS > 0:
+        with _api_rate_limit_lock:
+            entry = _api_rate_limit.get(ip)
+            if entry and (time.monotonic() - entry[0]) < RATE_LIMIT_SECONDS:
+                print(f"[targets] rate limited {ip} — returning cached result")
+                return entry[1]
+
     ctx = make_pangolin_context()
     try:
         effective_resources = pg_filter_resources_for_user(ctx, ORG_ID, remote_user)
@@ -291,6 +304,11 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
             results[key]["ok"] = False
             results[key]["detail"] = str(e)
             print(f"[targets] add failed for {ip} on {t.__class__.__name__}: {e}")
+
+    if RATE_LIMIT_SECONDS > 0 and results.get("pangolin", {}).get("ok"):
+        with _api_rate_limit_lock:
+            _api_rate_limit[ip] = (time.monotonic(), results)
+
     return results
 
 

@@ -52,6 +52,8 @@ def app_module(monkeypatch, temp_state_file):
         app.state.clear()
     with app.state_lock:
         app.rules_cache.clear()
+    with app._api_rate_limit_lock:
+        app._api_rate_limit.clear()
     return app
 
 
@@ -875,6 +877,97 @@ def test_add_ip_to_targets_fails_closed_on_users_api_error(monkeypatch, app_modu
     assert results["crowdsec"]["detail"] == "not reached"
     with app.state_lock:
         assert "1.2.3.4" not in app.state
+
+
+def test_rate_limit_skips_api_on_repeat_call(monkeypatch, app_module):
+    """Second call within RATE_LIMIT_SECONDS must return the cached result without hitting the API."""
+    app = app_module
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 300)
+
+    api_calls = {"count": 0}
+
+    def fake_http_json(method, url, body=None):
+        api_calls["count"] += 1
+        return _standard_fake_http_json(method, url, body)
+
+    monkeypatch.setattr(app, "http_json", fake_http_json)
+
+    with app.state_lock:
+        app.state.clear()
+
+    first = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    assert first["pangolin"]["ok"] is True
+    calls_after_first = api_calls["count"]
+    assert calls_after_first > 0
+
+    second = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    assert second["pangolin"]["ok"] is True
+    assert api_calls["count"] == calls_after_first, (
+        "API should not be called again within the rate limit window"
+    )
+
+
+def test_rate_limit_expires_after_window(monkeypatch, app_module):
+    """A call made after the window has elapsed must hit the API again."""
+    app = app_module
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 300)
+
+    monkeypatch.setattr(app, "http_json", _standard_fake_http_json)
+
+    with app.state_lock:
+        app.state.clear()
+
+    first = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    assert first["pangolin"]["ok"] is True
+
+    # Back-date the cache entry so it looks expired
+    with app._api_rate_limit_lock:
+        ts, result = app._api_rate_limit["1.2.3.4"]
+        app._api_rate_limit["1.2.3.4"] = (ts - 400, result)
+
+    api_calls = {"count": 0}
+
+    def counting_http_json(method, url, body=None):
+        api_calls["count"] += 1
+        return _standard_fake_http_json(method, url, body)
+
+    monkeypatch.setattr(app, "http_json", counting_http_json)
+
+    second = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    assert second["pangolin"]["ok"] is True
+    assert api_calls["count"] > 0, "API must be called again after the window expires"
+
+
+def test_rate_limit_zero_disables_limiting(monkeypatch, app_module):
+    """Setting RATE_LIMIT_SECONDS=0 must disable rate limiting entirely."""
+    app = app_module
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 0)
+
+    api_calls = {"count": 0}
+
+    def counting_http_json(method, url, body=None):
+        api_calls["count"] += 1
+        return _standard_fake_http_json(method, url, body)
+
+    monkeypatch.setattr(app, "http_json", counting_http_json)
+
+    with app.state_lock:
+        app.state.clear()
+
+    app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    calls_after_first = api_calls["count"]
+    assert calls_after_first > 0
+
+    app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    assert api_calls["count"] > calls_after_first, (
+        "With RATE_LIMIT_SECONDS=0, both calls must hit the API"
+    )
 
 
 def test_app_loads_without_custom_header_env(monkeypatch, temp_state_file):
