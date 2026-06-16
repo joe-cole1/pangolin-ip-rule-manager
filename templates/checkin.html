@@ -117,6 +117,7 @@
     border-radius: calc(var(--radius) - 2px);
     padding: 10px 14px; cursor: pointer; display: flex; align-items: center; text-align: left;
     justify-content: space-between; transition: border-color .15s, background .15s;
+    margin-top: 8px;
   }
   .bookmark-btn:hover { border-color: var(--accent); background: var(--accent-hover-bg); }
   .bookmark-btn .access-link-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -206,6 +207,7 @@
         <div class="row"><span class="key">last_seen&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{LAST_SEEN}}</span></div>
       </div>
     </div>
+{{BOOKMARK_SECTION}}
   </div>
   <div class="card-footer">Requests are logged</div>
 </div>
