@@ -126,7 +126,7 @@
   .bookmark-btn .access-link-url { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .bookmark-btn .access-link-arrow { color: var(--accent); stroke: var(--accent); opacity: .7; flex-shrink: 0; transition: transform .15s; }
   .bookmark-btn:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }
-  .expiry { font-size: 12px; color: var(--muted); text-align: center; margin-bottom: 20px; line-height: 1.5; }
+  .expiry { font-size: 12px; color: var(--muted); text-align: center; margin-top: 20px; margin-bottom: 0; line-height: 1.5; }
   .expiry span { color: var(--text); font-family: var(--mono); font-size: 12px; }
   .details-toggle {
     width: 100%; background: none; border: 1px solid var(--border);
@@ -172,10 +172,6 @@
   <div class="card-body">
     <p class="hero">{{HERO}}</p>
 {{ACTIONS_SECTION}}
-    <p class="expiry">
-      Access expires after <span>{{RETENTION_LABEL}}</span><br>
-      ({{EXPIRY_STR}})
-    </p>
     <button class="details-toggle" aria-expanded="false" onclick="toggleDetails('details', this)">
       {{DETAILS_LABEL}} <span class="chevron">&#9660;</span>
     </button>
@@ -208,6 +204,10 @@
       </div>
     </div>
 {{BOOKMARK_SECTION}}
+    <p class="expiry">
+      Access expires after <span>{{RETENTION_LABEL}}</span><br>
+      ({{EXPIRY_STR}})
+    </p>
   </div>
   <div class="card-footer">Requests are logged</div>
 </div>

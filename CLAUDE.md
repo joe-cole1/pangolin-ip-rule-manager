@@ -157,6 +157,7 @@ These apply to every session. Do not deviate without explicit instruction.
 
 ### Before pushing to an existing branch
 
+- **MANDATORY gate: call `pull_request_read` before every push to a branch associated with a PR.** No exceptions. Do this even if the PR was just opened in the same session. Check `state` and `merged`. If either shows the PR is closed or merged, stop immediately, fetch master, branch fresh, and open a new PR.
 - **Always verify the PR is still open before pushing.** Use `pull_request_read`
   (GitHub MCP) to check `state` and `merged` before adding commits to any branch
   that has or had a PR. If the PR is merged or closed, create a new branch from
