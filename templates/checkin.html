@@ -112,12 +112,12 @@
   .access-link-url { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .access-link-arrow { color: var(--accent); stroke: var(--accent); opacity: .7; flex-shrink: 0; transition: transform .15s; }
   .access-link:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }
+  .section-divider { border: none; border-top: 1px solid var(--border); margin: 0 0 20px; }
   .bookmark-btn {
     width: 100%; background: none; border: 1px solid var(--accent-dim);
     border-radius: calc(var(--radius) - 2px);
     padding: 10px 14px; cursor: pointer; display: flex; align-items: center; text-align: left;
     justify-content: space-between; transition: border-color .15s, background .15s;
-    margin-top: 8px;
   }
   .bookmark-btn:hover { border-color: var(--accent); background: var(--accent-hover-bg); }
   .bookmark-btn .access-link-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -134,6 +134,7 @@
     color: var(--muted); font-family: var(--sans); font-size: 12px; font-weight: 400;
     padding: 9px 14px; cursor: pointer; display: flex; align-items: center;
     justify-content: space-between; transition: border-color .15s, color .15s;
+    margin-top: 8px;
   }
   .details-toggle:hover { border-color: var(--border-hi); color: var(--text); }
   .chevron { display: inline-block; transition: transform .2s; font-size: 10px; opacity: .6; }
@@ -172,6 +173,7 @@
   <div class="card-body">
     <p class="hero">{{HERO}}</p>
 {{ACTIONS_SECTION}}
+{{BOOKMARK_SECTION}}
     <button class="details-toggle" aria-expanded="false" onclick="toggleDetails('details', this)">
       {{DETAILS_LABEL}} <span class="chevron">&#9660;</span>
     </button>
@@ -203,7 +205,6 @@
         <div class="row"><span class="key">last_seen&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{LAST_SEEN}}</span></div>
       </div>
     </div>
-{{BOOKMARK_SECTION}}
     <p class="expiry">
       Access expires after <span>{{RETENTION_LABEL}}</span><br>
       ({{EXPIRY_STR}})

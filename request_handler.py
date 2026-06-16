@@ -88,11 +88,13 @@ def _build_checkin_html(
     overall_ok = pangolin_ok
 
     dot_class = "status-dot" if overall_ok else "status-dot err"
-    hero = (
-        "Your IP address has access."
-        if overall_ok
-        else "Access may not work right now."
-    )
+    if overall_ok:
+        if site_name:
+            hero = f"Access granted to <strong>{html.escape(site_name)}</strong>."
+        else:
+            hero = "Your IP address has <strong>access</strong>."
+    else:
+        hero = "Access may not work right now."
 
     pangolin_badge = (
         '<span class="badge ok">Added</span>'
@@ -143,7 +145,8 @@ def _build_checkin_html(
 
     if resource_rows:
         actions_section = (
-            '    <div class="action-list">\n' + resource_rows + "\n    </div>"
+            '    <div class="action-list">\n' + resource_rows + "\n    </div>\n"
+            '    <hr class="section-divider">'
         )
     else:
         actions_section = ""
