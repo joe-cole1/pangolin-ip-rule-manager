@@ -20,6 +20,7 @@ ENV RETENTION_MINUTES="1440" \
 WORKDIR /app
 # Copy all application modules (after refactor we have multiple .py files)
 COPY *.py /app/
+COPY templates/ /app/templates/
 
 EXPOSE 8080
 
