@@ -2091,7 +2091,7 @@ _LAST_SEEN_ISO = "2025-01-01T00:00:00+00:00"
 
 
 def test_checkin_html_success_hero_and_dot():
-    """Success path → 'has access' hero text and green (non-error) dot class."""
+    """Success path → access hero text and green (non-error) dot class."""
     from request_handler import _build_checkin_html
 
     page = _build_checkin_html(
@@ -2101,7 +2101,7 @@ def test_checkin_html_success_hero_and_dot():
         last_seen=_LAST_SEEN_ISO,
         crowdsec_enabled=False,
     )
-    assert "has access" in page
+    assert "<strong>access</strong>" in page
     assert 'class="status-dot">' in page
     assert 'class="status-dot err">' not in page
 
