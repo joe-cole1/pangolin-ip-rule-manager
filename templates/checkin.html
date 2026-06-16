@@ -87,8 +87,8 @@
   .action-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
   .ip-row {
     display: flex; align-items: center; gap: 10px;
-    background: var(--inner-bg); border: 1px solid var(--border-hi);
-    border-radius: calc(var(--radius) - 2px); padding: 10px 14px; margin-bottom: 20px;
+    background: var(--surface); border: 1px solid var(--border-hi);
+    border-radius: calc(var(--radius) - 2px); padding: 10px 14px; margin-bottom: 10px;
   }
   .ip-label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); flex-shrink: 0; }
   .ip-value { font-family: var(--mono); font-size: 15px; font-weight: 500; color: var(--text); letter-spacing: .02em; }
@@ -171,10 +171,6 @@
   <div class="card-body">
     <p class="hero">{{HERO}}</p>
 {{ACTIONS_SECTION}}
-    <div class="ip-row">
-      <span class="ip-label">Your IP</span>
-      <span class="ip-value">{{IP}}</span>
-    </div>
     <p class="expiry">
       Access expires <span>{{EXPIRY_STR}}</span><br>
       (after {{RETENTION_LABEL}} of inactivity)
@@ -183,6 +179,10 @@
       {{DETAILS_LABEL}} <span class="chevron">&#9660;</span>
     </button>
     <div class="details-body" id="details">
+      <div class="ip-row">
+        <span class="ip-label">Your IP</span>
+        <span class="ip-value">{{IP}}</span>
+      </div>
       <div class="details-status-row">
         <span class="label">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
@@ -199,7 +199,6 @@
       </div>
       <hr class="details-divider">
       <div class="details-mono">
-        <div class="row"><span class="key">ip&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{DETAILS_IP}}</span></div>
         <div class="row"><span class="key">pangolin&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="{{PANGOLIN_DETAIL_CLASS}}">{{PANGOLIN_DETAIL}}</span></div>
         <div class="row"><span class="key">crowdsec&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="{{CROWDSEC_DETAIL_CLASS}}">{{CROWDSEC_DETAIL}}</span></div>
         <div class="row"><span class="key">retention&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{{RETENTION_MINUTES}} min</span></div>
@@ -208,7 +207,7 @@
       </div>
     </div>
   </div>
-  <div class="card-footer">Requests are logged &nbsp;&middot;&nbsp; Access resets on each visit</div>
+  <div class="card-footer">Requests are logged</div>
 </div>
 <script>
   function toggleDetails(id, btn) {
