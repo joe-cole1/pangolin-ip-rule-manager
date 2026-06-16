@@ -8,6 +8,16 @@ from urllib.parse import parse_qs, urlparse
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
 
 
+def _format_retention(minutes: int) -> str:
+    if minutes >= 1440 and minutes % 1440 == 0:
+        days = minutes // 1440
+        return f"{days} day" if days == 1 else f"{days} days"
+    if minutes >= 60 and minutes % 60 == 0:
+        hours = minutes // 60
+        return f"{hours} hour" if hours == 1 else f"{hours} hours"
+    return f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
+
+
 def _load_template(name: str, tokens: dict[str, str]) -> str:
     with open(os.path.join(_TEMPLATE_DIR, name), encoding="utf-8") as f:
         content = f.read()
@@ -145,6 +155,7 @@ def _build_checkin_html(
             "RESOURCE_ROWS": resource_rows,
             "BOOKMARK_ROW": bookmark_row,
             "EXPIRY_STR": expires_str,
+            "RETENTION_LABEL": _format_retention(retention_minutes),
             "RETENTION_MINUTES": str(retention_minutes),
             "DETAILS_LABEL": details_label,
             "DETAILS_IP": ip,
