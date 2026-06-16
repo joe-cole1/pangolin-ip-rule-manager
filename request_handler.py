@@ -1,8 +1,56 @@
-from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
-from datetime import datetime, timedelta
 import html
 import ipaddress
+import os
+from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler
+from urllib.parse import parse_qs, urlparse
+
+_TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
+
+
+def _load_template(name: str, tokens: dict[str, str]) -> str:
+    with open(os.path.join(_TEMPLATE_DIR, name), encoding="utf-8") as f:
+        content = f.read()
+    for key, value in tokens.items():
+        content = content.replace("{{" + key + "}}", value)
+    return content
+
+
+def _render_resource_rows(resources: list, overall_ok: bool) -> str:
+    if not (overall_ok and resources):
+        return ""
+    rows = []
+    for r in resources:
+        name = r.get("name", "Resource")
+        domain = r.get("fullDomain", "")
+        ssl = r.get("ssl", True)
+        if not domain:
+            continue
+        protocol = "https" if ssl else "http"
+        raw_url = f"{protocol}://{domain}"
+        safe_url = html.escape(raw_url, quote=True)
+        safe_name = html.escape(name)
+        rows.append(
+            '      <a class="access-link" href="'
+            + safe_url
+            + '" target="_blank" rel="noopener noreferrer">\n'
+            '        <span class="access-link-left">\n'
+            '          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;">'
+            '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
+            '<polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>'
+            "</svg>\n"
+            '          <span class="access-link-text">\n'
+            f'            <span class="access-link-label">Open {safe_name}</span>\n'
+            f'            <span class="access-link-url">{safe_url}</span>\n'
+            "          </span>\n"
+            "        </span>\n"
+            '        <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
+            '<line x1="5" y1="12" x2="19" y2="12"/>'
+            '<polyline points="12 5 19 12 12 19"/>'
+            "</svg>\n"
+            "      </a>"
+        )
+    return "\n".join(rows)
 
 
 def _build_checkin_html(
@@ -14,8 +62,6 @@ def _build_checkin_html(
     resources: list | None = None,
     site_name: str = "",
 ) -> str:
-    """Build the HTML checkin response page."""
-
     try:
         seen_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
         expires_dt = seen_dt + timedelta(minutes=retention_minutes)
@@ -32,10 +78,11 @@ def _build_checkin_html(
     overall_ok = pangolin_ok
 
     dot_class = "status-dot" if overall_ok else "status-dot err"
-    if overall_ok:
-        hero = "Your IP address has access."
-    else:
-        hero = "Access may not work right now."
+    hero = (
+        "Your IP address has access."
+        if overall_ok
+        else "Access may not work right now."
+    )
 
     pangolin_badge = (
         '<span class="badge ok">Added</span>'
@@ -60,49 +107,8 @@ def _build_checkin_html(
 
     details_label = "Technical details" if overall_ok else "What went wrong?"
 
-    # Per-resource access links — one per authorised resource, shown on success only
-    resource_rows = ""
-    if overall_ok and resources:
-        rows = []
-        for r in resources:
-            name = r.get("name", "Resource")
-            domain = r.get("fullDomain", "")
-            ssl = r.get("ssl", True)
-            if not domain:
-                continue
-            protocol = "https" if ssl else "http"
-            raw_url = f"{protocol}://{domain}"
-            safe_url = (
-                raw_url.replace("&", "&amp;")
-                .replace('"', "&quot;")
-                .replace("'", "&#39;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-            )
-            safe_name = name.replace("<", "&lt;").replace(">", "&gt;")
-            rows.append(
-                '      <a class="access-link" href="'
-                + safe_url
-                + '" target="_blank" rel="noopener noreferrer">\n'
-                '        <span class="access-link-left">\n'
-                '          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;">'
-                '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
-                '<polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>'
-                "</svg>\n"
-                '          <span class="access-link-text">\n'
-                f'            <span class="access-link-label">Open {safe_name}</span>\n'
-                f'            <span class="access-link-url">{safe_url}</span>\n'
-                "          </span>\n"
-                "        </span>\n"
-                '        <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
-                '<line x1="5" y1="12" x2="19" y2="12"/>'
-                '<polyline points="12 5 19 12 12 19"/>'
-                "</svg>\n"
-                "      </a>"
-            )
-        resource_rows = "\n".join(rows)
+    resource_rows = _render_resource_rows(resources or [], overall_ok)
 
-    # Bookmark row — always shown on success, uses current page URL via JS
     bookmark_row = (
         (
             '      <button class="bookmark-btn" onclick="bookmarkPage()">\n'
@@ -126,303 +132,44 @@ def _build_checkin_html(
     )
 
     site_name_sub = f'      <div class="sub">{site_name}</div>\n' if site_name else ""
-    html = (
-        "<!DOCTYPE html>\n"
-        '<html lang="en">\n'
-        "<head>\n"
-        '<meta charset="UTF-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
-        "<title>Network Check-in</title>\n"
-        "<style>\n"
-        "  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap');\n"
-        "  :root {\n"
-        "    --bg:        #0d0f12;\n"
-        "    --surface:   #151820;\n"
-        "    --border:    #232733;\n"
-        "    --border-hi: #2e3344;\n"
-        "    --text:      #e2e6f0;\n"
-        "    --muted:     #6b7390;\n"
-        "    --accent:    #4ade80;\n"
-        "    --accent-dim:#1a3d28;\n"
-        "    --warn:      #fbbf24;\n"
-        "    --warn-dim:  #3d2e0a;\n"
-        "    --err:       #f87171;\n"
-        "    --err-dim:   #3d1515;\n"
-        "    --mono:      'IBM Plex Mono', monospace;\n"
-        "    --sans:      'IBM Plex Sans', sans-serif;\n"
-        "  }\n"
-        "  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }\n"
-        "  body {\n"
-        "    background: var(--bg);\n"
-        "    color: var(--text);\n"
-        "    font-family: var(--sans);\n"
-        "    font-weight: 300;\n"
-        "    min-height: 100vh;\n"
-        "    display: flex;\n"
-        "    flex-direction: column;\n"
-        "    align-items: center;\n"
-        "    justify-content: flex-start;\n"
-        "    padding: 40px 16px 48px;\n"
-        "    background-image:\n"
-        "      linear-gradient(var(--border) 1px, transparent 1px),\n"
-        "      linear-gradient(90deg, var(--border) 1px, transparent 1px);\n"
-        "    background-size: 32px 32px;\n"
-        "    background-position: center center;\n"
-        "  }\n"
-        "  .card {\n"
-        "    width: 100%;\n"
-        "    max-width: 440px;\n"
-        "    background: var(--surface);\n"
-        "    border: 1px solid var(--border-hi);\n"
-        "    border-radius: 12px;\n"
-        "    overflow: hidden;\n"
-        "    box-shadow: 0 8px 48px rgba(0,0,0,.5);\n"
-        "    animation: rise .45s cubic-bezier(.22,1,.36,1) both;\n"
-        "  }\n"
-        "  @keyframes rise {\n"
-        "    from { opacity:0; transform: translateY(18px); }\n"
-        "    to   { opacity:1; transform: translateY(0); }\n"
-        "  }\n"
-        "  .card-header {\n"
-        "    padding: 20px 24px 18px;\n"
-        "    border-bottom: 1px solid var(--border);\n"
-        "    display: flex;\n"
-        "    align-items: center;\n"
-        "    gap: 12px;\n"
-        "  }\n"
-        "  .status-dot {\n"
-        "    width: 10px; height: 10px;\n"
-        "    border-radius: 50%;\n"
-        "    background: var(--accent);\n"
-        "    box-shadow: 0 0 0 3px var(--accent-dim);\n"
-        "    flex-shrink: 0;\n"
-        "    animation: pulse 2.4s ease-in-out infinite;\n"
-        "  }\n"
-        "  .status-dot.err { background: var(--err); box-shadow: 0 0 0 3px var(--err-dim); animation: none; }\n"
-        "  @keyframes pulse {\n"
-        "    0%,100% { box-shadow: 0 0 0 3px var(--accent-dim); }\n"
-        "    50%      { box-shadow: 0 0 0 6px var(--accent-dim); }\n"
-        "  }\n"
-        "  .card-header h1 { font-size: 15px; font-weight: 500; letter-spacing: .01em; color: var(--text); }\n"
-        "  .card-header .sub { font-size: 12px; color: var(--muted); margin-top: 1px; }\n"
-        "  .card-body { padding: 24px; }\n"
-        "  .hero { font-size: 22px; font-weight: 400; line-height: 1.35; margin-bottom: 20px; color: var(--text); }\n"
-        "  .hero strong { color: var(--accent); font-weight: 500; }\n"
-        "  .ip-row {\n"
-        "    display: flex; align-items: center; gap: 10px;\n"
-        "    background: var(--bg); border: 1px solid var(--border-hi);\n"
-        "    border-radius: 8px; padding: 10px 14px; margin-bottom: 20px;\n"
-        "  }\n"
-        "  .ip-label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); flex-shrink: 0; }\n"
-        "  .ip-value { font-family: var(--mono); font-size: 15px; font-weight: 500; color: var(--text); letter-spacing: .02em; }\n"
-        "  .status-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }\n"
-        "  .status-row {\n"
-        "    display: flex; align-items: center; justify-content: space-between;\n"
-        "    padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg);\n"
-        "  }\n"
-        "  .status-row .label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }\n"
-        "  .status-row .label svg { opacity: .5; flex-shrink: 0; }\n"
-        "  .badge { font-family: var(--mono); font-size: 11px; font-weight: 500; padding: 3px 9px; border-radius: 4px; letter-spacing: .04em; text-transform: uppercase; }\n"
-        "  .badge.ok      { background: var(--accent-dim); color: var(--accent); }\n"
-        "  .badge.skip    { background: var(--border);     color: var(--muted); }\n"
-        "  .badge.err     { background: var(--err-dim);    color: var(--err); }\n"
-        "  .badge.warn    { background: var(--warn-dim);   color: var(--warn); }\n"
-        "  .access-link {\n"
-        "    display: flex; align-items: center; justify-content: space-between;\n"
-        "    padding: 10px 14px; border-radius: 8px; border: 1px solid var(--accent-dim);\n"
-        "    background: var(--bg); text-decoration: none; cursor: pointer;\n"
-        "    transition: border-color .15s, background .15s;\n"
-        "  }\n"
-        "  .access-link:hover { border-color: var(--accent); background: #0d1f16; }\n"
-        "  .access-link-left { display: flex; align-items: center; gap: 8px; min-width: 0; }\n"
-        "  .access-link-left svg { opacity: .6; color: var(--accent); stroke: var(--accent); }\n"
-        "  .access-link-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }\n"
-        "  .access-link-label { font-size: 13px; font-weight: 500; color: var(--accent); }\n"
-        "  .access-link-url { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n"
-        "  .access-link-arrow { color: var(--accent); stroke: var(--accent); opacity: .7; flex-shrink: 0; transition: transform .15s; }\n"
-        "  .access-link:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }\n"
-        "  .bookmark-btn {\n"
-        "    width: 100%; background: none; border: 1px solid var(--accent-dim); border-radius: 8px;\n"
-        "    padding: 10px 14px; cursor: pointer; display: flex; align-items: center; text-align: left;\n"
-        "    justify-content: space-between; transition: border-color .15s, background .15s;\n"
-        "  }\n"
-        "  .bookmark-btn:hover { border-color: var(--accent); background: #0d1f16; }\n"
-        "  .bookmark-btn .access-link-left { display: flex; align-items: center; gap: 8px; min-width: 0; }\n"
-        "  .bookmark-btn .access-link-left svg { opacity: .6; color: var(--accent); stroke: var(--accent); }\n"
-        "  .bookmark-btn .access-link-label { font-size: 13px; font-weight: 500; color: var(--accent); }\n"
-        "  .bookmark-btn .access-link-url { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n"
-        "  .bookmark-btn .access-link-arrow { color: var(--accent); stroke: var(--accent); opacity: .7; flex-shrink: 0; transition: transform .15s; }\n"
-        "  .bookmark-btn:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }\n"
-        "  .expiry { font-size: 12px; color: var(--muted); text-align: center; margin-bottom: 20px; line-height: 1.5; }\n"
-        "  .expiry span { color: var(--text); font-family: var(--mono); font-size: 12px; }\n"
-        "  .details-toggle {\n"
-        "    width: 100%; background: none; border: 1px solid var(--border); border-radius: 8px;\n"
-        "    color: var(--muted); font-family: var(--sans); font-size: 12px; font-weight: 400;\n"
-        "    padding: 9px 14px; cursor: pointer; display: flex; align-items: center;\n"
-        "    justify-content: space-between; transition: border-color .15s, color .15s;\n"
-        "  }\n"
-        "  .details-toggle:hover { border-color: var(--border-hi); color: var(--text); }\n"
-        "  .chevron { display: inline-block; transition: transform .2s; font-size: 10px; opacity: .6; }\n"
-        '  .details-toggle[aria-expanded="true"] .chevron { transform: rotate(180deg); }\n'
-        "  .details-body {\n"
-        "    display: none; margin-top: 8px; background: var(--bg); border: 1px solid var(--border);\n"
-        "    border-radius: 8px; padding: 14px; font-family: var(--mono); font-size: 12px; line-height: 1.7; color: var(--muted);\n"
-        "  }\n"
-        "  .details-body.open { display: block; animation: fadein .15s ease; }\n"
-        "  @keyframes fadein { from { opacity:0 } to { opacity:1 } }\n"
-        "  .details-body .key { color: var(--muted); }\n"
-        "  .details-body .val { color: var(--text); }\n"
-        "  .details-body .ok  { color: var(--accent); }\n"
-        "  .details-body .bad { color: var(--err); }\n"
-        "  .details-body .row { display: flex; gap: 8px; margin-bottom: 2px; }\n"
-        "  .card-footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); text-align: center; letter-spacing: .02em; }\n"
-        "</style>\n"
-        "</head>\n"
-        "<body>\n"
-        '<div class="card">\n'
-        '  <div class="card-header">\n'
-        f'    <div class="{dot_class}"></div>\n'
-        "    <div>\n"
-        "      <h1>Network Check-in</h1>\n" + site_name_sub + "    </div>\n"
-        "  </div>\n"
-        '  <div class="card-body">\n'
-        f'    <p class="hero">{hero}</p>\n'
-        '    <div class="ip-row">\n'
-        '      <span class="ip-label">Your IP</span>\n'
-        f'      <span class="ip-value">{ip}</span>\n'
-        "    </div>\n"
-        '    <div class="status-list">\n'
-        '      <div class="status-row">\n'
-        '        <span class="label">\n'
-        '          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>\n'
-        "          Pangolin access rule\n"
-        "        </span>\n"
-        f"        {pangolin_badge}\n"
-        "      </div>\n"
-        '      <div class="status-row">\n'
-        '        <span class="label">\n'
-        '          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>\n'
-        "          CrowdSec allowlist\n"
-        "        </span>\n"
-        f"        {crowdsec_badge}\n"
-        "      </div>\n"
-        f"{resource_rows}\n"
-        f"{bookmark_row}\n"
-        "    </div>\n"
-        '    <p class="expiry">\n'
-        f"      Access expires <span>{expires_str}</span><br>\n"
-        f"      (after {retention_minutes} minutes of inactivity)\n"
-        "    </p>\n"
-        f'    <button class="details-toggle" aria-expanded="false" onclick="toggleDetails(\'details\', this)">\n'
-        f'      {details_label} <span class="chevron">&#9660;</span>\n'
-        "    </button>\n"
-        '    <div class="details-body" id="details">\n'
-        f'      <div class="row"><span class="key">ip&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{ip}</span></div>\n'
-        f'      <div class="row"><span class="key">pangolin&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="{pangolin_detail_class}">{pangolin_detail}</span></div>\n'
-        f'      <div class="row"><span class="key">crowdsec&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="{crowdsec_detail_class}">{crowdsec_detail_display}</span></div>\n'
-        f'      <div class="row"><span class="key">retention&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{retention_minutes} min</span></div>\n'
-        f'      <div class="row"><span class="key">expires_at&nbsp;&nbsp;&nbsp;</span><span class="val">{expires_iso}</span></div>\n'
-        f'      <div class="row"><span class="key">last_seen&nbsp;&nbsp;&nbsp;&nbsp;</span><span class="val">{last_seen}</span></div>\n'
-        "    </div>\n"
-        "  </div>\n"
-        '  <div class="card-footer">Requests are logged &nbsp;&middot;&nbsp; Access resets on each visit</div>\n'
-        "</div>\n"
-        "<script>\n"
-        "  function toggleDetails(id, btn) {\n"
-        "    const body = document.getElementById(id);\n"
-        "    const open = body.classList.toggle('open');\n"
-        "    btn.setAttribute('aria-expanded', open);\n"
-        "  }\n"
-        "  function bookmarkPage() {\n"
-        "    const url = window.location.href;\n"
-        "    if (navigator.share) {\n"
-        "      navigator.share({ title: 'Network Check-in', url: url }).catch(() => {});\n"
-        "    } else {\n"
-        "      navigator.clipboard.writeText(url).then(function() {\n"
-        "        alert('Link copied to clipboard \u2014 paste it into your bookmarks.');\n"
-        "      }).catch(function() {\n"
-        "        prompt('Copy this link and save it as a bookmark:', url);\n"
-        "      });\n"
-        "    }\n"
-        "  }\n"
-        "</script>\n"
-        "</body>\n"
-        "</html>"
+
+    return _load_template(
+        "checkin.html",
+        {
+            "DOT_CLASS": dot_class,
+            "SITE_NAME_SUB": site_name_sub,
+            "HERO": hero,
+            "IP": ip,
+            "PANGOLIN_BADGE": pangolin_badge,
+            "CROWDSEC_BADGE": crowdsec_badge,
+            "RESOURCE_ROWS": resource_rows,
+            "BOOKMARK_ROW": bookmark_row,
+            "EXPIRY_STR": expires_str,
+            "RETENTION_MINUTES": str(retention_minutes),
+            "DETAILS_LABEL": details_label,
+            "DETAILS_IP": ip,
+            "PANGOLIN_DETAIL_CLASS": pangolin_detail_class,
+            "PANGOLIN_DETAIL": pangolin_detail,
+            "CROWDSEC_DETAIL_CLASS": crowdsec_detail_class,
+            "CROWDSEC_DETAIL": crowdsec_detail_display,
+            "EXPIRES_ISO": expires_iso,
+            "LAST_SEEN": last_seen,
+        },
     )
-    return html
 
 
 def _build_error_html(title: str, message: str, site_name: str = "") -> str:
-    """Build a minimal HTML error page matching the checkin page style."""
     site_name_sub = f'      <div class="sub">{site_name}</div>\n' if site_name else ""
     site_name_footer = f"{site_name} &nbsp;&middot;&nbsp; " if site_name else ""
-    html = (
-        "<!DOCTYPE html>\n"
-        '<html lang="en">\n'
-        "<head>\n"
-        '<meta charset="UTF-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
-        f"<title>{title}</title>\n"
-        "<style>\n"
-        "  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap');\n"
-        "  :root {\n"
-        "    --bg:        #0d0f12;\n"
-        "    --surface:   #151820;\n"
-        "    --border:    #232733;\n"
-        "    --border-hi: #2e3344;\n"
-        "    --text:      #e2e6f0;\n"
-        "    --muted:     #6b7390;\n"
-        "    --err:       #f87171;\n"
-        "    --err-dim:   #3d1515;\n"
-        "    --sans:      'IBM Plex Sans', sans-serif;\n"
-        "  }\n"
-        "  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }\n"
-        "  body {\n"
-        "    background: var(--bg); color: var(--text); font-family: var(--sans); font-weight: 300;\n"
-        "    min-height: 100vh; display: flex; align-items: flex-start; justify-content: center;\n"
-        "    padding: 40px 16px 48px;\n"
-        "    background-image:\n"
-        "      linear-gradient(var(--border) 1px, transparent 1px),\n"
-        "      linear-gradient(90deg, var(--border) 1px, transparent 1px);\n"
-        "    background-size: 32px 32px;\n"
-        "  }\n"
-        "  .card {\n"
-        "    width: 100%; max-width: 440px; background: var(--surface);\n"
-        "    border: 1px solid var(--border-hi); border-radius: 12px; overflow: hidden;\n"
-        "    box-shadow: 0 8px 48px rgba(0,0,0,.5); animation: rise .45s cubic-bezier(.22,1,.36,1) both;\n"
-        "  }\n"
-        "  @keyframes rise {\n"
-        "    from { opacity:0; transform: translateY(18px); }\n"
-        "    to   { opacity:1; transform: translateY(0); }\n"
-        "  }\n"
-        "  .card-header { padding: 20px 24px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }\n"
-        "  .err-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--err); box-shadow: 0 0 0 3px var(--err-dim); flex-shrink: 0; }\n"
-        "  .card-header h1 { font-size: 15px; font-weight: 500; color: var(--text); }\n"
-        "  .card-header .sub { font-size: 12px; color: var(--muted); margin-top: 1px; }\n"
-        "  .card-body { padding: 24px; }\n"
-        "  .hero { font-size: 20px; font-weight: 400; line-height: 1.35; margin-bottom: 12px; color: var(--text); }\n"
-        "  .hero strong { color: var(--err); font-weight: 500; }\n"
-        "  .detail { font-size: 13px; color: var(--muted); line-height: 1.6; }\n"
-        "  .card-footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); text-align: center; }\n"
-        "</style>\n"
-        "</head>\n"
-        "<body>\n"
-        '<div class="card">\n'
-        '  <div class="card-header">\n'
-        '    <div class="err-dot"></div>\n'
-        "    <div>\n"
-        "      <h1>Network Check-in</h1>\n" + site_name_sub + "    </div>\n"
-        "  </div>\n"
-        '  <div class="card-body">\n'
-        f'    <p class="hero"><strong>{title}</strong></p>\n'
-        f'    <p class="detail">{message}</p>\n'
-        "  </div>\n"
-        f'  <div class="card-footer">{site_name_footer}Requests are logged</div>\n'
-        "</div>\n"
-        "</body>\n"
-        "</html>"
+    return _load_template(
+        "error.html",
+        {
+            "ERROR_TITLE": title,
+            "ERROR_MESSAGE": message,
+            "SITE_NAME_SUB": site_name_sub,
+            "SITE_NAME_FOOTER": site_name_footer,
+        },
     )
-    return html
 
 
 def create_image_request_handler(ctx: dict):
@@ -488,18 +235,18 @@ def create_image_request_handler(ctx: dict):
             accept = self.headers.get("Accept", "")
             return "text/html" in accept
 
-        def _send_html(self, status: int, html: str) -> None:
-            body = html.encode("utf-8")
+        def _send_html(self, status: int, body: str) -> None:
+            encoded = body.encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Length", str(len(encoded)))
             self.send_header(
                 "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0"
             )
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
             self.end_headers()
-            self.wfile.write(body)
+            self.wfile.write(encoded)
 
         def do_GET(self):
             ip = self._get_real_ip()
