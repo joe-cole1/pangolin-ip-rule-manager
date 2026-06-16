@@ -141,10 +141,9 @@ def _build_checkin_html(
         else ""
     )
 
-    action_items = [x for x in [bookmark_html, resource_rows] if x]
-    if action_items:
+    if resource_rows:
         actions_section = (
-            '    <div class="action-list">\n' + "\n".join(action_items) + "\n    </div>"
+            '    <div class="action-list">\n' + resource_rows + "\n    </div>"
         )
     else:
         actions_section = ""
@@ -161,6 +160,7 @@ def _build_checkin_html(
             "PANGOLIN_BADGE": pangolin_badge,
             "CROWDSEC_BADGE": crowdsec_badge,
             "ACTIONS_SECTION": actions_section,
+            "BOOKMARK_SECTION": bookmark_html,
             "EXPIRY_STR": expires_str,
             "RETENTION_LABEL": _format_retention(retention_minutes),
             "RETENTION_MINUTES": str(retention_minutes),
