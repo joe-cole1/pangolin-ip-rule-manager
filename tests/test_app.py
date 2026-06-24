@@ -2059,6 +2059,56 @@ def test_self_check_empty_org_id_warns_not_raises(
     assert "ORG_ID" in out
 
 
+def test_self_check_http_url_raises(monkeypatch, app_module):
+    """PANGOLIN_URL with http:// scheme → RuntimeError at startup."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "http://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    with pytest.raises(RuntimeError, match="https://"):
+        app.self_check()
+
+
+def test_self_check_invalid_interval_raises(monkeypatch, app_module):
+    """CLEANUP_INTERVAL_MINUTES=0 → RuntimeError at startup."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "CLEANUP_INTERVAL_MINUTES", 0)
+    with pytest.raises(RuntimeError, match="CLEANUP_INTERVAL_MINUTES"):
+        app.self_check()
+
+
+def test_self_check_invalid_retention_raises(monkeypatch, app_module):
+    """RETENTION_MINUTES=0 → RuntimeError at startup."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "RETENTION_MINUTES", 0)
+    with pytest.raises(RuntimeError, match="RETENTION_MINUTES"):
+        app.self_check()
+
+
+def test_self_check_invalid_rules_cache_ttl_raises(monkeypatch, app_module):
+    """RULES_CACHE_TTL_SECONDS=0 → RuntimeError at startup."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "RULES_CACHE_TTL_SECONDS", 0)
+    with pytest.raises(RuntimeError, match="RULES_CACHE_TTL_SECONDS"):
+        app.self_check()
+
+
+def test_self_check_rate_limit_zero_allowed(monkeypatch, app_module, tmp_path):
+    """RATE_LIMIT_SECONDS=0 is allowed (disables rate limiting)."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "tok")
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 0)
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
+    app.self_check()  # must not raise
+
+
 # ---------------------------------------------------------------------------
 # /update — non-global IP rejection
 # ---------------------------------------------------------------------------

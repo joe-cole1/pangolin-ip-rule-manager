@@ -5,6 +5,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
@@ -463,6 +464,23 @@ def self_check():
         raise RuntimeError(
             "Missing required environment variables: " + ", ".join(missing)
         )
+
+    if PANGOLIN_URL:
+        parsed_url = urlparse(PANGOLIN_URL)
+        if parsed_url.scheme != "https":
+            raise RuntimeError(
+                f"PANGOLIN_URL must use https:// scheme; got {parsed_url.scheme!r}"
+            )
+
+    for _name, _val, _min in [
+        ("CLEANUP_INTERVAL_MINUTES", CLEANUP_INTERVAL_MINUTES, 1),
+        ("RETENTION_MINUTES", RETENTION_MINUTES, 1),
+        ("RATE_LIMIT_SECONDS", RATE_LIMIT_SECONDS, 0),
+        ("RULES_CACHE_TTL_SECONDS", RULES_CACHE_TTL_SECONDS, 1),
+        ("CROWDSEC_CACHE_TTL_SECONDS", CROWDSEC_CACHE_TTL_SECONDS, 1),
+    ]:
+        if _val < _min:
+            raise RuntimeError(f"{_name}={_val} is below minimum allowed value {_min}")
 
     if not PANGOLIN_TOKEN:
         print("")
