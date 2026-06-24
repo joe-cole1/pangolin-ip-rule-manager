@@ -1832,14 +1832,14 @@ def test_cache_expired_triggers_refresh():
 
     def fake_http(method, url, body=None):
         call_count["n"] += 1
-        return {"data": {"rules": [{"match": "IP", "value": "fresh-ip"}]}}
+        return {"data": {"rules": [{"match": "IP", "value": "10.0.0.1"}]}}
 
-    rules_cache = {5: {"ts": 0, "ip_set": {"stale-ip"}}}
+    rules_cache = {5: {"ts": 0, "ip_set": {"10.0.0.2"}}}
     ctx = _make_pg_ctx(http_json=fake_http, rules_cache=rules_cache)
 
     result = pangolin_connector.get_ip_set_for_resource_cached(ctx, 5)
-    assert "fresh-ip" in result
-    assert "stale-ip" not in result
+    assert "10.0.0.1" in result
+    assert "10.0.0.2" not in result
     assert call_count["n"] == 1, "http_json must be called exactly once for the refresh"
 
 

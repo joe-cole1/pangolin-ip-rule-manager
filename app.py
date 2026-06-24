@@ -136,6 +136,7 @@ def save_state():
         with open(tmp_file, "w", encoding="utf-8") as f:
             f.write(snapshot)
         os.replace(tmp_file, STATE_FILE)
+        os.chmod(STATE_FILE, 0o600)
     except Exception as e:
         print(f"[state] failed to save state: {e}")
 
@@ -346,11 +347,7 @@ def cleanup_old_ips():
             last_seen_str = rec.get("last_seen")
             resources = rec.get("resources", {})
         try:
-            last_seen = (
-                datetime.fromisoformat(last_seen_str.replace("Z", "+00:00"))
-                if last_seen_str
-                else None
-            )
+            last_seen = datetime.fromisoformat(last_seen_str) if last_seen_str else None
         except ValueError:
             print(f"[cleanup] Invalid datetime format in last_seen: {last_seen_str}")
             last_seen = None
