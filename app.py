@@ -5,6 +5,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
@@ -135,6 +136,7 @@ def save_state():
         with open(tmp_file, "w", encoding="utf-8") as f:
             f.write(snapshot)
         os.replace(tmp_file, STATE_FILE)
+        os.chmod(STATE_FILE, 0o600)
     except Exception as e:
         print(f"[state] failed to save state: {e}")
 
@@ -305,9 +307,15 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
             results[key]["detail"] = str(e)
             print(f"[targets] add failed for {ip} on {t.__class__.__name__}: {e}")
 
-    if RATE_LIMIT_SECONDS > 0 and results.get("pangolin", {}).get("ok"):
+    if RATE_LIMIT_SECONDS > 0:
         with _api_rate_limit_lock:
-            _api_rate_limit[ip] = (time.monotonic(), results)
+            now_mono = time.monotonic()
+            _api_rate_limit[ip] = (now_mono, results)
+            # Prune entries that have aged out so the dict doesn't grow without bound
+            cutoff = now_mono - RATE_LIMIT_SECONDS
+            stale = [k for k, (ts, _) in _api_rate_limit.items() if ts < cutoff]
+            for k in stale:
+                del _api_rate_limit[k]
 
     return results
 
@@ -339,11 +347,7 @@ def cleanup_old_ips():
             last_seen_str = rec.get("last_seen")
             resources = rec.get("resources", {})
         try:
-            last_seen = (
-                datetime.fromisoformat(last_seen_str.replace("Z", "+00:00"))
-                if last_seen_str
-                else None
-            )
+            last_seen = datetime.fromisoformat(last_seen_str) if last_seen_str else None
         except ValueError:
             print(f"[cleanup] Invalid datetime format in last_seen: {last_seen_str}")
             last_seen = None
@@ -457,6 +461,23 @@ def self_check():
         raise RuntimeError(
             "Missing required environment variables: " + ", ".join(missing)
         )
+
+    if PANGOLIN_URL:
+        parsed_url = urlparse(PANGOLIN_URL)
+        if parsed_url.scheme != "https":
+            raise RuntimeError(
+                f"PANGOLIN_URL must use https:// scheme; got {parsed_url.scheme!r}"
+            )
+
+    for _name, _val, _min in [
+        ("CLEANUP_INTERVAL_MINUTES", CLEANUP_INTERVAL_MINUTES, 1),
+        ("RETENTION_MINUTES", RETENTION_MINUTES, 1),
+        ("RATE_LIMIT_SECONDS", RATE_LIMIT_SECONDS, 0),
+        ("RULES_CACHE_TTL_SECONDS", RULES_CACHE_TTL_SECONDS, 1),
+        ("CROWDSEC_CACHE_TTL_SECONDS", CROWDSEC_CACHE_TTL_SECONDS, 1),
+    ]:
+        if _val < _min:
+            raise RuntimeError(f"{_name}={_val} is below minimum allowed value {_min}")
 
     if not PANGOLIN_TOKEN:
         print("")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import threading
 import time
 from dataclasses import dataclass
@@ -71,7 +72,13 @@ def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> Set[str]:
         if r.get("match") == "IP":
             v = r.get("value")
             if isinstance(v, str):
-                ip_set.add(v)
+                try:
+                    ipaddress.ip_address(v)
+                    ip_set.add(v)
+                except ValueError:
+                    print(
+                        f"[pangolin] ignoring invalid IP value in rules response: {v!r}"
+                    )
     with ctx.state_lock:
         ctx.rules_cache[rid] = {"ts": now, "ip_set": ip_set}
     return ip_set

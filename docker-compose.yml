@@ -76,6 +76,12 @@ services:
 
     restart: unless-stopped
 
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256M"
+
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f app.py || exit 1"]
       interval: 60s

@@ -22,6 +22,16 @@ WORKDIR /app
 COPY *.py /app/
 COPY templates/ /app/templates/
 
+# Run as a non-root user; create the data directory first so the volume mount
+# inherits the correct ownership when the container starts.
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
+    && mkdir -p /data && chown appuser:appgroup /data
+
+USER appuser
+
 EXPOSE 8080
+
+HEALTHCHECK --interval=60s --timeout=5s --start-period=15s --retries=3 \
+    CMD pgrep -f app.py || exit 1
 
 CMD ["python", "/app/app.py"]

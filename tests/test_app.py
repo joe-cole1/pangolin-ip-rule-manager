@@ -1,6 +1,7 @@
 import contextlib
 import http.client
 import importlib
+import json
 import threading
 import time as _time_mod
 
@@ -305,8 +306,9 @@ def test_update_endpoint_enabled_adds_arbitrary_ip(monkeypatch, temp_state_file)
         resp = conn.getresponse()
         data = resp.read()
         assert resp.status == 200
-        assert b'"ok":true' in data
-        assert b'"ip":"1.2.3.4"' in data
+        parsed = json.loads(data)
+        assert parsed["ok"] is True
+        assert parsed["ip"] == "1.2.3.4"
 
     with app.state_lock:
         assert "1.2.3.4" in app.state
@@ -358,7 +360,8 @@ def test_update_endpoint_ipv6_success(monkeypatch, temp_state_file):
         resp = conn.getresponse()
         data = resp.read()
         assert resp.status == 200
-        assert f'"ip":"{ipv6}"'.encode() in data
+        parsed = json.loads(data)
+        assert parsed["ip"] == ipv6
     with app.state_lock:
         assert ipv6 in app.state
 
@@ -1829,14 +1832,14 @@ def test_cache_expired_triggers_refresh():
 
     def fake_http(method, url, body=None):
         call_count["n"] += 1
-        return {"data": {"rules": [{"match": "IP", "value": "fresh-ip"}]}}
+        return {"data": {"rules": [{"match": "IP", "value": "10.0.0.1"}]}}
 
-    rules_cache = {5: {"ts": 0, "ip_set": {"stale-ip"}}}
+    rules_cache = {5: {"ts": 0, "ip_set": {"10.0.0.2"}}}
     ctx = _make_pg_ctx(http_json=fake_http, rules_cache=rules_cache)
 
     result = pangolin_connector.get_ip_set_for_resource_cached(ctx, 5)
-    assert "fresh-ip" in result
-    assert "stale-ip" not in result
+    assert "10.0.0.1" in result
+    assert "10.0.0.2" not in result
     assert call_count["n"] == 1, "http_json must be called exactly once for the refresh"
 
 
@@ -2057,6 +2060,56 @@ def test_self_check_empty_org_id_warns_not_raises(
     app.self_check()  # must not raise
     out = capsys.readouterr().out
     assert "ORG_ID" in out
+
+
+def test_self_check_http_url_raises(monkeypatch, app_module):
+    """PANGOLIN_URL with http:// scheme → RuntimeError at startup."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "http://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    with pytest.raises(RuntimeError, match="https://"):
+        app.self_check()
+
+
+def test_self_check_invalid_interval_raises(monkeypatch, app_module):
+    """CLEANUP_INTERVAL_MINUTES=0 → RuntimeError at startup."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "CLEANUP_INTERVAL_MINUTES", 0)
+    with pytest.raises(RuntimeError, match="CLEANUP_INTERVAL_MINUTES"):
+        app.self_check()
+
+
+def test_self_check_invalid_retention_raises(monkeypatch, app_module):
+    """RETENTION_MINUTES=0 → RuntimeError at startup."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "RETENTION_MINUTES", 0)
+    with pytest.raises(RuntimeError, match="RETENTION_MINUTES"):
+        app.self_check()
+
+
+def test_self_check_invalid_rules_cache_ttl_raises(monkeypatch, app_module):
+    """RULES_CACHE_TTL_SECONDS=0 → RuntimeError at startup."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "RULES_CACHE_TTL_SECONDS", 0)
+    with pytest.raises(RuntimeError, match="RULES_CACHE_TTL_SECONDS"):
+        app.self_check()
+
+
+def test_self_check_rate_limit_zero_allowed(monkeypatch, app_module, tmp_path):
+    """RATE_LIMIT_SECONDS=0 is allowed (disables rate limiting)."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "tok")
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 0)
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
+    app.self_check()  # must not raise
 
 
 # ---------------------------------------------------------------------------
