@@ -7,14 +7,12 @@ on:
   pull_request:
     branches: [ "master" ]
 
-# Elevate write permissions globally so the action can create branches and PRs
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -22,10 +20,10 @@ jobs:
         python-version: ["3.14"]
 
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
       with:
         python-version: ${{ matrix.python-version }}
         cache: 'pip' # Speeds up subsequent runs by caching dependencies
@@ -45,7 +43,7 @@ jobs:
     # 2. Only attempt to open a PR if changes were made and it's NOT a PR event itself
     - name: Create Pull Request for Style Fixes
       if: github.event_name != 'pull_request'
-      uses: peter-evans/create-pull-request@v8
+      uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
         commit-message: "style: automated ruff formatting and fixes"
@@ -64,4 +62,4 @@ jobs:
     - name: Test with pytest
       run: |
         pytest
-        
+
