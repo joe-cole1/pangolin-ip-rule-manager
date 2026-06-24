@@ -1,5 +1,6 @@
 import html
 import ipaddress
+import json
 import os
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler
@@ -256,6 +257,10 @@ def create_image_request_handler(ctx: dict):
             accept = self.headers.get("Accept", "")
             return "text/html" in accept
 
+        def _send_security_headers(self) -> None:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+
         def _send_html(self, status: int, body: str) -> None:
             encoded = body.encode("utf-8")
             self.send_response(status)
@@ -266,6 +271,7 @@ def create_image_request_handler(ctx: dict):
             )
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(encoded)
 
@@ -370,14 +376,23 @@ def create_image_request_handler(ctx: dict):
                         ),
                     )
                 else:
-                    payload = (
-                        "{"
-                        f'"ok":true,"ip":"{normalized_ip}","retention_minutes":{ctx.get("retention_minutes", 0)}'
-                        "}"
+                    payload = json.dumps(
+                        {
+                            "ok": True,
+                            "ip": normalized_ip,
+                            "retention_minutes": ctx.get("retention_minutes", 0),
+                        }
                     ).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(payload)))
+                    self.send_header(
+                        "Cache-Control",
+                        "no-store, no-cache, must-revalidate, max-age=0",
+                    )
+                    self.send_header("Pragma", "no-cache")
+                    self.send_header("Expires", "0")
+                    self._send_security_headers()
                     self.end_headers()
                     self.wfile.write(payload)
                 return
@@ -460,6 +475,7 @@ def create_image_request_handler(ctx: dict):
                 )
                 self.send_header("Pragma", "no-cache")
                 self.send_header("Expires", "0")
+                self._send_security_headers()
                 self.end_headers()
                 self.wfile.write(body)
 

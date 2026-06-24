@@ -1,6 +1,7 @@
 import contextlib
 import http.client
 import importlib
+import json
 import threading
 import time as _time_mod
 
@@ -305,8 +306,9 @@ def test_update_endpoint_enabled_adds_arbitrary_ip(monkeypatch, temp_state_file)
         resp = conn.getresponse()
         data = resp.read()
         assert resp.status == 200
-        assert b'"ok":true' in data
-        assert b'"ip":"1.2.3.4"' in data
+        parsed = json.loads(data)
+        assert parsed["ok"] is True
+        assert parsed["ip"] == "1.2.3.4"
 
     with app.state_lock:
         assert "1.2.3.4" in app.state
@@ -358,7 +360,8 @@ def test_update_endpoint_ipv6_success(monkeypatch, temp_state_file):
         resp = conn.getresponse()
         data = resp.read()
         assert resp.status == 200
-        assert f'"ip":"{ipv6}"'.encode() in data
+        parsed = json.loads(data)
+        assert parsed["ip"] == ipv6
     with app.state_lock:
         assert ipv6 in app.state
 
