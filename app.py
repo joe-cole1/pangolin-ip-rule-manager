@@ -305,9 +305,15 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
             results[key]["detail"] = str(e)
             print(f"[targets] add failed for {ip} on {t.__class__.__name__}: {e}")
 
-    if RATE_LIMIT_SECONDS > 0 and results.get("pangolin", {}).get("ok"):
+    if RATE_LIMIT_SECONDS > 0:
         with _api_rate_limit_lock:
-            _api_rate_limit[ip] = (time.monotonic(), results)
+            now_mono = time.monotonic()
+            _api_rate_limit[ip] = (now_mono, results)
+            # Prune entries that have aged out so the dict doesn't grow without bound
+            cutoff = now_mono - RATE_LIMIT_SECONDS
+            stale = [k for k, (ts, _) in _api_rate_limit.items() if ts < cutoff]
+            for k in stale:
+                del _api_rate_limit[k]
 
     return results
 
