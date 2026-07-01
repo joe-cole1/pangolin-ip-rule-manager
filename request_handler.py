@@ -339,6 +339,11 @@ def create_image_request_handler(ctx: dict):
 
             print(f"New request from {ip}  user: {remote_user}  path: {path}")
 
+            if ctx.get("debug_log_headers"):
+                redact = ctx.get("redact_headers_for_log")
+                if redact:
+                    print("[http] headers:", redact(dict(self.headers)))
+
             lower_path = path.lower()
 
             # /update?ip=1.2.3.4 endpoint (guarded by UPDATE_ENDPOINT_ENABLED)

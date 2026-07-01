@@ -70,6 +70,13 @@ UPDATE_ENDPOINT_ENABLED = os.getenv(
 # the secret are rejected before any state write or API call. Leave empty to disable
 # (the service then relies solely on network topology to keep it behind the proxy).
 PROXY_SHARED_SECRET = os.getenv("PROXY_SHARED_SECRET", "")
+# Optional: log all request headers (with Authorization redacted) for debugging.
+DEBUG_LOG_HEADERS = os.getenv("DEBUG_LOG_HEADERS", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # Minimal 1x1 PNG (transparent) as bytes
 BANNER_PNG = base64.b64decode(
@@ -451,6 +458,7 @@ def _make_image_handler_context() -> dict:
         "crowdsec_enabled": CROWDSEC_ENABLED,
         "site_name": SITE_NAME,
         "proxy_shared_secret": PROXY_SHARED_SECRET,
+        "debug_log_headers": DEBUG_LOG_HEADERS,
         "state": state,
         "state_lock": state_lock,
         "now_utc_iso": now_utc_iso,
