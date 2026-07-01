@@ -1,10 +1,12 @@
 import base64
+import contextlib
 import json
 import os
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from http.server import HTTPServer
+from http.server import ThreadingHTTPServer
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -79,6 +81,9 @@ BANNER_GIF = base64.b64decode(
 )
 
 state_lock = threading.Lock()
+# Serializes save_state() so concurrent writers (request threads + cleanup thread)
+# cannot race on the temporary file or clobber each other's os.replace.
+_save_lock = threading.Lock()
 state = {
     # ip: {
     #   "last_seen": "2025-01-01T00:00:00Z",
@@ -134,16 +139,23 @@ def load_state():
 
 
 def save_state():
-    tmp_file = STATE_FILE + ".tmp"
-    try:
+    with _save_lock:
         with state_lock:
             snapshot = json.dumps(state, indent=2, sort_keys=True)
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            f.write(snapshot)
-        os.replace(tmp_file, STATE_FILE)
-        os.chmod(STATE_FILE, 0o600)
-    except Exception as e:
-        print(f"[state] failed to save state: {e}")
+        state_dir = os.path.dirname(os.path.abspath(STATE_FILE))
+        tmp_file = None
+        try:
+            fd, tmp_file = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(snapshot)
+            os.replace(tmp_file, STATE_FILE)
+            tmp_file = None
+            os.chmod(STATE_FILE, 0o600)
+        except Exception as e:
+            print(f"[state] failed to save state: {e}")
+            if tmp_file is not None:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp_file)
 
 
 def http_json(method: str, url: str, body: dict | None = None) -> dict:
@@ -586,7 +598,7 @@ def main():
     t.start()
 
     addr = ("0.0.0.0", LISTEN_PORT)
-    httpd = HTTPServer(addr, ImageRequestHandler)
+    httpd = ThreadingHTTPServer(addr, ImageRequestHandler)
     print(
         f"[start] Listening on {addr[0]}:{addr[1]} | resources={RESOURCE_IDS} | retention_minutes={RETENTION_MINUTES} | cleanup_interval_minutes={CLEANUP_INTERVAL_MINUTES}"
     )
