@@ -1823,6 +1823,26 @@ def test_delete_rule_success_returns_true():
     )
 
 
+def test_delete_rule_evicts_ip_from_rules_cache():
+    """A successful delete must remove the IP from rules_cache so a later check-in
+    re-creates the rule instead of trusting a stale 'already exists' entry."""
+    import pangolin_connector
+
+    def fake_http(method, url, body=None):
+        if method == "GET":
+            return {
+                "data": {"rules": [{"match": "IP", "value": "1.2.3.4", "ruleId": 42}]}
+            }
+        return {}
+
+    cache = {5: {"ts": 9e18, "ip_set": {"1.2.3.4", "9.9.9.9"}}}
+    ctx = _make_pg_ctx(http_json=fake_http, rules_cache=cache)
+
+    assert pangolin_connector.delete_ip_rule_if_created_by_us(ctx, "1.2.3.4", 5) is True
+    assert "1.2.3.4" not in cache[5]["ip_set"], "deleted IP must be evicted from cache"
+    assert "9.9.9.9" in cache[5]["ip_set"], "other cached IPs must be preserved"
+
+
 def test_delete_rule_no_rule_id_returns_false():
     """Matching rule has no ruleId field — skipped, deleted_any stays False, returns False."""
     import pangolin_connector
