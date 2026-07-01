@@ -1,10 +1,12 @@
 import base64
+import contextlib
 import json
 import os
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from http.server import HTTPServer
+from http.server import ThreadingHTTPServer
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -63,6 +65,18 @@ SITE_NAME = os.getenv("SITE_NAME", "").strip()
 UPDATE_ENDPOINT_ENABLED = os.getenv(
     "UPDATE_ENDPOINT_ENABLED", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
+# Optional: defense-in-depth shared secret that the upstream proxy (Pangolin/Traefik)
+# must inject as the X-Proxy-Secret header. When set, requests missing or mismatching
+# the secret are rejected before any state write or API call. Leave empty to disable
+# (the service then relies solely on network topology to keep it behind the proxy).
+PROXY_SHARED_SECRET = os.getenv("PROXY_SHARED_SECRET", "")
+# Optional: log all request headers (with Authorization redacted) for debugging.
+DEBUG_LOG_HEADERS = os.getenv("DEBUG_LOG_HEADERS", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # Minimal 1x1 PNG (transparent) as bytes
 BANNER_PNG = base64.b64decode(
@@ -74,6 +88,9 @@ BANNER_GIF = base64.b64decode(
 )
 
 state_lock = threading.Lock()
+# Serializes save_state() so concurrent writers (request threads + cleanup thread)
+# cannot race on the temporary file or clobber each other's os.replace.
+_save_lock = threading.Lock()
 state = {
     # ip: {
     #   "last_seen": "2025-01-01T00:00:00Z",
@@ -86,10 +103,8 @@ rules_cache = {
     # rid: {"ts": epoch_seconds, "ip_set": set([...])}
 }
 
-# CrowdSec runtime flags/caches
-_crowdsec_allowlist_ready = False
-# Cache of IPs currently in the CrowdSec allowlist (with TTL)
-crowdsec_cache = {"ts": 0.0, "ip_set": set()}
+# CrowdSec allowlist readiness/caches live in crowdsec_connector; app.py does not
+# duplicate them.
 
 # Per-IP rate limit cache: {ip: (monotonic_timestamp, last_result)}
 _api_rate_limit: dict[str, tuple[float, dict]] = {}
@@ -129,16 +144,23 @@ def load_state():
 
 
 def save_state():
-    tmp_file = STATE_FILE + ".tmp"
-    try:
+    with _save_lock:
         with state_lock:
             snapshot = json.dumps(state, indent=2, sort_keys=True)
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            f.write(snapshot)
-        os.replace(tmp_file, STATE_FILE)
-        os.chmod(STATE_FILE, 0o600)
-    except Exception as e:
-        print(f"[state] failed to save state: {e}")
+        state_dir = os.path.dirname(os.path.abspath(STATE_FILE))
+        tmp_file = None
+        try:
+            fd, tmp_file = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(snapshot)
+            os.replace(tmp_file, STATE_FILE)
+            tmp_file = None
+            os.chmod(STATE_FILE, 0o600)
+        except Exception as e:
+            print(f"[state] failed to save state: {e}")
+            if tmp_file is not None:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp_file)
 
 
 def http_json(method: str, url: str, body: dict | None = None) -> dict:
@@ -169,12 +191,15 @@ def http_json(method: str, url: str, body: dict | None = None) -> dict:
         raise RuntimeError(f"Network error: {e}")
 
 
-# Targets common interface
+# Targets common interface. All targets share one add_ip signature so the caller can
+# dispatch uniformly without type checks; targets ignore resource_ids they don't use.
 class Target:
+    name = "target"
+
     def ensure_ready(self) -> None:
         pass
 
-    def add_ip(self, ip: str) -> None:
+    def add_ip(self, ip: str, resource_ids: list[int] | None = None) -> None:
         raise NotImplementedError
 
     def expire_ip(self, ip: str) -> None:
@@ -182,6 +207,8 @@ class Target:
 
 
 class PangolinTarget(Target):
+    name = "pangolin"
+
     def __init__(self, ctx_factory):
         self._ctx_factory = ctx_factory
 
@@ -199,10 +226,12 @@ class PangolinTarget(Target):
 
 
 class CrowdSecTarget(Target):
+    name = "crowdsec"
+
     def ensure_ready(self) -> None:
         crowdsec_ensure_allowlist()
 
-    def add_ip(self, ip: str) -> None:
+    def add_ip(self, ip: str, resource_ids: list[int] | None = None) -> None:
         crowdsec_add_ip(ip)
 
     def expire_ip(self, ip: str) -> None:
@@ -294,12 +323,9 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
         "resources": effective_resources,
     }
     for t in TARGETS:
-        key = "crowdsec" if isinstance(t, CrowdSecTarget) else "pangolin"
+        key = t.name
         try:
-            if isinstance(t, PangolinTarget):
-                t.add_ip(ip, resource_ids=effective_ids)
-            else:
-                t.add_ip(ip)
+            t.add_ip(ip, resource_ids=effective_ids)
             results[key]["ok"] = True
             results[key]["detail"] = "ok"
         except Exception as e:
@@ -431,6 +457,8 @@ def _make_image_handler_context() -> dict:
         "retention_minutes": RETENTION_MINUTES,
         "crowdsec_enabled": CROWDSEC_ENABLED,
         "site_name": SITE_NAME,
+        "proxy_shared_secret": PROXY_SHARED_SECRET,
+        "debug_log_headers": DEBUG_LOG_HEADERS,
         "state": state,
         "state_lock": state_lock,
         "now_utc_iso": now_utc_iso,
@@ -490,6 +518,12 @@ def self_check():
         print("")
     if not ORG_ID:
         print("[warn] ORG_ID is not set; startup resource listing will be skipped.")
+    if not PROXY_SHARED_SECRET:
+        print(
+            "[warn] PROXY_SHARED_SECRET is not set; the service relies solely on network "
+            "topology to stay behind the proxy. Set it and have Pangolin/Traefik inject "
+            "the X-Proxy-Secret header for defense-in-depth."
+        )
 
     # Verify state file directory is writable before we need it
     state_dir = os.path.dirname(os.path.abspath(STATE_FILE))
@@ -574,7 +608,7 @@ def main():
     t.start()
 
     addr = ("0.0.0.0", LISTEN_PORT)
-    httpd = HTTPServer(addr, ImageRequestHandler)
+    httpd = ThreadingHTTPServer(addr, ImageRequestHandler)
     print(
         f"[start] Listening on {addr[0]}:{addr[1]} | resources={RESOURCE_IDS} | retention_minutes={RETENTION_MINUTES} | cleanup_interval_minutes={CLEANUP_INTERVAL_MINUTES}"
     )

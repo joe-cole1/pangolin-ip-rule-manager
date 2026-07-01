@@ -190,11 +190,12 @@ def crowdsec_allowlist_exists(name: str) -> bool:
                     )
             except Exception:
                 pass
-    # Fallback: plain text search
+    # Fallback: plain text search. Match a whole whitespace-delimited token rather
+    # than a substring so a shorter name cannot false-match a longer allowlist name.
     for args in (["allowlist", "list"], ["allowlists", "list"]):
         rc3, out3, _ = run_cscli(args)
         if rc3 == 0 and out3:
-            if name in out3:
+            if name in out3.split():
                 return True
     return False
 

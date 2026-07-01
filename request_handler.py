@@ -1,3 +1,4 @@
+import hmac
 import html
 import ipaddress
 import json
@@ -152,7 +153,9 @@ def _build_checkin_html(
     else:
         actions_section = ""
 
-    site_name_sub = f'      <div class="sub">{site_name}</div>\n' if site_name else ""
+    site_name_sub = (
+        f'      <div class="sub">{html.escape(site_name)}</div>\n' if site_name else ""
+    )
 
     return _load_template(
         "checkin.html",
@@ -171,9 +174,9 @@ def _build_checkin_html(
             "DETAILS_LABEL": details_label,
             "DETAILS_IP": ip,
             "PANGOLIN_DETAIL_CLASS": pangolin_detail_class,
-            "PANGOLIN_DETAIL": pangolin_detail,
+            "PANGOLIN_DETAIL": html.escape(str(pangolin_detail)),
             "CROWDSEC_DETAIL_CLASS": crowdsec_detail_class,
-            "CROWDSEC_DETAIL": crowdsec_detail_display,
+            "CROWDSEC_DETAIL": html.escape(str(crowdsec_detail_display)),
             "EXPIRES_ISO": expires_iso,
             "LAST_SEEN": last_seen,
         },
@@ -181,8 +184,12 @@ def _build_checkin_html(
 
 
 def _build_error_html(title: str, message: str, site_name: str = "") -> str:
-    site_name_sub = f'      <div class="sub">{site_name}</div>\n' if site_name else ""
-    site_name_footer = f"{site_name} &nbsp;&middot;&nbsp; " if site_name else ""
+    site_name_sub = (
+        f'      <div class="sub">{html.escape(site_name)}</div>\n' if site_name else ""
+    )
+    site_name_footer = (
+        f"{html.escape(site_name)} &nbsp;&middot;&nbsp; " if site_name else ""
+    )
     return _load_template(
         "error.html",
         {
@@ -210,6 +217,7 @@ def create_image_request_handler(ctx: dict):
       - banner_gif: bytes
       - redact_headers_for_log: callable (headers: dict[str, str]) -> dict[str, str]
       - site_name: str
+      - proxy_shared_secret: str (optional; when set, X-Proxy-Secret must match)
     """
 
     class ImageRequestHandler(BaseHTTPRequestHandler):
@@ -257,9 +265,34 @@ def create_image_request_handler(ctx: dict):
             accept = self.headers.get("Accept", "")
             return "text/html" in accept
 
+        def _proxy_secret_ok(self) -> bool:
+            """Defense-in-depth gate. When PROXY_SHARED_SECRET is configured, the
+            upstream proxy must inject a matching X-Proxy-Secret header. Compared with
+            hmac.compare_digest to avoid timing leaks. Returns True when no secret is
+            configured (feature disabled) or the provided secret matches."""
+            expected = ctx.get("proxy_shared_secret", "")
+            if not expected:
+                return True
+            provided = self.headers.get("X-Proxy-Secret", "")
+            return hmac.compare_digest(provided, expected)
+
         def _send_security_headers(self) -> None:
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            # All CSS/JS is inline and self-contained (no external fetches), so a
+            # restrictive policy is possible. 'unsafe-inline' is still required for
+            # the inline <style>/<script> blocks; everything else is locked down.
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'none'; "
+                "img-src 'self' data:; "
+                "style-src 'unsafe-inline'; "
+                "script-src 'unsafe-inline'; "
+                "base-uri 'none'; "
+                "form-action 'none'; "
+                "frame-ancestors 'none'",
+            )
 
         def _send_html(self, status: int, body: str) -> None:
             encoded = body.encode("utf-8")
@@ -276,12 +309,40 @@ def create_image_request_handler(ctx: dict):
             self.wfile.write(encoded)
 
         def do_GET(self):
-            ip = self._get_real_ip()
             parsed_path = urlparse(self.path)
             path = parsed_path.path or "/"
+
+            # Liveness probe — intentionally before the proxy-secret gate so container
+            # health checks work regardless of PROXY_SHARED_SECRET. Touches no state and
+            # makes no upstream calls.
+            if path == "/healthz":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+                return
+
+            # Defense-in-depth: reject anything that did not transit the proxy before
+            # touching state or the Pangolin/CrowdSec APIs. Bare 403, no body detail.
+            if not self._proxy_secret_ok():
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(b"Forbidden")
+                print(
+                    f"[error] Rejected request with missing/invalid X-Proxy-Secret: {self.path}"
+                )
+                return
+
+            ip = self._get_real_ip()
             remote_user = self.headers.get("Remote-User", "")
 
             print(f"New request from {ip}  user: {remote_user}  path: {path}")
+
+            if ctx.get("debug_log_headers"):
+                redact = ctx.get("redact_headers_for_log")
+                if redact:
+                    print("[http] headers:", redact(dict(self.headers)))
 
             lower_path = path.lower()
 

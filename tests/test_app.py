@@ -1619,6 +1619,163 @@ def test_get_real_ip_ipv6_accepted():
 
 
 # ---------------------------------------------------------------------------
+# Proxy shared-secret gate (Finding H-3)
+# ---------------------------------------------------------------------------
+
+
+def _reload_app_with_secret(monkeypatch, temp_state_file, secret: str):
+    monkeypatch.setenv("PANGOLIN_TOKEN", "")
+    monkeypatch.setenv("RESOURCE_IDS", "5")
+    monkeypatch.setenv("LISTEN_PORT", "0")
+    monkeypatch.setenv("STATE_FILE", temp_state_file)
+    monkeypatch.setenv("PROXY_SHARED_SECRET", secret)
+    import app as _app
+
+    return importlib.reload(_app)
+
+
+def test_proxy_secret_missing_header_rejected(monkeypatch, temp_state_file):
+    """When PROXY_SHARED_SECRET is set, a request without X-Proxy-Secret gets 403
+    and no IP is written to state."""
+    app = _reload_app_with_secret(monkeypatch, temp_state_file, "s3cret")
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/checkin.png", headers={"X-Real-IP": "1.2.3.4"})
+        resp = conn.getresponse()
+        _ = resp.read()
+        assert resp.status == 403
+
+    with app.state_lock:
+        assert "1.2.3.4" not in app.state, "no state write when secret gate fails"
+
+
+def test_proxy_secret_wrong_header_rejected(monkeypatch, temp_state_file):
+    """A mismatched X-Proxy-Secret is rejected with 403."""
+    app = _reload_app_with_secret(monkeypatch, temp_state_file, "s3cret")
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request(
+            "GET",
+            "/checkin.png",
+            headers={"X-Real-IP": "1.2.3.4", "X-Proxy-Secret": "wrong"},
+        )
+        resp = conn.getresponse()
+        _ = resp.read()
+        assert resp.status == 403
+
+
+def test_proxy_secret_correct_header_allowed(monkeypatch, temp_state_file):
+    """A matching X-Proxy-Secret passes the gate and reaches the handler (200)."""
+    app = _reload_app_with_secret(monkeypatch, temp_state_file, "s3cret")
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request(
+            "GET",
+            "/checkin.png",
+            headers={"X-Real-IP": "1.2.3.4", "X-Proxy-Secret": "s3cret"},
+        )
+        resp = conn.getresponse()
+        _ = resp.read()
+        assert resp.status == 200
+
+
+def test_proxy_secret_unset_disables_gate(monkeypatch, temp_state_file):
+    """With no PROXY_SHARED_SECRET configured, requests are not gated (200)."""
+    app = _reload_app_with_secret(monkeypatch, temp_state_file, "")
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/checkin.png", headers={"X-Real-IP": "1.2.3.4"})
+        resp = conn.getresponse()
+        _ = resp.read()
+        assert resp.status == 200
+
+
+def test_healthz_ok_and_bypasses_secret_gate(monkeypatch, temp_state_file):
+    """/healthz returns 200 with no auth, even when the proxy-secret gate is armed,
+    and does not write any state."""
+    app = _reload_app_with_secret(monkeypatch, temp_state_file, "s3cret")
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/healthz")
+        resp = conn.getresponse()
+        data = resp.read()
+        assert resp.status == 200
+        assert data == b"ok"
+
+    with app.state_lock:
+        assert app.state == {}, "healthz must not mutate state"
+
+
+# ---------------------------------------------------------------------------
+# HTML rendering — reflected XSS escaping (Finding H-1)
+# ---------------------------------------------------------------------------
+
+
+def test_checkin_html_escapes_pangolin_detail():
+    """Attacker-controlled detail text must be HTML-escaped, not reflected raw."""
+    import request_handler
+
+    payload = "<script>alert(1)</script>"
+    results = {
+        "pangolin": {"ok": False, "detail": payload},
+        "crowdsec": {"ok": False, "detail": "disabled"},
+    }
+    body = request_handler._build_checkin_html(
+        ip="1.2.3.4",
+        results=results,
+        retention_minutes=1440,
+        last_seen="2025-01-01T00:00:00+00:00",
+        crowdsec_enabled=False,
+    )
+    assert payload not in body, "Raw <script> payload must not appear in rendered HTML"
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+
+
+def test_checkin_html_escapes_site_name():
+    """site_name must be HTML-escaped in the check-in header."""
+    import request_handler
+
+    results = {
+        "pangolin": {"ok": True, "detail": "ok"},
+        "crowdsec": {"ok": False, "detail": "disabled"},
+    }
+    body = request_handler._build_checkin_html(
+        ip="1.2.3.4",
+        results=results,
+        retention_minutes=1440,
+        last_seen="2025-01-01T00:00:00+00:00",
+        crowdsec_enabled=False,
+        site_name="<img src=x onerror=alert(1)>",
+    )
+    assert "<img src=x onerror=alert(1)>" not in body
+    assert "&lt;img src=x onerror=alert(1)&gt;" in body
+
+
+def test_error_html_escapes_site_name():
+    """site_name must be HTML-escaped in the error page header and footer."""
+    import request_handler
+
+    body = request_handler._build_error_html(
+        "Bad request", "Something went wrong.", site_name="<b>x</b>"
+    )
+    assert "<b>x</b>" not in body
+    assert "&lt;b&gt;x&lt;/b&gt;" in body
+
+
+# ---------------------------------------------------------------------------
 # pangolin_connector unit tests
 # ---------------------------------------------------------------------------
 
@@ -1683,6 +1840,26 @@ def test_delete_rule_success_returns_true():
     assert any("DELETE" == m and "rule/42" in u for m, u in calls), (
         "DELETE must be called with the correct rule URL"
     )
+
+
+def test_delete_rule_evicts_ip_from_rules_cache():
+    """A successful delete must remove the IP from rules_cache so a later check-in
+    re-creates the rule instead of trusting a stale 'already exists' entry."""
+    import pangolin_connector
+
+    def fake_http(method, url, body=None):
+        if method == "GET":
+            return {
+                "data": {"rules": [{"match": "IP", "value": "1.2.3.4", "ruleId": 42}]}
+            }
+        return {}
+
+    cache = {5: {"ts": 9e18, "ip_set": {"1.2.3.4", "9.9.9.9"}}}
+    ctx = _make_pg_ctx(http_json=fake_http, rules_cache=cache)
+
+    assert pangolin_connector.delete_ip_rule_if_created_by_us(ctx, "1.2.3.4", 5) is True
+    assert "1.2.3.4" not in cache[5]["ip_set"], "deleted IP must be evicted from cache"
+    assert "9.9.9.9" in cache[5]["ip_set"], "other cached IPs must be preserved"
 
 
 def test_delete_rule_no_rule_id_returns_false():

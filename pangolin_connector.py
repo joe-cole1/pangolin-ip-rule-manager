@@ -184,6 +184,13 @@ def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> 
                 deleted_any = True
             except Exception as e:
                 print(f"[pangolin] delete failed for rule {rule_id} on {rid}: {e}")
+        if deleted_any:
+            # Evict the IP from the existence cache so a re-check-in re-creates the
+            # rule instead of trusting a stale "already exists" entry until TTL expiry.
+            with ctx.state_lock:
+                entry = ctx.rules_cache.get(rid)
+                if entry:
+                    entry.get("ip_set", set()).discard(ip)
         return deleted_any
     except Exception as e:
         print(f"[pangolin] fetch rules (delete phase) failed for {rid}, ip {ip}: {e}")
