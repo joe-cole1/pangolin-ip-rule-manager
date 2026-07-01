@@ -1,0 +1,14 @@
+# Tooling configuration. The application itself is Python 3.14 stdlib-only and has
+# no runtime dependencies; this file only pins linter/formatter settings so results
+# are consistent across contributor environments and CI.
+#
+# Note: target-version is intentionally left at ruff's default. Pinning it to py314
+# makes `ruff format` rewrite `except (A, B):` into the PEP 758 unparenthesized form,
+# which is a SyntaxError on the older interpreters commonly used for local dev/CI.
+# Keep the parenthesized form for compatibility.
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.format]
+quote-style = "double"
