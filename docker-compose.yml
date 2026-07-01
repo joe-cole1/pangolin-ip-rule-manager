@@ -84,6 +84,22 @@ services:
 
     restart: unless-stopped
 
+    # ---------------------------------------------------------------------------
+    # Runtime hardening
+    # ---------------------------------------------------------------------------
+    # The root filesystem is read-only; only the /data volume (state) and an
+    # in-memory /tmp are writable. All Linux capabilities are dropped and
+    # privilege escalation is disabled. If you enable CrowdSec via a local
+    # `docker exec` prefix, the docker CLI may need a writable HOME — prefer the
+    # socket-proxy + DOCKER_HOST path, which keeps these flags intact.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+
     deploy:
       resources:
         limits:

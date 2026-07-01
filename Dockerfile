@@ -1,5 +1,6 @@
 # Minimal Python stdlib-only image
-FROM python:3.14-alpine
+# Digest-pinned for reproducible builds; Dependabot (docker ecosystem) bumps it.
+FROM python:3.14-alpine@sha256:26730869004e2b9c4b9ad09cab8625e81d256d1ce97e72df5520e806b1709f92
 
 # Install Docker CLI for optional CrowdSec integration via 'docker exec crowdsec cscli ...'
 RUN apk add --no-cache docker-cli

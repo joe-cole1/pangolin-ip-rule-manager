@@ -279,6 +279,20 @@ def create_image_request_handler(ctx: dict):
         def _send_security_headers(self) -> None:
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            # All CSS/JS is inline and self-contained (no external fetches), so a
+            # restrictive policy is possible. 'unsafe-inline' is still required for
+            # the inline <style>/<script> blocks; everything else is locked down.
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'none'; "
+                "img-src 'self' data:; "
+                "style-src 'unsafe-inline'; "
+                "script-src 'unsafe-inline'; "
+                "base-uri 'none'; "
+                "form-action 'none'; "
+                "frame-ancestors 'none'",
+            )
 
         def _send_html(self, status: int, body: str) -> None:
             encoded = body.encode("utf-8")
