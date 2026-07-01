@@ -63,6 +63,11 @@ SITE_NAME = os.getenv("SITE_NAME", "").strip()
 UPDATE_ENDPOINT_ENABLED = os.getenv(
     "UPDATE_ENDPOINT_ENABLED", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
+# Optional: defense-in-depth shared secret that the upstream proxy (Pangolin/Traefik)
+# must inject as the X-Proxy-Secret header. When set, requests missing or mismatching
+# the secret are rejected before any state write or API call. Leave empty to disable
+# (the service then relies solely on network topology to keep it behind the proxy).
+PROXY_SHARED_SECRET = os.getenv("PROXY_SHARED_SECRET", "")
 
 # Minimal 1x1 PNG (transparent) as bytes
 BANNER_PNG = base64.b64decode(
@@ -431,6 +436,7 @@ def _make_image_handler_context() -> dict:
         "retention_minutes": RETENTION_MINUTES,
         "crowdsec_enabled": CROWDSEC_ENABLED,
         "site_name": SITE_NAME,
+        "proxy_shared_secret": PROXY_SHARED_SECRET,
         "state": state,
         "state_lock": state_lock,
         "now_utc_iso": now_utc_iso,
@@ -490,6 +496,12 @@ def self_check():
         print("")
     if not ORG_ID:
         print("[warn] ORG_ID is not set; startup resource listing will be skipped.")
+    if not PROXY_SHARED_SECRET:
+        print(
+            "[warn] PROXY_SHARED_SECRET is not set; the service relies solely on network "
+            "topology to stay behind the proxy. Set it and have Pangolin/Traefik inject "
+            "the X-Proxy-Secret header for defense-in-depth."
+        )
 
     # Verify state file directory is writable before we need it
     state_dir = os.path.dirname(os.path.abspath(STATE_FILE))

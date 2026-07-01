@@ -1619,6 +1619,88 @@ def test_get_real_ip_ipv6_accepted():
 
 
 # ---------------------------------------------------------------------------
+# Proxy shared-secret gate (Finding H-3)
+# ---------------------------------------------------------------------------
+
+
+def _reload_app_with_secret(monkeypatch, temp_state_file, secret: str):
+    monkeypatch.setenv("PANGOLIN_TOKEN", "")
+    monkeypatch.setenv("RESOURCE_IDS", "5")
+    monkeypatch.setenv("LISTEN_PORT", "0")
+    monkeypatch.setenv("STATE_FILE", temp_state_file)
+    monkeypatch.setenv("PROXY_SHARED_SECRET", secret)
+    import app as _app
+
+    return importlib.reload(_app)
+
+
+def test_proxy_secret_missing_header_rejected(monkeypatch, temp_state_file):
+    """When PROXY_SHARED_SECRET is set, a request without X-Proxy-Secret gets 403
+    and no IP is written to state."""
+    app = _reload_app_with_secret(monkeypatch, temp_state_file, "s3cret")
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/checkin.png", headers={"X-Real-IP": "1.2.3.4"})
+        resp = conn.getresponse()
+        _ = resp.read()
+        assert resp.status == 403
+
+    with app.state_lock:
+        assert "1.2.3.4" not in app.state, "no state write when secret gate fails"
+
+
+def test_proxy_secret_wrong_header_rejected(monkeypatch, temp_state_file):
+    """A mismatched X-Proxy-Secret is rejected with 403."""
+    app = _reload_app_with_secret(monkeypatch, temp_state_file, "s3cret")
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request(
+            "GET",
+            "/checkin.png",
+            headers={"X-Real-IP": "1.2.3.4", "X-Proxy-Secret": "wrong"},
+        )
+        resp = conn.getresponse()
+        _ = resp.read()
+        assert resp.status == 403
+
+
+def test_proxy_secret_correct_header_allowed(monkeypatch, temp_state_file):
+    """A matching X-Proxy-Secret passes the gate and reaches the handler (200)."""
+    app = _reload_app_with_secret(monkeypatch, temp_state_file, "s3cret")
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request(
+            "GET",
+            "/checkin.png",
+            headers={"X-Real-IP": "1.2.3.4", "X-Proxy-Secret": "s3cret"},
+        )
+        resp = conn.getresponse()
+        _ = resp.read()
+        assert resp.status == 200
+
+
+def test_proxy_secret_unset_disables_gate(monkeypatch, temp_state_file):
+    """With no PROXY_SHARED_SECRET configured, requests are not gated (200)."""
+    app = _reload_app_with_secret(monkeypatch, temp_state_file, "")
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/checkin.png", headers={"X-Real-IP": "1.2.3.4"})
+        resp = conn.getresponse()
+        _ = resp.read()
+        assert resp.status == 200
+
+
+# ---------------------------------------------------------------------------
 # HTML rendering — reflected XSS escaping (Finding H-1)
 # ---------------------------------------------------------------------------
 
