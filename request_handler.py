@@ -323,6 +323,15 @@ def create_image_request_handler(ctx: dict):
                 self.wfile.write(b"ok")
                 return
 
+            # Browsers request /favicon.ico automatically after loading the check-in
+            # page. Answer with an empty 204 before the .png/.gif routing so it does
+            # not land in the invalid-path error branch and pollute the logs. Touches
+            # no state and makes no upstream calls.
+            if path.lower() == "/favicon.ico":
+                self.send_response(204)
+                self.end_headers()
+                return
+
             # Defense-in-depth: reject anything that did not transit the proxy before
             # touching state or the Pangolin/CrowdSec APIs. Bare 403, no body detail.
             if not self._proxy_secret_ok():

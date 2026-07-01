@@ -1719,6 +1719,25 @@ def test_healthz_ok_and_bypasses_secret_gate(monkeypatch, temp_state_file):
         assert app.state == {}, "healthz must not mutate state"
 
 
+def test_favicon_returns_204_and_no_state(monkeypatch, temp_state_file):
+    """/favicon.ico returns an empty 204 (not the invalid-path 404) even when the
+    proxy-secret gate is armed, and does not write any state."""
+    app = _reload_app_with_secret(monkeypatch, temp_state_file, "s3cret")
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/favicon.ico", headers={"X-Real-IP": "1.2.3.4"})
+        resp = conn.getresponse()
+        data = resp.read()
+        assert resp.status == 204
+        assert data == b""
+
+    with app.state_lock:
+        assert app.state == {}, "favicon must not mutate state"
+
+
 # ---------------------------------------------------------------------------
 # HTML rendering — reflected XSS escaping (Finding H-1)
 # ---------------------------------------------------------------------------
