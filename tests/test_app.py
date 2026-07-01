@@ -1619,6 +1619,62 @@ def test_get_real_ip_ipv6_accepted():
 
 
 # ---------------------------------------------------------------------------
+# HTML rendering — reflected XSS escaping (Finding H-1)
+# ---------------------------------------------------------------------------
+
+
+def test_checkin_html_escapes_pangolin_detail():
+    """Attacker-controlled detail text must be HTML-escaped, not reflected raw."""
+    import request_handler
+
+    payload = "<script>alert(1)</script>"
+    results = {
+        "pangolin": {"ok": False, "detail": payload},
+        "crowdsec": {"ok": False, "detail": "disabled"},
+    }
+    body = request_handler._build_checkin_html(
+        ip="1.2.3.4",
+        results=results,
+        retention_minutes=1440,
+        last_seen="2025-01-01T00:00:00+00:00",
+        crowdsec_enabled=False,
+    )
+    assert payload not in body, "Raw <script> payload must not appear in rendered HTML"
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+
+
+def test_checkin_html_escapes_site_name():
+    """site_name must be HTML-escaped in the check-in header."""
+    import request_handler
+
+    results = {
+        "pangolin": {"ok": True, "detail": "ok"},
+        "crowdsec": {"ok": False, "detail": "disabled"},
+    }
+    body = request_handler._build_checkin_html(
+        ip="1.2.3.4",
+        results=results,
+        retention_minutes=1440,
+        last_seen="2025-01-01T00:00:00+00:00",
+        crowdsec_enabled=False,
+        site_name="<img src=x onerror=alert(1)>",
+    )
+    assert "<img src=x onerror=alert(1)>" not in body
+    assert "&lt;img src=x onerror=alert(1)&gt;" in body
+
+
+def test_error_html_escapes_site_name():
+    """site_name must be HTML-escaped in the error page header and footer."""
+    import request_handler
+
+    body = request_handler._build_error_html(
+        "Bad request", "Something went wrong.", site_name="<b>x</b>"
+    )
+    assert "<b>x</b>" not in body
+    assert "&lt;b&gt;x&lt;/b&gt;" in body
+
+
+# ---------------------------------------------------------------------------
 # pangolin_connector unit tests
 # ---------------------------------------------------------------------------
 

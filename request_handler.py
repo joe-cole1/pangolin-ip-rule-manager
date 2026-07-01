@@ -152,7 +152,9 @@ def _build_checkin_html(
     else:
         actions_section = ""
 
-    site_name_sub = f'      <div class="sub">{site_name}</div>\n' if site_name else ""
+    site_name_sub = (
+        f'      <div class="sub">{html.escape(site_name)}</div>\n' if site_name else ""
+    )
 
     return _load_template(
         "checkin.html",
@@ -171,9 +173,9 @@ def _build_checkin_html(
             "DETAILS_LABEL": details_label,
             "DETAILS_IP": ip,
             "PANGOLIN_DETAIL_CLASS": pangolin_detail_class,
-            "PANGOLIN_DETAIL": pangolin_detail,
+            "PANGOLIN_DETAIL": html.escape(str(pangolin_detail)),
             "CROWDSEC_DETAIL_CLASS": crowdsec_detail_class,
-            "CROWDSEC_DETAIL": crowdsec_detail_display,
+            "CROWDSEC_DETAIL": html.escape(str(crowdsec_detail_display)),
             "EXPIRES_ISO": expires_iso,
             "LAST_SEEN": last_seen,
         },
@@ -181,8 +183,12 @@ def _build_checkin_html(
 
 
 def _build_error_html(title: str, message: str, site_name: str = "") -> str:
-    site_name_sub = f'      <div class="sub">{site_name}</div>\n' if site_name else ""
-    site_name_footer = f"{site_name} &nbsp;&middot;&nbsp; " if site_name else ""
+    site_name_sub = (
+        f'      <div class="sub">{html.escape(site_name)}</div>\n' if site_name else ""
+    )
+    site_name_footer = (
+        f"{html.escape(site_name)} &nbsp;&middot;&nbsp; " if site_name else ""
+    )
     return _load_template(
         "error.html",
         {
