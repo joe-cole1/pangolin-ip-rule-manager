@@ -96,10 +96,8 @@ rules_cache = {
     # rid: {"ts": epoch_seconds, "ip_set": set([...])}
 }
 
-# CrowdSec runtime flags/caches
-_crowdsec_allowlist_ready = False
-# Cache of IPs currently in the CrowdSec allowlist (with TTL)
-crowdsec_cache = {"ts": 0.0, "ip_set": set()}
+# CrowdSec allowlist readiness/caches live in crowdsec_connector; app.py does not
+# duplicate them.
 
 # Per-IP rate limit cache: {ip: (monotonic_timestamp, last_result)}
 _api_rate_limit: dict[str, tuple[float, dict]] = {}
