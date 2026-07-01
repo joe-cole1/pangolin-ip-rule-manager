@@ -1700,6 +1700,25 @@ def test_proxy_secret_unset_disables_gate(monkeypatch, temp_state_file):
         assert resp.status == 200
 
 
+def test_healthz_ok_and_bypasses_secret_gate(monkeypatch, temp_state_file):
+    """/healthz returns 200 with no auth, even when the proxy-secret gate is armed,
+    and does not write any state."""
+    app = _reload_app_with_secret(monkeypatch, temp_state_file, "s3cret")
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/healthz")
+        resp = conn.getresponse()
+        data = resp.read()
+        assert resp.status == 200
+        assert data == b"ok"
+
+    with app.state_lock:
+        assert app.state == {}, "healthz must not mutate state"
+
+
 # ---------------------------------------------------------------------------
 # HTML rendering — reflected XSS escaping (Finding H-1)
 # ---------------------------------------------------------------------------

@@ -309,6 +309,20 @@ def create_image_request_handler(ctx: dict):
             self.wfile.write(encoded)
 
         def do_GET(self):
+            parsed_path = urlparse(self.path)
+            path = parsed_path.path or "/"
+
+            # Liveness probe — intentionally before the proxy-secret gate so container
+            # health checks work regardless of PROXY_SHARED_SECRET. Touches no state and
+            # makes no upstream calls.
+            if path == "/healthz":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"ok")
+                return
+
             # Defense-in-depth: reject anything that did not transit the proxy before
             # touching state or the Pangolin/CrowdSec APIs. Bare 403, no body detail.
             if not self._proxy_secret_ok():
@@ -321,8 +335,6 @@ def create_image_request_handler(ctx: dict):
                 return
 
             ip = self._get_real_ip()
-            parsed_path = urlparse(self.path)
-            path = parsed_path.path or "/"
             remote_user = self.headers.get("Remote-User", "")
 
             print(f"New request from {ip}  user: {remote_user}  path: {path}")

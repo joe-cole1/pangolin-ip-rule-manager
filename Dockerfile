@@ -32,7 +32,8 @@ USER appuser
 
 EXPOSE 8080
 
+# Probe the HTTP liveness route so a hung server is detected, not just a live process.
 HEALTHCHECK --interval=60s --timeout=5s --start-period=15s --retries=3 \
-    CMD pgrep -f app.py || exit 1
+    CMD wget -q -O - "http://127.0.0.1:${LISTEN_PORT}/healthz" || exit 1
 
 CMD ["python", "/app/app.py"]
