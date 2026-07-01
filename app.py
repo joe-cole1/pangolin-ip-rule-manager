@@ -184,12 +184,15 @@ def http_json(method: str, url: str, body: dict | None = None) -> dict:
         raise RuntimeError(f"Network error: {e}")
 
 
-# Targets common interface
+# Targets common interface. All targets share one add_ip signature so the caller can
+# dispatch uniformly without type checks; targets ignore resource_ids they don't use.
 class Target:
+    name = "target"
+
     def ensure_ready(self) -> None:
         pass
 
-    def add_ip(self, ip: str) -> None:
+    def add_ip(self, ip: str, resource_ids: list[int] | None = None) -> None:
         raise NotImplementedError
 
     def expire_ip(self, ip: str) -> None:
@@ -197,6 +200,8 @@ class Target:
 
 
 class PangolinTarget(Target):
+    name = "pangolin"
+
     def __init__(self, ctx_factory):
         self._ctx_factory = ctx_factory
 
@@ -214,10 +219,12 @@ class PangolinTarget(Target):
 
 
 class CrowdSecTarget(Target):
+    name = "crowdsec"
+
     def ensure_ready(self) -> None:
         crowdsec_ensure_allowlist()
 
-    def add_ip(self, ip: str) -> None:
+    def add_ip(self, ip: str, resource_ids: list[int] | None = None) -> None:
         crowdsec_add_ip(ip)
 
     def expire_ip(self, ip: str) -> None:
@@ -309,12 +316,9 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
         "resources": effective_resources,
     }
     for t in TARGETS:
-        key = "crowdsec" if isinstance(t, CrowdSecTarget) else "pangolin"
+        key = t.name
         try:
-            if isinstance(t, PangolinTarget):
-                t.add_ip(ip, resource_ids=effective_ids)
-            else:
-                t.add_ip(ip)
+            t.add_ip(ip, resource_ids=effective_ids)
             results[key]["ok"] = True
             results[key]["detail"] = "ok"
         except Exception as e:
