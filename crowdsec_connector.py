@@ -312,7 +312,7 @@ def _get_crowdsec_ip_set_cached() -> set[str]:
     with _cache_lock:
         ts = _crowdsec_cache.get("ts", 0.0)
         ip_set = set(_crowdsec_cache.get("ip_set", set()))
-    if ip_set and (time.time() - ts) < CROWDSEC_CACHE_TTL_SECONDS:
+    if ts > 0.0 and (time.time() - ts) < CROWDSEC_CACHE_TTL_SECONDS:
         return ip_set
     return _crowdsec_refresh_allowlist_ip_set()
 
@@ -322,7 +322,11 @@ def _crowdsec_ip_known_or_refresh(ip: str) -> bool:
     ip_set = _get_crowdsec_ip_set_cached()
     if ip in ip_set:
         return True
-    # Not known -> force refresh from cscli once
+    # Not known -> force refresh from cscli once unless we just refreshed it
+    with _cache_lock:
+        last_refresh = _crowdsec_cache.get("ts", 0.0)
+    if (time.time() - last_refresh) < 5.0:
+        return False
     ip_set = _crowdsec_refresh_allowlist_ip_set()
     return ip in ip_set
 

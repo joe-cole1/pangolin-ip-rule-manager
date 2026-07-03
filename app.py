@@ -18,7 +18,6 @@ from crowdsec_connector import (
 )
 from pangolin_connector import (
     PangolinContext,
-    get_ip_set_for_resource_cached as pg_get_ip_set_for_resource_cached,
     ensure_ip_rule as pg_ensure_ip_rule,
     delete_ip_rule_if_created_by_us as pg_delete_ip_rule_if_created_by_us,
     list_org_resources as pg_list_org_resources,
@@ -260,12 +259,6 @@ if CROWDSEC_ENABLED:
     TARGETS.append(CrowdSecTarget())
 
 
-def _get_ip_set_for_resource_cached(rid: int):
-    """Return a set of IPs that currently have a rule for the resource.
-    Uses a 1h TTL cache to avoid frequent GET calls."""
-    ctx = make_pangolin_context()
-    return pg_get_ip_set_for_resource_cached(ctx, rid)
-
 
 # --------------------------
 # Target aggregation (extensibility point)
@@ -371,7 +364,7 @@ def cleanup_old_ips():
         with state_lock:
             rec = state.get(ip) or {}
             last_seen_str = rec.get("last_seen")
-            resources = rec.get("resources", {})
+            resources = dict(rec.get("resources", {}))
         try:
             last_seen = datetime.fromisoformat(last_seen_str) if last_seen_str else None
         except ValueError:

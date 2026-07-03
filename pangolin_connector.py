@@ -58,7 +58,7 @@ def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> Set[str]:
     with ctx.state_lock:
         entry = ctx.rules_cache.get(rid)
         if entry and (now - entry.get("ts", 0) < ctx.rules_cache_ttl_seconds):
-            return entry.get("ip_set", set())
+            return set(entry.get("ip_set", set()))
 
     # Refresh from Pangolin
     print(f"[pangolin] refreshing rules for resource {rid}")
