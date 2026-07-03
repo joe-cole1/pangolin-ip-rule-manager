@@ -259,7 +259,6 @@ if CROWDSEC_ENABLED:
     TARGETS.append(CrowdSecTarget())
 
 
-
 # --------------------------
 # Target aggregation (extensibility point)
 # --------------------------

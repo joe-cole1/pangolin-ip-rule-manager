@@ -105,6 +105,7 @@ def test_rules_cache_uses_cache(monkeypatch, app_module):
     monkeypatch.setattr(app, "http_json", fake_http_json)
 
     from pangolin_connector import get_ip_set_for_resource_cached
+
     ctx = app.make_pangolin_context()
 
     # First call should hit http_json
