@@ -199,7 +199,7 @@ def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> 
 
 def list_org_resources(ctx: PangolinContext, org_id: str) -> None:
     try:
-        url = f"{ctx.url}/v1/org/{org_id}/resources?limit=1000&offset=0"
+        url = f"{ctx.url}/v1/org/{org_id}/resources"
         resp = ctx.http_json("GET", url)
         resources = (
             (resp.get("data", {}).get("resources") if isinstance(resp, dict) else [])
