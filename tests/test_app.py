@@ -104,13 +104,16 @@ def test_rules_cache_uses_cache(monkeypatch, app_module):
 
     monkeypatch.setattr(app, "http_json", fake_http_json)
 
+    from pangolin_connector import get_ip_set_for_resource_cached
+    ctx = app.make_pangolin_context()
+
     # First call should hit http_json
-    s1 = app._get_ip_set_for_resource_cached(5)
+    s1 = get_ip_set_for_resource_cached(ctx, 5)
     assert "9.8.7.6" in s1
     assert calls["count"] == 1
 
     # Second call within TTL should use cache
-    s2 = app._get_ip_set_for_resource_cached(5)
+    s2 = get_ip_set_for_resource_cached(ctx, 5)
     assert "1.2.3.4" in s2
     assert calls["count"] == 1
 
