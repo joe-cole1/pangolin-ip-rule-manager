@@ -165,6 +165,10 @@ def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> 
             print(
                 f"[pangolin] no rule found for IP {ip} on resource {rid} (already absent — clearing state)"
             )
+            with ctx.state_lock:
+                entry = ctx.rules_cache.get(rid)
+                if entry:
+                    entry.get("ip_set", set()).discard(ip)
             return True
         deleted_any = False
         for r in to_delete:

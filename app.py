@@ -15,6 +15,11 @@ from crowdsec_connector import (
     crowdsec_add_ip,
     crowdsec_remove_ip,
     crowdsec_ensure_allowlist,
+    CROWDSEC_ENABLED,
+    CROWDSEC_ALLOWLIST_NAME,
+    CROWDSEC_CSCLI_BIN,
+    CROWDSEC_CMD_PREFIX,
+    CROWDSEC_CACHE_TTL_SECONDS,
 )
 from pangolin_connector import (
     PangolinContext,
@@ -42,22 +47,6 @@ RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "300"))
 RULES_CACHE_TTL_SECONDS = int(
     os.getenv("RULES_CACHE_TTL_SECONDS", "3600")
 )  # cache for existence checks (~1h)
-# CrowdSec optional integration via cscli
-CROWDSEC_ENABLED = os.getenv("CROWDSEC_ENABLED", "false").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-CROWDSEC_CSCLI_BIN = os.getenv("CROWDSEC_CSCLI_BIN", "cscli").strip()
-# Optional: a command prefix to run cscli in a container, e.g. "docker exec crowdsec"
-CROWDSEC_CMD_PREFIX = os.getenv("CROWDSEC_CMD_PREFIX", "").strip()
-CROWDSEC_ALLOWLIST_NAME = os.getenv(
-    "CROWDSEC_ALLOWLIST_NAME", "pangolin-ip-rule-manager"
-).strip()
-CROWDSEC_CACHE_TTL_SECONDS = int(
-    os.getenv("CROWDSEC_CACHE_TTL_SECONDS", "3600")
-)  # cache TTL for CrowdSec allowlist entries (~1h)
 # Optional: site name shown in the HTML check-in and error pages
 SITE_NAME = os.getenv("SITE_NAME", "").strip()
 # Optional: allow overriding the caller IP via /update?ip=...
@@ -105,8 +94,8 @@ rules_cache = {
 # CrowdSec allowlist readiness/caches live in crowdsec_connector; app.py does not
 # duplicate them.
 
-# Per-IP rate limit cache: {ip: (monotonic_timestamp, last_result)}
-_api_rate_limit: dict[str, tuple[float, dict]] = {}
+# Per-(IP, user) rate limit cache: {(ip, user): (monotonic_timestamp, last_result)}
+_api_rate_limit: dict[tuple[str, str], tuple[float, dict]] = {}
 _api_rate_limit_lock = threading.Lock()
 
 
@@ -289,12 +278,13 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
             "Ensure this resource uses SSO authentication in Pangolin."
         )
 
-    # Skip API fan-out if this IP was successfully processed recently
+    # Skip API fan-out if this IP was successfully processed recently for this user
+    cache_key = (ip, remote_user)
     if RATE_LIMIT_SECONDS > 0:
         with _api_rate_limit_lock:
-            entry = _api_rate_limit.get(ip)
+            entry = _api_rate_limit.get(cache_key)  # type: ignore[arg-type]
             if entry and (time.monotonic() - entry[0]) < RATE_LIMIT_SECONDS:
-                print(f"[targets] rate limited {ip} — returning cached result")
+                print(f"[targets] rate limited {ip} for user {remote_user!r} — returning cached result")
                 return entry[1]
 
     ctx = make_pangolin_context()
@@ -325,10 +315,12 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
             results[key]["detail"] = str(e)
             print(f"[targets] add failed for {ip} on {t.__class__.__name__}: {e}")
 
-    if RATE_LIMIT_SECONDS > 0:
+    # Only cache successful Pangolin checkins
+    is_success = results.get("pangolin", {}).get("ok", False)
+    if RATE_LIMIT_SECONDS > 0 and is_success:
         with _api_rate_limit_lock:
             now_mono = time.monotonic()
-            _api_rate_limit[ip] = (now_mono, results)
+            _api_rate_limit[cache_key] = (now_mono, results)
             # Prune entries that have aged out so the dict doesn't grow without bound
             cutoff = now_mono - RATE_LIMIT_SECONDS
             stale = [k for k, (ts, _) in _api_rate_limit.items() if ts < cutoff]
