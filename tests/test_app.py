@@ -2339,7 +2339,7 @@ _LAST_SEEN_ISO = "2025-01-01T00:00:00+00:00"
 
 
 def test_checkin_html_success_hero_and_dot():
-    """Success path → access hero text and green (non-error) dot class."""
+    """Success path → access hero text and green dot class, details collapsed."""
     from request_handler import _build_checkin_html
 
     page = _build_checkin_html(
@@ -2352,10 +2352,34 @@ def test_checkin_html_success_hero_and_dot():
     assert "<strong>access</strong>" in page
     assert 'class="status-dot">' in page
     assert 'class="status-dot err">' not in page
+    assert 'class="status-dot warn">' not in page
+    assert 'aria-expanded="false"' in page
+    assert 'class="details-body "' in page
+
+
+def test_checkin_html_warning_hero_and_dot():
+    """Warning path (partial failure) → warning hero, warn dot class, details expanded."""
+    from request_handler import _build_checkin_html
+
+    partial_results = {
+        "pangolin": {"ok": True, "detail": "ok"},
+        "crowdsec": {"ok": False, "detail": "failed"},
+    }
+    page = _build_checkin_html(
+        ip="1.2.3.4",
+        results=partial_results,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=True,
+    )
+    assert "but security rules failed" in page
+    assert 'class="status-dot warn">' in page
+    assert 'aria-expanded="true"' in page
+    assert 'class="details-body open"' in page
 
 
 def test_checkin_html_failure_hero_and_dot():
-    """Failure path → 'may not work' hero text and error dot class."""
+    """Failure path → 'may not work' hero text, error dot class, details expanded."""
     from request_handler import _build_checkin_html
 
     page = _build_checkin_html(
@@ -2367,6 +2391,8 @@ def test_checkin_html_failure_hero_and_dot():
     )
     assert "may not work" in page
     assert 'class="status-dot err">' in page
+    assert 'aria-expanded="true"' in page
+    assert 'class="details-body open"' in page
 
 
 def test_checkin_html_crowdsec_disabled_badge():
