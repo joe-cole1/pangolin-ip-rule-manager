@@ -91,6 +91,7 @@ def _build_checkin_html(
     crowdsec_ok = results.get("crowdsec", {}).get("ok", False)
     crowdsec_detail = results.get("crowdsec", {}).get("detail", "disabled")
     overall_ok = pangolin_ok
+    success = pangolin_ok and (not crowdsec_enabled or crowdsec_ok)
 
     dot_class = "status-dot" if overall_ok else "status-dot err"
     if overall_ok:
@@ -125,7 +126,7 @@ def _build_checkin_html(
     details_label = "Technical details" if overall_ok else "What went wrong?"
 
     # Only show individual allowed resources if not redirecting successfully
-    show_individual_resources = not (redirect_to_launcher and overall_ok)
+    show_individual_resources = not (redirect_to_launcher and success)
     resource_rows = ""
     if show_individual_resources:
         resource_rows = _render_resource_rows(resources or [], overall_ok)
@@ -133,7 +134,7 @@ def _build_checkin_html(
     # Build the redirection banner and inline script if redirecting on success
     redirect_banner_html = ""
     if (
-        overall_ok
+        success
         and redirect_to_launcher
         and dashboard_url
         and redirect_delay_seconds > 0

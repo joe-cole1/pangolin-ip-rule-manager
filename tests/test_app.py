@@ -2915,9 +2915,51 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
         assert "Open Resource Launcher" in data
         assert "Open Jellyfin" not in data
 
-    # Scenario 3: REDIRECT_TO_LAUNCHER = True, check-in fails.
+    # Scenario 3: REDIRECT_TO_LAUNCHER = True, check-in fails (Pangolin error).
     # Should NOT redirect, should return 200 OK with details page.
     state_mock["succeed"] = False
+    with app._api_rate_limit_lock:
+        app._api_rate_limit.clear()
+
+    with start_server(app.ImageRequestHandler) as (httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers = {
+            "X-Real-IP": test_ip,
+            "Remote-User": "alice",
+            "Accept": "text/html",
+        }
+        conn.request("GET", "/check.png", headers=headers)
+        resp = conn.getresponse()
+        data = resp.read().decode("utf-8")
+        assert resp.status == 200
+        assert "Authorization failed" in data
+        assert "Open Resource Launcher" not in data
+        assert "Redirecting to Resource Launcher" not in data
+
+    # Scenario 4: REDIRECT_TO_LAUNCHER = True, Pangolin succeeds, but CrowdSec is enabled and fails.
+    # Should NOT redirect, should return 200 OK showing CrowdSec failure details.
+    state_mock["succeed"] = True
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setenv("CROWDSEC_ENABLED", "true")
+    monkeypatch.setenv("REDIRECT_TO_LAUNCHER", "true")
+    monkeypatch.setenv("REDIRECT_DELAY_SECONDS", "3")
+    app = importlib.reload(_app)
+
+    monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_filter)
+
+    # Mock CrowdSec failure by letting CrowdSecTarget raise an error
+    class FailingCrowdSecTarget:
+        name = "crowdsec"
+
+        def add_ip(self, ip, resource_ids=None):
+            raise RuntimeError("crowdsec command failed")
+
+        def ensure_ready(self):
+            pass
+
+    monkeypatch.setattr(app, "TARGETS", [FakeTarget(), FailingCrowdSecTarget()])
     with app._api_rate_limit_lock:
         app._api_rate_limit.clear()
 
@@ -2939,6 +2981,5 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
         resp = resp()
         data = resp.read().decode("utf-8")
         assert resp.status == 200
-        assert "Authorization failed" in data
-        assert "Open Resource Launcher" not in data
+        assert "crowdsec command failed" in data
         assert "Redirecting to Resource Launcher" not in data
