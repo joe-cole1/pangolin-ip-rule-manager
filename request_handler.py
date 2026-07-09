@@ -74,6 +74,8 @@ def _build_checkin_html(
     resources: list | None = None,
     site_name: str = "",
     dashboard_url: str = "",
+    redirect_to_launcher: bool = False,
+    redirect_delay_seconds: int = 3,
 ) -> str:
     try:
         seen_dt = datetime.fromisoformat(last_seen)
@@ -122,7 +124,41 @@ def _build_checkin_html(
 
     details_label = "Technical details" if overall_ok else "What went wrong?"
 
-    resource_rows = _render_resource_rows(resources or [], overall_ok)
+    # Only show individual allowed resources if not redirecting successfully
+    show_individual_resources = not (redirect_to_launcher and overall_ok)
+    resource_rows = ""
+    if show_individual_resources:
+        resource_rows = _render_resource_rows(resources or [], overall_ok)
+
+    # Build the redirection banner and inline script if redirecting on success
+    redirect_banner_html = ""
+    if (
+        overall_ok
+        and redirect_to_launcher
+        and dashboard_url
+        and redirect_delay_seconds > 0
+    ):
+        safe_url = html.escape(dashboard_url, quote=True)
+        redirect_banner_html = (
+            f'      <div class="redirect-banner" style="background: var(--accent-hover-bg); border: 1px solid var(--accent); padding: 12px 16px; border-radius: calc(var(--radius) - 2px); margin-bottom: 12px; font-size: 13px; text-align: center; color: var(--text);">\n'
+            f'        Redirecting to Resource Launcher in <strong id="countdown">{redirect_delay_seconds}</strong> seconds...\n'
+            "      </div>\n"
+            "      <script>\n"
+            "        (function() {\n"
+            f"          var delay = {redirect_delay_seconds};\n"
+            f'          var url = "{safe_url}";\n'
+            "          var interval = setInterval(function() {\n"
+            "            delay--;\n"
+            '            var el = document.getElementById("countdown");\n'
+            "            if (el) el.innerText = delay;\n"
+            "            if (delay <= 0) {\n"
+            "              clearInterval(interval);\n"
+            "              window.location.href = url;\n"
+            "            }\n"
+            "          }, 1000);\n"
+            "        })();\n"
+            "      </script>"
+        )
 
     # Build the central launcher button if dashboard_url is set and overall_ok is True
     launcher_row = ""
@@ -149,6 +185,8 @@ def _build_checkin_html(
 
     # Combine launcher row and resource rows
     combined_rows = []
+    if redirect_banner_html:
+        combined_rows.append(redirect_banner_html)
     if launcher_row:
         combined_rows.append(launcher_row)
     if resource_rows:
@@ -471,10 +509,14 @@ def create_image_request_handler(ctx: dict):
                     crowdsec_enabled = ctx.get("crowdsec_enabled", False)
                     success = pangolin_ok and (not crowdsec_enabled or crowdsec_ok)
 
+                    redirect_enabled = ctx.get("redirect_to_launcher", False)
+                    redirect_delay = ctx.get("redirect_delay_seconds", 3)
+
                     if (
-                        ctx.get("redirect_to_launcher")
+                        redirect_enabled
                         and success
                         and ctx.get("pangolin_dashboard_url")
+                        and redirect_delay == 0
                     ):
                         self.send_response(302)
                         self.send_header("Location", ctx["pangolin_dashboard_url"])
@@ -499,6 +541,8 @@ def create_image_request_handler(ctx: dict):
                             resources=update_results.get("resources", []),
                             site_name=ctx.get("site_name", ""),
                             dashboard_url=ctx.get("pangolin_dashboard_url", ""),
+                            redirect_to_launcher=redirect_enabled,
+                            redirect_delay_seconds=redirect_delay,
                         ),
                     )
                 else:
@@ -583,10 +627,14 @@ def create_image_request_handler(ctx: dict):
                 crowdsec_enabled = ctx.get("crowdsec_enabled", False)
                 success = pangolin_ok and (not crowdsec_enabled or crowdsec_ok)
 
+                redirect_enabled = ctx.get("redirect_to_launcher", False)
+                redirect_delay = ctx.get("redirect_delay_seconds", 3)
+
                 if (
-                    ctx.get("redirect_to_launcher")
+                    redirect_enabled
                     and success
                     and ctx.get("pangolin_dashboard_url")
+                    and redirect_delay == 0
                 ):
                     self.send_response(302)
                     self.send_header("Location", ctx["pangolin_dashboard_url"])
@@ -611,6 +659,8 @@ def create_image_request_handler(ctx: dict):
                         resources=results.get("resources", []),
                         site_name=ctx.get("site_name", ""),
                         dashboard_url=ctx.get("pangolin_dashboard_url", ""),
+                        redirect_to_launcher=redirect_enabled,
+                        redirect_delay_seconds=redirect_delay,
                     ),
                 )
             else:

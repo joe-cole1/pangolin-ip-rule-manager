@@ -27,7 +27,9 @@ services:
 
       # Available Resources Dashboard (Resource Launcher) Integration
       REDIRECT_TO_LAUNCHER: ${REDIRECT_TO_LAUNCHER:-false}
+      REDIRECT_DELAY_SECONDS: ${REDIRECT_DELAY_SECONDS:-3}
       PANGOLIN_DASHBOARD_URL: ${PANGOLIN_DASHBOARD_URL:-}
+
 
 
       # ---------------------------------------------------------------------------
