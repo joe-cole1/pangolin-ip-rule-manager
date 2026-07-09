@@ -263,10 +263,10 @@ def _parse_crowdsec_entries_from_json(text: str) -> set[str]:
         if isinstance(it, str):
             tok = it.strip()
             try:
-                # accept single IP or CIDR; normalize to compressed ip (network -> network address as string)
+                # accept single IP or CIDR; preserve CIDR block string if present
                 if "/" in tok:
                     net = ipaddress.ip_network(tok, strict=False)
-                    ips.add(str(net.network_address))
+                    ips.add(str(net))
                 else:
                     ips.add(str(ipaddress.ip_address(tok)))
             except Exception:
@@ -275,10 +275,11 @@ def _parse_crowdsec_entries_from_json(text: str) -> set[str]:
             for key in ("ip", "value", "cidr", "address"):
                 val = it.get(key)
                 if isinstance(val, str):
+                    val = val.strip()
                     try:
                         if "/" in val:
                             net = ipaddress.ip_network(val, strict=False)
-                            ips.add(str(net.network_address))
+                            ips.add(str(net))
                         else:
                             ips.add(str(ipaddress.ip_address(val)))
                     except Exception:
@@ -318,9 +319,27 @@ def _get_crowdsec_ip_set_cached() -> set[str]:
 
 
 def _crowdsec_ip_known_or_refresh(ip: str) -> bool:
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+
+    def _matches(ip_set: set[str]) -> bool:
+        for entry in ip_set:
+            try:
+                if "/" in entry:
+                    if ip_obj in ipaddress.ip_network(entry, strict=False):
+                        return True
+                else:
+                    if ip_obj == ipaddress.ip_address(entry):
+                        return True
+            except ValueError:
+                continue
+        return False
+
     # Quick check against current cache
     ip_set = _get_crowdsec_ip_set_cached()
-    if ip in ip_set:
+    if _matches(ip_set):
         return True
     # Not known -> force refresh from cscli once unless we just refreshed it
     with _cache_lock:
@@ -328,7 +347,7 @@ def _crowdsec_ip_known_or_refresh(ip: str) -> bool:
     if (time.time() - last_refresh) < 5.0:
         return False
     ip_set = _crowdsec_refresh_allowlist_ip_set()
-    return ip in ip_set
+    return _matches(ip_set)
 
 
 def crowdsec_add_ip(ip: str) -> None:

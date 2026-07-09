@@ -1,6 +1,5 @@
 import contextlib
 import http.client
-import importlib
 import json
 import threading
 import time as _time_mod
@@ -33,6 +32,16 @@ def temp_state_file(tmp_path):
     return str(p)
 
 
+def _reload_app_and_dependencies():
+    import sys
+    import importlib
+    if "crowdsec_connector" in sys.modules:
+        import crowdsec_connector
+        importlib.reload(crowdsec_connector)
+    import app as _app
+    return importlib.reload(_app)
+
+
 @pytest.fixture
 def app_module(monkeypatch, temp_state_file):
     # Ensure env is set before import
@@ -42,12 +51,7 @@ def app_module(monkeypatch, temp_state_file):
     monkeypatch.setenv("STATE_FILE", temp_state_file)
 
     # Import or reload module to apply env
-    if "app" in globals():
-        import app as _app
-
-        app = importlib.reload(_app)
-    else:
-        import app  # type: ignore
+    app = _reload_app_and_dependencies()
     # Reset runtime state
     with app.state_lock:
         app.state.clear()
@@ -294,9 +298,7 @@ def _reload_app_with_env(monkeypatch, temp_state_file, update_enabled: bool):
     monkeypatch.setenv("LISTEN_PORT", "0")
     monkeypatch.setenv("STATE_FILE", temp_state_file)
     monkeypatch.setenv("UPDATE_ENDPOINT_ENABLED", "true" if update_enabled else "false")
-    import app as _app
-
-    return importlib.reload(_app)
+    return _reload_app_and_dependencies()
 
 
 def test_update_endpoint_enabled_adds_arbitrary_ip(monkeypatch, temp_state_file):
@@ -500,9 +502,7 @@ def _reload_app_with_crowdsec(monkeypatch, temp_state_file):
     monkeypatch.setenv("LISTEN_PORT", "0")
     monkeypatch.setenv("STATE_FILE", temp_state_file)
     monkeypatch.setenv("CROWDSEC_ENABLED", "true")
-    import app as _app
-
-    return importlib.reload(_app)
+    return _reload_app_and_dependencies()
 
 
 def _standard_fake_http_json(method, url, body=None):
@@ -933,8 +933,8 @@ def test_rate_limit_expires_after_window(monkeypatch, app_module):
 
     # Back-date the cache entry so it looks expired
     with app._api_rate_limit_lock:
-        ts, result = app._api_rate_limit["1.2.3.4"]
-        app._api_rate_limit["1.2.3.4"] = (ts - 400, result)
+        ts, result = app._api_rate_limit[("1.2.3.4", "joe@example.com")]
+        app._api_rate_limit[("1.2.3.4", "joe@example.com")] = (ts - 400, result)
 
     api_calls = {"count": 0}
 
@@ -989,10 +989,8 @@ def test_app_loads_without_custom_header_env(monkeypatch, temp_state_file):
     monkeypatch.delenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", raising=False)
     monkeypatch.delenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", raising=False)
 
-    import app as _app
-
     # Should not raise — if it does the test fails
-    app = importlib.reload(_app)
+    app = _reload_app_and_dependencies()
     assert app is not None
 
 
@@ -1008,9 +1006,7 @@ def test_request_without_custom_header_reaches_handler(monkeypatch, temp_state_f
     monkeypatch.delenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", raising=False)
     monkeypatch.delenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", raising=False)
 
-    import app as _app
-
-    app = importlib.reload(_app)
+    app = _reload_app_and_dependencies()
     with app.state_lock:
         app.state.clear()
 
@@ -1040,9 +1036,7 @@ def test_no_remote_user_fails_closed_no_ip_added(monkeypatch, temp_state_file):
     monkeypatch.delenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_KEY", raising=False)
     monkeypatch.delenv("EXPECTED_PANGOLIN_CUSTOM_HEADER_VALUE", raising=False)
 
-    import app as _app
-
-    app = importlib.reload(_app)
+    app = _reload_app_and_dependencies()
     with app.state_lock:
         app.state.clear()
 
@@ -1453,11 +1447,11 @@ def test_parse_crowdsec_dict_with_ips_key():
 
 
 def test_parse_crowdsec_cidr_normalised_to_network_address():
-    """CIDR notation must be accepted and normalised to the network address."""
+    """CIDR notation must be accepted and normalised to the canonical CIDR block."""
     import crowdsec_connector
 
     result = crowdsec_connector._parse_crowdsec_entries_from_json('["10.0.0.5/24"]')
-    assert result == {"10.0.0.0"}
+    assert result == {"10.0.0.0/24"}
 
 
 def test_parse_crowdsec_invalid_json_returns_empty():
@@ -1633,9 +1627,7 @@ def _reload_app_with_secret(monkeypatch, temp_state_file, secret: str):
     monkeypatch.setenv("LISTEN_PORT", "0")
     monkeypatch.setenv("STATE_FILE", temp_state_file)
     monkeypatch.setenv("PROXY_SHARED_SECRET", secret)
-    import app as _app
-
-    return importlib.reload(_app)
+    return _reload_app_and_dependencies()
 
 
 def test_proxy_secret_missing_header_rejected(monkeypatch, temp_state_file):
@@ -2717,3 +2709,55 @@ def test_render_resource_rows_multiple_resources():
     )
     assert 'href="https://j.example.com"' in result
     assert 'href="https://r.example.com"' in result
+
+
+def test_rate_limit_caching_success_only(app_module, monkeypatch):
+    app = app_module
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 10)
+    
+    # 1) First call fails (Pangolin API error)
+    calls = []
+    def fake_fail(ctx, org_id, username):
+        calls.append(username)
+        raise RuntimeError("api down")
+    monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_fail)
+    
+    res1 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
+    assert res1["pangolin"]["ok"] is False
+    assert len(calls) == 1
+    
+    # 2) Second call should NOT be rate limited and should call filter_resources_for_user again
+    res2 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
+    assert res2["pangolin"]["ok"] is False
+    assert len(calls) == 2
+
+
+def test_rate_limit_cache_keyed_by_ip_and_user(app_module, monkeypatch):
+    app = app_module
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 10)
+    monkeypatch.setenv("PANGOLIN_TOKEN", "fake")
+    
+    calls = []
+    def fake_success(ctx, org_id, username):
+        calls.append(username)
+        return [{"resourceId": 5, "name": "Res", "fullDomain": "d.com", "ssl": True}]
+    monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_success)
+    
+    # Ensure add_ip call succeeds
+    for t in app.TARGETS:
+        monkeypatch.setattr(t, "add_ip", lambda ip, resource_ids=None: None)
+        
+    # 1) Check in first user
+    res1 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
+    assert res1["pangolin"]["ok"] is True
+    assert len(calls) == 1
+    
+    # 2) Check in second user from same IP - should NOT hit cache because of different remote_user
+    res2 = app.add_ip_to_targets("1.1.1.1", remote_user="user-2")
+    assert res2["pangolin"]["ok"] is True
+    assert len(calls) == 2
+    
+    # 3) Check in first user again - should be rate limited and return cached result
+    res3 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
+    assert res3["pangolin"]["ok"] is True
+    assert len(calls) == 2  # No new call
