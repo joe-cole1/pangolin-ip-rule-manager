@@ -2815,6 +2815,7 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
     monkeypatch.setenv("ORG_ID", "the-cole-fam")
     monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.thecolefam.com")
     monkeypatch.setenv("REDIRECT_TO_LAUNCHER", "false")
+    monkeypatch.setenv("REDIRECT_DELAY_SECONDS", "3")
     monkeypatch.setenv("LISTEN_PORT", "0")
     monkeypatch.setenv("STATE_FILE", temp_state_file)
 
@@ -2825,7 +2826,12 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
     def fake_filter(ctx, org_id, username):
         if state_mock["succeed"]:
             return [
-                {"resourceId": 5, "name": "Res", "fullDomain": "d.com", "ssl": True}
+                {
+                    "resourceId": 5,
+                    "name": "Jellyfin",
+                    "fullDomain": "d.com",
+                    "ssl": True,
+                }
             ]
         else:
             raise RuntimeError("Authorization failed")
@@ -2851,16 +2857,17 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
             "Accept": "text/html",
         }
         conn.request("GET", "/check.png", headers=headers)
-        resp = conn.getcall = conn.getresponse()
+        resp = conn.getresponse()
         data = resp.read().decode("utf-8")
         assert resp.status == 200
         assert "Open Resource Launcher" in data
         assert "https://pangolin.thecolefam.com/the-cole-fam" in data
-        assert "Open Res" in data
+        assert "Open Jellyfin" in data
 
-    # Scenario 2: REDIRECT_TO_LAUNCHER = True, check-in succeeds.
-    # Should redirect with 302 to the dashboard URL.
+    # Scenario 2a: REDIRECT_TO_LAUNCHER = True, REDIRECT_DELAY_SECONDS = 0, check-in succeeds.
+    # Should redirect immediately with 302 to the dashboard URL.
     monkeypatch.setenv("REDIRECT_TO_LAUNCHER", "true")
+    monkeypatch.setenv("REDIRECT_DELAY_SECONDS", "0")
     app = importlib.reload(_app)
 
     monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_filter)
@@ -2881,7 +2888,34 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
             resp.getheader("Location") == "https://pangolin.thecolefam.com/the-cole-fam"
         )
 
-    # 3) REDIRECT_TO_LAUNCHER = True, check-in fails.
+    # Scenario 2b: REDIRECT_TO_LAUNCHER = True, REDIRECT_DELAY_SECONDS = 3, check-in succeeds.
+    # Should return 200 OK with redirection notice, countdown script, launcher button,
+    # but NO individual resource links (Open Jellyfin).
+    monkeypatch.setenv("REDIRECT_TO_LAUNCHER", "true")
+    monkeypatch.setenv("REDIRECT_DELAY_SECONDS", "3")
+    app = importlib.reload(_app)
+
+    monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_filter)
+    monkeypatch.setattr(app, "TARGETS", [FakeTarget()])
+
+    with start_server(app.ImageRequestHandler) as (httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers = {
+            "X-Real-IP": test_ip,
+            "Remote-User": "alice",
+            "Accept": "text/html",
+        }
+        conn.request("GET", "/check.png", headers=headers)
+        resp = conn.getresponse()
+        data = resp.read().decode("utf-8")
+        assert resp.status == 200
+        assert "Redirecting to Resource Launcher in" in data
+        assert "countdown" in data
+        assert "window.location.href" in data
+        assert "Open Resource Launcher" in data
+        assert "Open Jellyfin" not in data
+
+    # Scenario 3: REDIRECT_TO_LAUNCHER = True, check-in fails.
     # Should NOT redirect, should return 200 OK with details page.
     state_mock["succeed"] = False
     with app._api_rate_limit_lock:
@@ -2907,3 +2941,4 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
         assert resp.status == 200
         assert "Authorization failed" in data
         assert "Open Resource Launcher" not in data
+        assert "Redirecting to Resource Launcher" not in data

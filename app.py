@@ -72,6 +72,11 @@ REDIRECT_TO_LAUNCHER = os.getenv("REDIRECT_TO_LAUNCHER", "false").strip().lower(
     "yes",
     "on",
 )
+# Optional: delay redirect by X seconds. Set to 0 for immediate redirect. Default is 3.
+try:
+    REDIRECT_DELAY_SECONDS = int(os.getenv("REDIRECT_DELAY_SECONDS", "3"))
+except ValueError:
+    REDIRECT_DELAY_SECONDS = 3
 # Optional: explicitly override the Pangolin Resource Launcher dashboard URL.
 # If empty, it is automatically derived from PANGOLIN_URL and ORG_ID.
 PANGOLIN_DASHBOARD_URL = os.getenv("PANGOLIN_DASHBOARD_URL", "").strip().rstrip("/")
@@ -476,6 +481,7 @@ def _make_image_handler_context() -> dict:
         "banner_gif": BANNER_GIF,
         "redact_headers_for_log": redact_headers_for_log,
         "redirect_to_launcher": REDIRECT_TO_LAUNCHER,
+        "redirect_delay_seconds": REDIRECT_DELAY_SECONDS,
         "pangolin_dashboard_url": PANGOLIN_DASHBOARD_URL,
     }
 
@@ -572,6 +578,7 @@ def self_check():
         f"cleanup_interval_minutes={CLEANUP_INTERVAL_MINUTES} rule_priority={RULE_PRIORITY} "
         f"crowdsec={cs_status} update_endpoint_enabled={UPDATE_ENDPOINT_ENABLED} "
         f"site_name={SITE_NAME!r} redirect_to_launcher={REDIRECT_TO_LAUNCHER} "
+        f"redirect_delay_seconds={REDIRECT_DELAY_SECONDS} "
         f"pangolin_dashboard_url={PANGOLIN_DASHBOARD_URL!r}"
     )
 
