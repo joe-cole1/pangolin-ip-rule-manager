@@ -178,9 +178,9 @@ def _build_checkin_html(
             "      </script>"
         )
 
-    # Build the central launcher button if dashboard_url is set and overall_ok is True
+    # Build the central launcher button if dashboard_url is set, redirection is enabled, and overall_ok is True
     launcher_row = ""
-    if overall_ok and dashboard_url:
+    if overall_ok and dashboard_url and redirect_to_launcher:
         safe_url = html.escape(dashboard_url, quote=True)
         launcher_row = (
             f'      <a class="access-link launcher-link" href="{safe_url}" target="_blank" rel="noopener noreferrer" style="border-color: var(--accent); background: var(--accent-hover-bg); margin-bottom: 8px;">\n'
