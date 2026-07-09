@@ -2886,8 +2886,8 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
         resp = conn.getresponse()
         data = resp.read().decode("utf-8")
         assert resp.status == 200
-        assert "Open Resource Launcher" in data
-        assert "https://pangolin.thecolefam.com/the-cole-fam" in data
+        assert "Open Resource Launcher" not in data
+        assert "https://pangolin.thecolefam.com/the-cole-fam" not in data
         assert "Open Jellyfin" in data
 
     # Scenario 2a: REDIRECT_TO_LAUNCHER = True, REDIRECT_DELAY_SECONDS = 0, check-in succeeds.
