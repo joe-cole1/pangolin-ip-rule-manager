@@ -25,6 +25,11 @@ services:
       # Branding
       SITE_NAME: "" # Shown in HTML page header/footer. Optional
 
+      # Available Resources Dashboard (Resource Launcher) Integration
+      REDIRECT_TO_LAUNCHER: ${REDIRECT_TO_LAUNCHER:-false}
+      PANGOLIN_DASHBOARD_URL: ${PANGOLIN_DASHBOARD_URL:-}
+
+
       # ---------------------------------------------------------------------------
       # CrowdSec integration (optional — disabled by default)
       # ---------------------------------------------------------------------------
