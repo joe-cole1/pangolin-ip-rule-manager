@@ -93,14 +93,31 @@ def _build_checkin_html(
     overall_ok = pangolin_ok
     success = pangolin_ok and (not crowdsec_enabled or crowdsec_ok)
 
-    dot_class = "status-dot" if overall_ok else "status-dot err"
-    if overall_ok:
+    # Determine status presentation (success, warning, or error)
+    if success:
+        dot_class = "status-dot"
         if site_name:
             hero = f"Access granted to <strong>{html.escape(site_name)}</strong>."
         else:
             hero = "Your IP address has <strong>access</strong>."
+        details_label = "Technical details"
+        details_expanded = "false"
+        details_open_class = ""
+    elif pangolin_ok:
+        dot_class = "status-dot warn"
+        if site_name:
+            hero = f"Access granted to <strong>{html.escape(site_name)}</strong>, but security rules failed."
+        else:
+            hero = "Access granted, but security rules failed."
+        details_label = "What went wrong?"
+        details_expanded = "true"
+        details_open_class = "open"
     else:
+        dot_class = "status-dot err"
         hero = "Access may not work right now."
+        details_label = "What went wrong?"
+        details_expanded = "true"
+        details_open_class = "open"
 
     pangolin_badge = (
         '<span class="badge ok">Added</span>'
@@ -244,6 +261,8 @@ def _build_checkin_html(
             "RETENTION_LABEL": _format_retention(retention_minutes),
             "RETENTION_MINUTES": str(retention_minutes),
             "DETAILS_LABEL": details_label,
+            "DETAILS_EXPANDED": details_expanded,
+            "DETAILS_OPEN_CLASS": details_open_class,
             "DETAILS_IP": ip,
             "PANGOLIN_DETAIL_CLASS": pangolin_detail_class,
             "PANGOLIN_DETAIL": html.escape(str(pangolin_detail)),

@@ -74,6 +74,8 @@
     animation: pulse 2.4s ease-in-out infinite;
   }
   .status-dot.err { background: var(--err); box-shadow: 0 0 0 3px var(--err-dim); animation: none; }
+  .status-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-dim); animation: none; }
+
   @keyframes pulse {
     0%,100% { box-shadow: 0 0 0 3px var(--status-ok-dim); }
     50%      { box-shadow: 0 0 0 6px var(--status-ok-dim); }
@@ -170,7 +172,7 @@
     <p class="hero">{{HERO}}</p>
 {{ACTIONS_SECTION}}
 {{BOOKMARK_SECTION}}
-    <button class="details-toggle" aria-expanded="false" onclick="toggleDetails('details', this)">
+    <button class="details-toggle" aria-expanded="{{DETAILS_EXPANDED}}" onclick="toggleDetails('details', this)">
       <span class="access-link-left">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
         <span class="access-link-text">
@@ -180,7 +182,7 @@
       </span>
       <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
     </button>
-    <div class="details-body" id="details">
+    <div class="details-body {{DETAILS_OPEN_CLASS}}" id="details">
       <div class="ip-row">
         <span class="ip-label">Your IP</span>
         <span class="ip-value">{{IP}}</span>
