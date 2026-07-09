@@ -284,7 +284,9 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
         with _api_rate_limit_lock:
             entry = _api_rate_limit.get(cache_key)  # type: ignore[arg-type]
             if entry and (time.monotonic() - entry[0]) < RATE_LIMIT_SECONDS:
-                print(f"[targets] rate limited {ip} for user {remote_user!r} — returning cached result")
+                print(
+                    f"[targets] rate limited {ip} for user {remote_user!r} — returning cached result"
+                )
                 return entry[1]
 
     ctx = make_pangolin_context()

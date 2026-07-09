@@ -35,10 +35,13 @@ def temp_state_file(tmp_path):
 def _reload_app_and_dependencies():
     import sys
     import importlib
+
     if "crowdsec_connector" in sys.modules:
         import crowdsec_connector
+
         importlib.reload(crowdsec_connector)
     import app as _app
+
     return importlib.reload(_app)
 
 
@@ -2714,18 +2717,20 @@ def test_render_resource_rows_multiple_resources():
 def test_rate_limit_caching_success_only(app_module, monkeypatch):
     app = app_module
     monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 10)
-    
+
     # 1) First call fails (Pangolin API error)
     calls = []
+
     def fake_fail(ctx, org_id, username):
         calls.append(username)
         raise RuntimeError("api down")
+
     monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_fail)
-    
+
     res1 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
     assert res1["pangolin"]["ok"] is False
     assert len(calls) == 1
-    
+
     # 2) Second call should NOT be rate limited and should call filter_resources_for_user again
     res2 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
     assert res2["pangolin"]["ok"] is False
@@ -2736,27 +2741,29 @@ def test_rate_limit_cache_keyed_by_ip_and_user(app_module, monkeypatch):
     app = app_module
     monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 10)
     monkeypatch.setenv("PANGOLIN_TOKEN", "fake")
-    
+
     calls = []
+
     def fake_success(ctx, org_id, username):
         calls.append(username)
         return [{"resourceId": 5, "name": "Res", "fullDomain": "d.com", "ssl": True}]
+
     monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_success)
-    
+
     # Ensure add_ip call succeeds
     for t in app.TARGETS:
         monkeypatch.setattr(t, "add_ip", lambda ip, resource_ids=None: None)
-        
+
     # 1) Check in first user
     res1 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
     assert res1["pangolin"]["ok"] is True
     assert len(calls) == 1
-    
+
     # 2) Check in second user from same IP - should NOT hit cache because of different remote_user
     res2 = app.add_ip_to_targets("1.1.1.1", remote_user="user-2")
     assert res2["pangolin"]["ok"] is True
     assert len(calls) == 2
-    
+
     # 3) Check in first user again - should be rate limited and return cached result
     res3 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
     assert res3["pangolin"]["ok"] is True
