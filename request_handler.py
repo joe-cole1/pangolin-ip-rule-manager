@@ -73,6 +73,7 @@ def _build_checkin_html(
     crowdsec_enabled: bool,
     resources: list | None = None,
     site_name: str = "",
+    dashboard_url: str = "",
 ) -> str:
     try:
         seen_dt = datetime.fromisoformat(last_seen)
@@ -123,6 +124,38 @@ def _build_checkin_html(
 
     resource_rows = _render_resource_rows(resources or [], overall_ok)
 
+    # Build the central launcher button if dashboard_url is set and overall_ok is True
+    launcher_row = ""
+    if overall_ok and dashboard_url:
+        safe_url = html.escape(dashboard_url, quote=True)
+        launcher_row = (
+            f'      <a class="access-link launcher-link" href="{safe_url}" target="_blank" rel="noopener noreferrer" style="border-color: var(--accent); background: var(--accent-hover-bg); margin-bottom: 8px;">\n'
+            '        <span class="access-link-left">\n'
+            '          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0; color: var(--accent);">'
+            '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'
+            '<polyline points="9 22 9 12 15 12 15 22"/>'
+            "</svg>\n"
+            '          <span class="access-link-text">\n'
+            '            <span class="access-link-label" style="font-weight:600;">Open Resource Launcher</span>\n'
+            f'            <span class="access-link-url" style="color: var(--text); opacity: 0.85;">{safe_url}</span>\n'
+            "          </span>\n"
+            "        </span>\n"
+            '        <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent);">'
+            '<line x1="5" y1="12" x2="19" y2="12"/>'
+            '<polyline points="12 5 19 12 12 19"/>'
+            "</svg>\n"
+            "      </a>"
+        )
+
+    # Combine launcher row and resource rows
+    combined_rows = []
+    if launcher_row:
+        combined_rows.append(launcher_row)
+    if resource_rows:
+        combined_rows.append(resource_rows)
+
+    combined_html = "\n".join(combined_rows)
+
     bookmark_html = (
         (
             '  <button class="bookmark-btn" onclick="bookmarkPage()">\n'
@@ -145,9 +178,9 @@ def _build_checkin_html(
         else ""
     )
 
-    if resource_rows:
+    if combined_html:
         actions_section = (
-            '    <div class="action-list">\n' + resource_rows + "\n    </div>\n"
+            '    <div class="action-list">\n' + combined_html + "\n    </div>\n"
             '    <hr class="section-divider">'
         )
     else:
@@ -433,6 +466,28 @@ def create_image_request_handler(ctx: dict):
                     }
 
                 if self._wants_html():
+                    pangolin_ok = update_results.get("pangolin", {}).get("ok", False)
+                    crowdsec_ok = update_results.get("crowdsec", {}).get("ok", False)
+                    crowdsec_enabled = ctx.get("crowdsec_enabled", False)
+                    success = pangolin_ok and (not crowdsec_enabled or crowdsec_ok)
+
+                    if (
+                        ctx.get("redirect_to_launcher")
+                        and success
+                        and ctx.get("pangolin_dashboard_url")
+                    ):
+                        self.send_response(302)
+                        self.send_header("Location", ctx["pangolin_dashboard_url"])
+                        self.send_header(
+                            "Cache-Control",
+                            "no-store, no-cache, must-revalidate, max-age=0",
+                        )
+                        self.send_header("Pragma", "no-cache")
+                        self.send_header("Expires", "0")
+                        self._send_security_headers()
+                        self.end_headers()
+                        return
+
                     self._send_html(
                         200,
                         _build_checkin_html(
@@ -443,6 +498,7 @@ def create_image_request_handler(ctx: dict):
                             crowdsec_enabled=ctx.get("crowdsec_enabled", False),
                             resources=update_results.get("resources", []),
                             site_name=ctx.get("site_name", ""),
+                            dashboard_url=ctx.get("pangolin_dashboard_url", ""),
                         ),
                     )
                 else:
@@ -522,6 +578,28 @@ def create_image_request_handler(ctx: dict):
 
             # Browser gets the HTML page; everything else gets the transparent image
             if self._wants_html():
+                pangolin_ok = results.get("pangolin", {}).get("ok", False)
+                crowdsec_ok = results.get("crowdsec", {}).get("ok", False)
+                crowdsec_enabled = ctx.get("crowdsec_enabled", False)
+                success = pangolin_ok and (not crowdsec_enabled or crowdsec_ok)
+
+                if (
+                    ctx.get("redirect_to_launcher")
+                    and success
+                    and ctx.get("pangolin_dashboard_url")
+                ):
+                    self.send_response(302)
+                    self.send_header("Location", ctx["pangolin_dashboard_url"])
+                    self.send_header(
+                        "Cache-Control",
+                        "no-store, no-cache, must-revalidate, max-age=0",
+                    )
+                    self.send_header("Pragma", "no-cache")
+                    self.send_header("Expires", "0")
+                    self._send_security_headers()
+                    self.end_headers()
+                    return
+
                 self._send_html(
                     200,
                     _build_checkin_html(
@@ -532,6 +610,7 @@ def create_image_request_handler(ctx: dict):
                         crowdsec_enabled=ctx.get("crowdsec_enabled", False),
                         resources=results.get("resources", []),
                         site_name=ctx.get("site_name", ""),
+                        dashboard_url=ctx.get("pangolin_dashboard_url", ""),
                     ),
                 )
             else:

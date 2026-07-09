@@ -2768,3 +2768,142 @@ def test_rate_limit_cache_keyed_by_ip_and_user(app_module, monkeypatch):
     res3 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
     assert res3["pangolin"]["ok"] is True
     assert len(calls) == 2  # No new call
+
+
+def test_dashboard_url_derivation(monkeypatch):
+    import importlib
+    import app as _app
+
+    # Test 1: Both PANGOLIN_URL and ORG_ID set, no trailing slash/v1
+    monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.thecolefam.com")
+    monkeypatch.setenv("ORG_ID", "the-cole-fam")
+    monkeypatch.setenv("PANGOLIN_DASHBOARD_URL", "")
+    app = importlib.reload(_app)
+    assert app.PANGOLIN_DASHBOARD_URL == "https://pangolin.thecolefam.com/the-cole-fam"
+
+    # Test 2: PANGOLIN_URL has /v1, ORG_ID set
+    monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.thecolefam.com/v1")
+    monkeypatch.setenv("ORG_ID", "the-cole-fam")
+    monkeypatch.setenv("PANGOLIN_DASHBOARD_URL", "")
+    app = importlib.reload(_app)
+    assert app.PANGOLIN_DASHBOARD_URL == "https://pangolin.thecolefam.com/the-cole-fam"
+
+    # Test 3: PANGOLIN_URL has trailing slash and /api
+    monkeypatch.setenv("PANGOLIN_URL", "https://api.yourdomain.com/api/")
+    monkeypatch.setenv("ORG_ID", "myorg")
+    monkeypatch.setenv("PANGOLIN_DASHBOARD_URL", "")
+    app = importlib.reload(_app)
+    assert app.PANGOLIN_DASHBOARD_URL == "https://api.yourdomain.com/myorg"
+
+    # Test 4: Explicit PANGOLIN_DASHBOARD_URL override
+    monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.thecolefam.com/v1")
+    monkeypatch.setenv("ORG_ID", "the-cole-fam")
+    monkeypatch.setenv("PANGOLIN_DASHBOARD_URL", "https://custom-dashboard.com/subpath")
+    app = importlib.reload(_app)
+    assert app.PANGOLIN_DASHBOARD_URL == "https://custom-dashboard.com/subpath"
+
+
+def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
+    import importlib
+    import app as _app
+
+    test_ip = "1.2.3.4"
+
+    # Scenario 1: REDIRECT_TO_LAUNCHER = False (default), check-in succeeds.
+    # Should return 200 OK and HTML containing the Resource Launcher button and resource links.
+    monkeypatch.setenv("PANGOLIN_TOKEN", "fake-token")
+    monkeypatch.setenv("ORG_ID", "the-cole-fam")
+    monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.thecolefam.com")
+    monkeypatch.setenv("REDIRECT_TO_LAUNCHER", "false")
+    monkeypatch.setenv("LISTEN_PORT", "0")
+    monkeypatch.setenv("STATE_FILE", temp_state_file)
+
+    app = importlib.reload(_app)
+
+    state_mock = {"succeed": True}
+
+    def fake_filter(ctx, org_id, username):
+        if state_mock["succeed"]:
+            return [
+                {"resourceId": 5, "name": "Res", "fullDomain": "d.com", "ssl": True}
+            ]
+        else:
+            raise RuntimeError("Authorization failed")
+
+    monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_filter)
+
+    class FakeTarget:
+        name = "pangolin"
+
+        def add_ip(self, ip, resource_ids=None):
+            pass
+
+        def ensure_ready(self):
+            pass
+
+    monkeypatch.setattr(app, "TARGETS", [FakeTarget()])
+
+    with start_server(app.ImageRequestHandler) as (httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers = {
+            "X-Real-IP": test_ip,
+            "Remote-User": "alice",
+            "Accept": "text/html",
+        }
+        conn.request("GET", "/check.png", headers=headers)
+        resp = conn.getcall = conn.getresponse()
+        data = resp.read().decode("utf-8")
+        assert resp.status == 200
+        assert "Open Resource Launcher" in data
+        assert "https://pangolin.thecolefam.com/the-cole-fam" in data
+        assert "Open Res" in data
+
+    # Scenario 2: REDIRECT_TO_LAUNCHER = True, check-in succeeds.
+    # Should redirect with 302 to the dashboard URL.
+    monkeypatch.setenv("REDIRECT_TO_LAUNCHER", "true")
+    app = importlib.reload(_app)
+
+    monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_filter)
+    monkeypatch.setattr(app, "TARGETS", [FakeTarget()])
+
+    with start_server(app.ImageRequestHandler) as (httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers = {
+            "X-Real-IP": test_ip,
+            "Remote-User": "alice",
+            "Accept": "text/html",
+        }
+        conn.request("GET", "/check.png", headers=headers)
+        resp = conn.getresponse()
+        _ = resp.read()
+        assert resp.status == 302
+        assert (
+            resp.getheader("Location") == "https://pangolin.thecolefam.com/the-cole-fam"
+        )
+
+    # 3) REDIRECT_TO_LAUNCHER = True, check-in fails.
+    # Should NOT redirect, should return 200 OK with details page.
+    state_mock["succeed"] = False
+    with app._api_rate_limit_lock:
+        app._api_rate_limit.clear()
+
+    with start_server(app.ImageRequestHandler) as (httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers = {
+            "X-Real-IP": test_ip,
+            "Remote-User": "alice",
+            "Accept": "text/html",
+        }
+        conn.request("GET", "/check.png", headers=headers)
+        resp = conn.getcall = (
+            conn.getcall
+            if hasattr(conn, "getcall")
+            else conn.getcall
+            if hasattr(conn, "getcall")
+            else conn.getresponse
+        )
+        resp = resp()
+        data = resp.read().decode("utf-8")
+        assert resp.status == 200
+        assert "Authorization failed" in data
+        assert "Open Resource Launcher" not in data

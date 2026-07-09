@@ -65,6 +65,28 @@ DEBUG_LOG_HEADERS = os.getenv("DEBUG_LOG_HEADERS", "false").strip().lower() in (
     "yes",
     "on",
 )
+# Optional: redirect browser check-ins directly to Pangolin Resource Launcher (dashboard)
+REDIRECT_TO_LAUNCHER = os.getenv("REDIRECT_TO_LAUNCHER", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+# Optional: explicitly override the Pangolin Resource Launcher dashboard URL.
+# If empty, it is automatically derived from PANGOLIN_URL and ORG_ID.
+PANGOLIN_DASHBOARD_URL = os.getenv("PANGOLIN_DASHBOARD_URL", "").strip().rstrip("/")
+if not PANGOLIN_DASHBOARD_URL and PANGOLIN_URL:
+    # Derive from PANGOLIN_URL (strip api/version suffixes and append ORG_ID if present)
+    _base = PANGOLIN_URL
+    for _suffix in ("/v1", "/v2", "/api"):
+        if _base.endswith(_suffix):
+            _base = _base[: -len(_suffix)]
+    _base = _base.rstrip("/")
+    if ORG_ID:
+        PANGOLIN_DASHBOARD_URL = f"{_base}/{ORG_ID}"
+    else:
+        PANGOLIN_DASHBOARD_URL = _base
+
 
 # Minimal 1x1 PNG (transparent) as bytes
 BANNER_PNG = base64.b64decode(
@@ -453,6 +475,8 @@ def _make_image_handler_context() -> dict:
         "banner_png": BANNER_PNG,
         "banner_gif": BANNER_GIF,
         "redact_headers_for_log": redact_headers_for_log,
+        "redirect_to_launcher": REDIRECT_TO_LAUNCHER,
+        "pangolin_dashboard_url": PANGOLIN_DASHBOARD_URL,
     }
 
 
@@ -547,7 +571,8 @@ def self_check():
         f"resources={RESOURCE_IDS} retention_minutes={RETENTION_MINUTES} "
         f"cleanup_interval_minutes={CLEANUP_INTERVAL_MINUTES} rule_priority={RULE_PRIORITY} "
         f"crowdsec={cs_status} update_endpoint_enabled={UPDATE_ENDPOINT_ENABLED} "
-        f"site_name={SITE_NAME!r}"
+        f"site_name={SITE_NAME!r} redirect_to_launcher={REDIRECT_TO_LAUNCHER} "
+        f"pangolin_dashboard_url={PANGOLIN_DASHBOARD_URL!r}"
     )
 
 
