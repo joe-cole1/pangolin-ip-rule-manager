@@ -26,6 +26,7 @@ A lightweight Python service that automatically manages Pangolin IP bypass rules
 - [Configuration Reference](#configuration-reference)
   - [Pangolin Connection](#pangolin-connection)
   - [Behaviour](#behaviour)
+  - [Resource Launcher Integration](#resource-launcher-integration)
   - [CrowdSec](#crowdsec)
   - [Optional](#optional)
 - [Pangolin Resource Setup](#pangolin-resource-setup)
@@ -156,6 +157,13 @@ services:
       SITE_NAME: ""                  # shown in HTML page header/footer; leave empty to omit
 
       # ---------------------------------------------------------------------------
+      # Resource Launcher Integration
+      # ---------------------------------------------------------------------------
+      REDIRECT_TO_LAUNCHER: "false"
+      REDIRECT_DELAY_SECONDS: "3"
+      # PANGOLIN_DASHBOARD_URL: "https://pangolin.yourdomain.com/your_org_id"
+
+      # ---------------------------------------------------------------------------
       # CrowdSec integration (optional — disabled by default)
       # ---------------------------------------------------------------------------
       # Requires the Docker socket mounted read-only (see volumes below).
@@ -232,6 +240,16 @@ The app will **refuse to start** if `PANGOLIN_URL` or `RESOURCE_IDS` are missing
 | `RULES_CACHE_TTL_SECONDS` | `3600` | No | How long (in seconds) to cache Pangolin rule existence checks before re-querying. Reduces API traffic. |
 | `RATE_LIMIT_SECONDS` | `300` | No | Minimum seconds between Pangolin API fan-out calls for the same IP. Repeat check-ins within this window return a cached result without calling Pangolin. Set to `0` to disable. |
 | `STATE_FILE` | `/data/state.json` | No | Path to the persistent state file. Mount a volume at the parent directory to survive restarts. |
+
+### Resource Launcher Integration
+
+This feature allows you to seamlessly redirect users to the **Pangolin Resource Launcher** (dashboard) after a successful check-in. Instead of showing the check-in confirmation page indefinitely, users are bounced to the launcher where they can launch the resources they just unlocked. If a check-in fails, the redirection is bypassed so the user can see the error.
+
+| Variable | Default | Required | Description |
+|---|---|---|---|
+| `REDIRECT_TO_LAUNCHER` | `false` | No | Set to `true` to enable automatic redirection to the Pangolin Resource Launcher upon successful check-in. |
+| `REDIRECT_DELAY_SECONDS` | `3` | No | How long (in seconds) to display the check-in success page before redirecting. Set to `0` for an immediate, invisible HTTP 302 redirect. When `> 0`, a visual countdown timer is shown, and the individual app list is hidden. |
+| `PANGOLIN_DASHBOARD_URL` | _(empty)_ | No | Explicitly override the destination URL for the launcher. If left empty, it is automatically derived from `PANGOLIN_URL` by stripping API paths and appending your `ORG_ID`. Example: `https://pangolin.yourdomain.com/your_org_id`. |
 
 ### CrowdSec
 
