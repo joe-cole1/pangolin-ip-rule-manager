@@ -1,11 +1,7 @@
-.git
-.gitignore
-.env
-.env.*
-__pycache__
-*.pyc
-*.pyo
-.pytest_cache
-.ruff_cache
-tests/
-requirements.txt
+# Send only runtime sources to the builder. This keeps local metadata, secrets,
+# tests, documentation, and developer tooling out of the build context entirely.
+*
+!*.py
+!docker-entrypoint.sh
+!templates/
+!templates/*.html
