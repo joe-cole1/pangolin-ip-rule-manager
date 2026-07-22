@@ -2,6 +2,10 @@ services:
   pangolin-ip-rule-manager:
     image: ghcr.io/joe-cole1/pangolin-ip-rule-manager:latest
     container_name: pangolin-ip-rule-manager
+    # Defense in depth: preserve the image's non-root identity even if its
+    # default USER is accidentally changed in a future release.
+    user: "100:101"
+    init: true
 
     environment:
       # Network
@@ -47,10 +51,9 @@ services:
       # A socket proxy limits Docker API access to exec operations only, preventing
       # this container from acting as a backdoor to the full Docker daemon.
       #
-      # To use: uncomment DOCKER_HOST below, uncomment the socket-proxy service
-      # and networks section at the bottom of this file, and remove the direct
-      # docker.sock volume mount. No code changes are required — the docker CLI
-      # picks up DOCKER_HOST automatically.
+      # To use: uncomment DOCKER_HOST below, the socket-proxy service, and the
+      # networks section at the bottom of this file. No host permission changes
+      # or raw socket mount on this service are required.
       #
       # DOCKER_HOST: tcp://socket-proxy:2375
 
@@ -70,20 +73,6 @@ services:
     volumes:
       - pangolin-ip-rule-manager-data:/data
 
-      # ---------------------------------------------------------------------------
-      # Docker socket — choose ONE of the two options below when CrowdSec is enabled
-      # ---------------------------------------------------------------------------
-      #
-      # Option A — Direct socket mount (not recommended)
-      # Gives this container full Docker API access (equivalent to root on the host).
-      # Use only if you cannot run a socket proxy.
-      #
-      # - /var/run/docker.sock:/var/run/docker.sock:ro
-      #
-      # Option B — Socket proxy (STRONGLY RECOMMENDED)
-      # Uncomment DOCKER_HOST above and the socket-proxy service below instead.
-      # This option requires no volume mount here.
-
     # Uncomment when using the socket proxy:
     # networks:
     #   - default
@@ -94,32 +83,41 @@ services:
     # ---------------------------------------------------------------------------
     # Runtime hardening
     # ---------------------------------------------------------------------------
-    # The root filesystem is read-only; only the /data volume (state) and an
-    # in-memory /tmp are writable. All Linux capabilities are dropped and
-    # privilege escalation is disabled. If you enable CrowdSec via a local
-    # `docker exec` prefix, the docker CLI may need a writable HOME — prefer the
-    # socket-proxy + DOCKER_HOST path, which keeps these flags intact.
+    # The root filesystem is read-only; only the Docker-managed /data volume and
+    # a small in-memory /tmp are writable. The image initializes new /data
+    # volumes as 100:101 and automatically tightens existing volumes to mode
+    # 0700, so no host chmod/chown step is required.
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    pids_limit: 128
+    cpus: "0.5"
+    mem_limit: "256M"
 
     deploy:
       resources:
         limits:
           cpus: "0.5"
           memory: "256M"
+          pids: 128
 
     healthcheck:
       test:
-        ["CMD-SHELL", "wget -q -O - http://127.0.0.1:${LISTEN_PORT:-8080}/healthz || exit 1"]
+        ["CMD-SHELL", "wget -q -O - http://127.0.0.1:$${LISTEN_PORT:-8080}/healthz || exit 1"]
       interval: 60s
       timeout: 5s
       retries: 3
       start_period: 15s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ---------------------------------------------------------------------------
   # Docker socket proxy (STRONGLY RECOMMENDED for CrowdSec integration)
@@ -138,7 +136,7 @@ services:
   # Uncomment this entire block and the networks section below to enable.
   #
   # socket-proxy:
-  #   image: tecnativa/docker-socket-proxy:latest
+  #   image: tecnativa/docker-socket-proxy:v0.4.2
   #   container_name: socket-proxy
   #   environment:
   #     CONTAINERS: 1

@@ -24,7 +24,7 @@ pangolin-ip-rule-manager/
 ├── pangolin_connector.py    # All Pangolin API interaction: PangolinContext dataclass, retry logic
 ├── crowdsec_connector.py    # CrowdSec integration via cscli subprocess
 ├── requirements.txt         # Dev dependencies (pytest, ruff) — not used in the runtime image
-├── Dockerfile               # python:3.14-alpine; docker-cli included for CrowdSec integration via docker exec
+├── Dockerfile               # Trimmed Python 3.14 Alpine runtime; docker-cli included for CrowdSec via docker exec
 ├── docker-compose.yml       # Reference compose file — actual deployment uses Portainer
 ├── config.env.sample        # Every environment variable with inline documentation
 └── tests/

@@ -166,7 +166,7 @@ services:
       # ---------------------------------------------------------------------------
       # CrowdSec integration (optional — disabled by default)
       # ---------------------------------------------------------------------------
-      # Requires the Docker socket mounted read-only (see volumes below).
+      # Use the socket-proxy block in docker-compose.yml when enabling this.
       CROWDSEC_ENABLED: "false"
       CROWDSEC_ALLOWLIST_NAME: pangolin-ip-rule-manager
       CROWDSEC_CACHE_TTL_SECONDS: "3600"
@@ -176,8 +176,21 @@ services:
       # Optional endpoints (disabled by default)
       UPDATE_ENDPOINT_ENABLED: "false"
 
+    user: "100:101"
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    pids_limit: 128
+    cpus: "0.5"
+    mem_limit: "256M"
+
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f app.py || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:$${LISTEN_PORT:-8080}/healthz || exit 1"]
       interval: 60s
       timeout: 5s
       retries: 3
@@ -185,16 +198,25 @@ services:
 
     volumes:
       - pangolin-ip-rule-manager-data:/data
-      # Required for CrowdSec integration. Mount the Docker socket read-only.
-      # - /var/run/docker.sock:/var/run/docker.sock:ro
 
     restart: unless-stopped
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   pangolin-ip-rule-manager-data: {}
 ```
 
 Set environment variables via a `.env` file or directly in Portainer/your orchestration tool. **Never hardcode credentials.**
+
+The named volume is created and permissioned by Docker from the image metadata;
+the non-root entrypoint also tightens volumes from earlier releases to mode
+`0700` automatically. Fresh installs and upgrades require no host-side `chmod`,
+`chown`, directory creation, or other setup commands.
 
 ### Finding Your Resource IDs
 
@@ -300,7 +322,10 @@ Pangolin and CrowdSec are handled independently. If one succeeds and the other f
 
 ### Setup
 
-Runs `cscli` inside the CrowdSec container via `docker exec`. Requires mounting the Docker socket read-only and having `docker-cli` available in the image (it is).
+Runs `cscli` inside the CrowdSec container via `docker exec`; `docker-cli` is
+always available in the image. Use the socket-proxy block in the checked-in
+`docker-compose.yml` so the application receives only the Docker API operations
+needed for `exec`.
 
 ```yaml
 CROWDSEC_ENABLED: "true"
@@ -308,12 +333,10 @@ CROWDSEC_CMD_PREFIX: "docker exec crowdsec"
 CROWDSEC_CSCLI_BIN: cscli
 ```
 
-```yaml
-volumes:
-  - /var/run/docker.sock:/var/run/docker.sock:ro
-```
-
-> **Security note:** Docker socket access grants significant host-level capability. Mount the socket read-only (`:ro`) and ensure the container runs with the minimum necessary privileges.
+> **Security note:** A read-only bind mount does not make the Docker API
+> read-only. Direct access to `/var/run/docker.sock` is effectively host-root
+> access; the isolated socket proxy in `docker-compose.yml` is strongly
+> recommended.
 
 ---
 
@@ -411,7 +434,7 @@ State is stored as JSON at `STATE_FILE` (default `/data/state.json`). Mount a na
 - **Header redaction in logs:** `Authorization` and `Proxy-Authorization` headers are redacted in all log output.
 - **Secrets:** All credentials should be stored in a secrets manager (e.g., Bitwarden) and injected at runtime. Never hardcode them in compose files or Dockerfiles.
 - **Scope of deletions:** The service only deletes Pangolin rules it created itself. It will never touch rules that existed before it ran.
-- **Docker socket:** Only required for CrowdSec integration (`docker exec crowdsec cscli ...`). Mount the socket read-only (`:ro`) and keep the container locked down.
+- **Docker socket:** Only required for CrowdSec integration (`docker exec crowdsec cscli ...`). Prefer the isolated socket proxy in `docker-compose.yml`; mounting the raw socket read-only does not restrict Docker API operations.
 
 ---
 
