@@ -189,13 +189,6 @@ services:
     cpus: "0.5"
     mem_limit: "256M"
 
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:$${LISTEN_PORT:-8080}/healthz || exit 1"]
-      interval: 60s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-
     volumes:
       - pangolin-ip-rule-manager-data:/data
 
@@ -217,6 +210,9 @@ The named volume is created and permissioned by Docker from the image metadata;
 the non-root entrypoint also tightens volumes from earlier releases to mode
 `0700` automatically. Fresh installs and upgrades require no host-side `chmod`,
 `chown`, directory creation, or other setup commands.
+
+The image includes its own `/healthz` health check, so Docker and Compose report
+container health without a `healthcheck` override in the Compose file.
 
 ### Finding Your Resource IDs
 
