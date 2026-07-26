@@ -3,8 +3,9 @@ from __future__ import annotations
 import ipaddress
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Dict, Set, Any, List
+from typing import Any
 from urllib.parse import quote
 
 
@@ -37,20 +38,20 @@ def _retry(fn, *, attempts: int = 3, backoff: float = 1.0, label: str = ""):
 class PangolinContext:
     url: str
     token: str
-    resource_ids: List[int]
+    resource_ids: list[int]
     rule_priority: int
     rules_cache_ttl_seconds: int
 
     # Shared mutable state/caches and helpers injected from app
-    rules_cache: Dict[int, Dict[str, Any]]
-    state: Dict[str, Any]
+    rules_cache: dict[int, dict[str, Any]]
+    state: dict[str, Any]
     state_lock: threading.Lock
     save_state: Callable[[], None]
     now_utc_iso: Callable[[], str]
-    http_json: Callable[[str, str, Dict[str, Any] | None], Dict[str, Any]]
+    http_json: Callable[[str, str, dict[str, Any] | None], dict[str, Any]]
 
 
-def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> Set[str]:
+def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> set[str]:
     """Return a set of IPs that currently have a rule for the resource.
     Uses a TTL cache to avoid frequent GET calls.
     """
@@ -67,7 +68,7 @@ def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> Set[str]:
         label=f"GET rules resource={rid}",
     )
     rules = rules_resp.get("data", {}).get("rules", [])
-    ip_set: Set[str] = set()
+    ip_set: set[str] = set()
     for r in rules:
         if r.get("match") == "IP":
             v = r.get("value")
@@ -114,8 +115,8 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
                 "enabled": True,
             }
             _ = _retry(
-                lambda: ctx.http_json(
-                    "PUT", f"{ctx.url}/v1/resource/{rid}/rule", payload
+                lambda r=rid, p=payload: ctx.http_json(
+                    "PUT", f"{ctx.url}/v1/resource/{r}/rule", p
                 ),
                 label=f"PUT rule ip={ip} resource={rid}",
             )
@@ -135,7 +136,7 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
                 rec["last_seen"] = ctx.now_utc_iso()
                 rec["resources"][str(rid)] = {"created_by_us": True}
             ctx.save_state()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"[pangolin] ensure rule failed for resource {rid}, ip {ip}: {e}")
             failures.append(f"resource {rid}: {e}")
     if failures:
@@ -151,8 +152,8 @@ def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> 
     retain the IP in state and retry on the next cleanup cycle."""
     try:
         rules_resp = _retry(
-            lambda: ctx.http_json(
-                "GET", f"{ctx.url}/v1/resource/{rid}/rules?limit=10000"
+            lambda r=rid: ctx.http_json(
+                "GET", f"{ctx.url}/v1/resource/{r}/rules?limit=10000"
             ),
             label=f"GET rules (delete phase) resource={rid}",
         )
@@ -177,8 +178,8 @@ def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> 
                 continue
             try:
                 _ = _retry(
-                    lambda: ctx.http_json(
-                        "DELETE", f"{ctx.url}/v1/resource/{rid}/rule/{rule_id}"
+                    lambda r=rid, r_id=rule_id: ctx.http_json(
+                        "DELETE", f"{ctx.url}/v1/resource/{r}/rule/{r_id}"
                     ),
                     label=f"DELETE rule={rule_id} ip={ip} resource={rid}",
                 )
@@ -186,7 +187,7 @@ def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> 
                     f"[pangolin] deleted rule {rule_id} for IP {ip} on resource {rid}"
                 )
                 deleted_any = True
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(f"[pangolin] delete failed for rule {rule_id} on {rid}: {e}")
         if deleted_any:
             # Evict the IP from the existence cache so a re-check-in re-creates the
@@ -196,7 +197,7 @@ def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> 
                 if entry:
                     entry.get("ip_set", set()).discard(ip)
         return deleted_any
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[pangolin] fetch rules (delete phase) failed for {rid}, ip {ip}: {e}")
         return False
 
@@ -222,7 +223,7 @@ def list_org_resources(ctx: PangolinContext, org_id: str) -> None:
             print(f"  - {name} (resourceId={rid})")
     except Exception as e:
         print(f"[pangolin] failed to list resources for org {org_id}: {e}")
-        raise e
+        raise
 
 
 def get_user_info(

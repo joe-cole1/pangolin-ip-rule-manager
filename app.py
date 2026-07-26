@@ -7,26 +7,34 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
 
 from crowdsec_connector import (
-    crowdsec_add_ip,
-    crowdsec_remove_ip,
-    crowdsec_ensure_allowlist,
-    CROWDSEC_ENABLED,
     CROWDSEC_ALLOWLIST_NAME,
-    CROWDSEC_CSCLI_BIN,
-    CROWDSEC_CMD_PREFIX,
     CROWDSEC_CACHE_TTL_SECONDS,
+    CROWDSEC_CMD_PREFIX,
+    CROWDSEC_CSCLI_BIN,
+    CROWDSEC_ENABLED,
+    crowdsec_add_ip,
+    crowdsec_ensure_allowlist,
+    crowdsec_remove_ip,
 )
 from pangolin_connector import (
     PangolinContext,
-    ensure_ip_rule as pg_ensure_ip_rule,
+)
+from pangolin_connector import (
     delete_ip_rule_if_created_by_us as pg_delete_ip_rule_if_created_by_us,
-    list_org_resources as pg_list_org_resources,
+)
+from pangolin_connector import (
+    ensure_ip_rule as pg_ensure_ip_rule,
+)
+from pangolin_connector import (
     filter_resources_for_user as pg_filter_resources_for_user,
+)
+from pangolin_connector import (
+    list_org_resources as pg_list_org_resources,
 )
 
 # Config via environment
@@ -84,8 +92,7 @@ if not PANGOLIN_DASHBOARD_URL and PANGOLIN_URL:
     # Derive from PANGOLIN_URL (strip api/version suffixes and append ORG_ID if present)
     _base = PANGOLIN_URL
     for _suffix in ("/v1", "/v2", "/api"):
-        if _base.endswith(_suffix):
-            _base = _base[: -len(_suffix)]
+        _base = _base.removesuffix(_suffix)
     _base = _base.rstrip("/")
     if ORG_ID:
         PANGOLIN_DASHBOARD_URL = f"{_base}/{ORG_ID}"
@@ -154,7 +161,7 @@ def load_state():
             data = json.load(f)
         if isinstance(data, dict):
             state = data
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[state] failed to load state: {e}")
 
 
@@ -171,7 +178,7 @@ def save_state():
             os.replace(tmp_file, STATE_FILE)
             tmp_file = None
             os.chmod(STATE_FILE, 0o600)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"[state] failed to save state: {e}")
             if tmp_file is not None:
                 with contextlib.suppress(OSError):
@@ -199,7 +206,7 @@ def http_json(method: str, url: str, body: dict | None = None) -> dict:
     except HTTPError as e:
         try:
             err = e.read().decode("utf-8", errors="replace")
-        except (UnicodeDecodeError, IOError):
+        except (OSError, UnicodeDecodeError):
             err = str(e)
         raise RuntimeError(f"HTTP {e.code} {e.reason}: {err}")
     except URLError as e:
@@ -319,7 +326,7 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
     ctx = make_pangolin_context()
     try:
         effective_resources = pg_filter_resources_for_user(ctx, ORG_ID, remote_user)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return _fail(f"User authorization failed for {remote_user!r}: {e}")
 
     if not effective_resources:
@@ -339,7 +346,7 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
             t.add_ip(ip, resource_ids=effective_ids)
             results[key]["ok"] = True
             results[key]["detail"] = "ok"
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             results[key]["ok"] = False
             results[key]["detail"] = str(e)
             print(f"[targets] add failed for {ip} on {t.__class__.__name__}: {e}")
@@ -364,7 +371,7 @@ def expire_ip_from_targets(ip: str) -> None:
     for t in TARGETS:
         try:
             t.expire_ip(ip)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"[targets] expire failed for {ip} on {t.__class__.__name__}: {e}")
 
 
@@ -444,7 +451,7 @@ def cleanup_old_ips():
         # Always attempt CrowdSec expiration for expired IPs (idempotent)
         try:
             expire_ip_from_targets(ip)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"[cleanup] crowdsec expire failed for {ip}: {e}")
         if changed:
             save_state()
@@ -456,12 +463,12 @@ def cleanup_loop():
     while True:
         try:
             cleanup_old_ips()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"[cleanup] unexpected error: {e}")
         time.sleep(CLEANUP_INTERVAL_MINUTES * 60)
 
 
-from request_handler import create_image_request_handler  # noqa: E402
+from request_handler import create_image_request_handler
 
 
 def _make_image_handler_context() -> dict:
@@ -524,14 +531,14 @@ def self_check():
             raise RuntimeError(f"{_name}={_val} is below minimum allowed value {_min}")
 
     if not PANGOLIN_TOKEN:
-        print("")
+        print()
         print("=" * 60)
         print("[WARN] PANGOLIN_TOKEN is not set or empty.")
         print("       All Pangolin API calls will be skipped.")
         print("       IP rules will NOT be created or deleted.")
         print("       If this is unintentional, check your environment.")
         print("=" * 60)
-        print("")
+        print()
     if not ORG_ID:
         print("[warn] ORG_ID is not set; startup resource listing will be skipped.")
     if not PROXY_SHARED_SECRET:
@@ -544,13 +551,13 @@ def self_check():
     # Verify state file directory is writable before we need it
     state_dir = os.path.dirname(os.path.abspath(STATE_FILE))
     if not os.path.isdir(state_dir):
-        print("")
+        print()
         print("=" * 60)
         print(f"[WARN] State file directory does not exist: {state_dir}")
         print("       State will be lost on restart.")
         print(f"       Check your volume mount for STATE_FILE={STATE_FILE}")
         print("=" * 60)
-        print("")
+        print()
     else:
         test_file = os.path.join(state_dir, ".write_test")
         try:
@@ -558,13 +565,13 @@ def self_check():
                 f.write("ok")
             os.remove(test_file)
         except OSError as e:
-            print("")
+            print()
             print("=" * 60)
             print(f"[WARN] State file directory is not writable: {state_dir}")
             print("       State will be lost on restart.")
             print(f"       Error: {e}")
             print("=" * 60)
-            print("")
+            print()
 
     cs_status = (
         f"enabled name='{CROWDSEC_ALLOWLIST_NAME}' bin='{CROWDSEC_CSCLI_BIN}' prefix='{CROWDSEC_CMD_PREFIX}'"
@@ -596,9 +603,9 @@ def main():
     # Also serves as a startup connectivity/auth check against the Pangolin API.
     try:
         print_org_resources()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         err_str = str(e)
-        print("")
+        print()
         print("=" * 60)
         if "401" in err_str or "403" in err_str:
             print("[WARN] Pangolin API auth failed at startup.")
@@ -612,13 +619,13 @@ def main():
             "       The service will still start, but Pangolin rules will fail until resolved."
         )
         print("=" * 60)
-        print("")
+        print()
 
     # Ensure targets are ready (e.g., create CrowdSec allowlist if enabled)
     for t in TARGETS:
         try:
             t.ensure_ready()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"[targets] ensure_ready failed for {t.__class__.__name__}: {e}")
 
     # Start cleanup thread

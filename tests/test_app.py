@@ -33,8 +33,8 @@ def temp_state_file(tmp_path):
 
 
 def _reload_app_and_dependencies():
-    import sys
     import importlib
+    import sys
 
     if "crowdsec_connector" in sys.modules:
         import crowdsec_connector
@@ -70,7 +70,7 @@ def test_banner_serves_png_and_updates_state(app_module):
 
     test_ip = "1.2.3.4"
 
-    with start_server(app.ImageRequestHandler) as (httpd, port):
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
@@ -154,7 +154,7 @@ def test_gif_serves_gif_and_updates_state(app_module):
 
     test_ip = "6.7.8.9"
 
-    with start_server(app.ImageRequestHandler) as (httpd, port):
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
@@ -173,7 +173,7 @@ def test_gif_serves_gif_and_updates_state(app_module):
 def test_invalid_paths_denied(app_module):
     app = app_module
 
-    with start_server(app.ImageRequestHandler) as (httpd, port):
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
 
         # Test root path
@@ -2798,6 +2798,7 @@ def test_rate_limit_cache_keyed_by_ip_and_user(app_module, monkeypatch):
 
 def test_dashboard_url_derivation(monkeypatch):
     import importlib
+
     import app as _app
 
     # Test 1: Both PANGOLIN_URL and ORG_ID set, no trailing slash/v1
@@ -2831,6 +2832,7 @@ def test_dashboard_url_derivation(monkeypatch):
 
 def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
     import importlib
+
     import app as _app
 
     test_ip = "1.2.3.4"
@@ -2875,7 +2877,7 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
 
     monkeypatch.setattr(app, "TARGETS", [FakeTarget()])
 
-    with start_server(app.ImageRequestHandler) as (httpd, port):
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
@@ -2899,7 +2901,7 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
     monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_filter)
     monkeypatch.setattr(app, "TARGETS", [FakeTarget()])
 
-    with start_server(app.ImageRequestHandler) as (httpd, port):
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
@@ -2924,7 +2926,7 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
     monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_filter)
     monkeypatch.setattr(app, "TARGETS", [FakeTarget()])
 
-    with start_server(app.ImageRequestHandler) as (httpd, port):
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
@@ -2947,7 +2949,7 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
     with app._api_rate_limit_lock:
         app._api_rate_limit.clear()
 
-    with start_server(app.ImageRequestHandler) as (httpd, port):
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
@@ -2989,7 +2991,7 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
     with app._api_rate_limit_lock:
         app._api_rate_limit.clear()
 
-    with start_server(app.ImageRequestHandler) as (httpd, port):
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,

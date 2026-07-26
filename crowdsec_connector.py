@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import os
 import re
@@ -5,7 +6,6 @@ import shlex
 import subprocess
 import threading
 import time
-import ipaddress
 from datetime import datetime, timezone
 
 # Local configuration (read from env, mirrors app.py defaults)
@@ -60,11 +60,12 @@ def _run_docker_cmd(args: list[str]) -> tuple[int, str, str]:
             capture_output=True,
             text=True,
             timeout=10,
+            check=False,
         )
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
     except FileNotFoundError:
         return 127, "", "docker not found"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return 1, "", str(e)
 
 
@@ -82,7 +83,7 @@ def _crowdsec_check_connectivity() -> None:
     if CROWDSEC_CMD_PREFIX:
         try:
             prefix_parts = shlex.split(CROWDSEC_CMD_PREFIX)
-        except Exception:
+        except ValueError:
             prefix_parts = [CROWDSEC_CMD_PREFIX]
 
     is_docker_exec = (
@@ -138,7 +139,7 @@ def _build_cscli_cmd(args: list[str]) -> list[str]:
     if CROWDSEC_CMD_PREFIX:
         try:
             parts.extend(shlex.split(CROWDSEC_CMD_PREFIX))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(
                 f"[crowdsec] WARNING: could not parse CROWDSEC_CMD_PREFIX with shlex ({e}); "
                 "treating as single token"
@@ -157,17 +158,18 @@ def run_cscli(args: list[str]) -> tuple[int, str, str]:
             capture_output=True,
             text=True,
             timeout=15,
+            check=False,
         )
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
     except FileNotFoundError:
         return 127, "", "cscli not found"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return 1, "", str(e)
 
 
 def crowdsec_allowlist_exists(name: str) -> bool:
     # Prefer JSON output if available
-    rc, out, err = run_cscli(["allowlist", "list", "-o", "json"])  # newest cscli
+    rc, out, _err = run_cscli(["allowlist", "list", "-o", "json"])  # newest cscli
     if rc == 0 and out:
         try:
             data = json.loads(out)
@@ -176,7 +178,7 @@ def crowdsec_allowlist_exists(name: str) -> bool:
                 return any(
                     (isinstance(x, dict) and x.get("name") == name) for x in data
                 )
-        except Exception:
+        except (json.JSONDecodeError, TypeError, KeyError, AttributeError):
             pass
     else:
         # try legacy plural command
@@ -188,15 +190,14 @@ def crowdsec_allowlist_exists(name: str) -> bool:
                     return any(
                         (isinstance(x, dict) and x.get("name") == name) for x in data
                     )
-            except Exception:
+            except (json.JSONDecodeError, TypeError, KeyError, AttributeError):
                 pass
     # Fallback: plain text search. Match a whole whitespace-delimited token rather
     # than a substring so a shorter name cannot false-match a longer allowlist name.
     for args in (["allowlist", "list"], ["allowlists", "list"]):
         rc3, out3, _ = run_cscli(args)
-        if rc3 == 0 and out3:
-            if name in out3.split():
-                return True
+        if rc3 == 0 and out3 and name in out3.split():
+            return True
     return False
 
 
@@ -245,7 +246,7 @@ def crowdsec_ensure_allowlist() -> None:
 def _parse_crowdsec_entries_from_json(text: str) -> set[str]:
     try:
         data = json.loads(text)
-    except Exception:
+    except (json.JSONDecodeError, TypeError, ValueError):
         return set()
     ips: set[str] = set()
     # Possible structures: list[str], list[dict], dict with 'entries'/'ips'/'items'
@@ -269,7 +270,7 @@ def _parse_crowdsec_entries_from_json(text: str) -> set[str]:
                     ips.add(str(net))
                 else:
                     ips.add(str(ipaddress.ip_address(tok)))
-            except Exception:
+            except (ValueError, TypeError):
                 continue
         elif isinstance(it, dict):
             for key in ("ip", "value", "cidr", "address"):
@@ -282,7 +283,7 @@ def _parse_crowdsec_entries_from_json(text: str) -> set[str]:
                             ips.add(str(net))
                         else:
                             ips.add(str(ipaddress.ip_address(val)))
-                    except Exception:
+                    except (ValueError, TypeError):
                         pass
     return ips
 
@@ -295,7 +296,7 @@ def _crowdsec_refresh_allowlist_ip_set() -> set[str]:
 
     args = ["allowlist", "inspect", CROWDSEC_ALLOWLIST_NAME, "-o", "json"]
 
-    rc, out, err = run_cscli(args)
+    rc, out, _err = run_cscli(args)
     if rc == 0 and out:
         parsed = _parse_crowdsec_entries_from_json(out)
         if parsed:
@@ -418,7 +419,7 @@ def crowdsec_remove_ip(ip: str) -> None:
     args = ["allowlist", "remove", CROWDSEC_ALLOWLIST_NAME, ip]
     backoff = 1.0
     for attempt in range(3):
-        rc, out, err = run_cscli(args)
+        rc, _out, _err = run_cscli(args)
         if rc == 0:
             print(f"[crowdsec] removed {ip} from allowlist '{CROWDSEC_ALLOWLIST_NAME}'")
             with _cache_lock:

@@ -82,7 +82,7 @@ def _build_checkin_html(
         expires_dt = seen_dt + timedelta(minutes=retention_minutes)
         expires_str = expires_dt.strftime(f"%B {expires_dt.day}, %Y at %H:%M")
         expires_iso = expires_dt.isoformat()
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         expires_str = "unknown"
         expires_iso = "unknown"
 
@@ -473,7 +473,7 @@ def create_image_request_handler(ctx: dict):
 
                 try:
                     normalized_ip = str(ipaddress.ip_address(raw_ip))
-                except Exception:
+                except ValueError:
                     print(f"[error] Invalid IP address: {raw_ip}")
                     self._send_html(
                         400,
@@ -512,7 +512,7 @@ def create_image_request_handler(ctx: dict):
                     update_results = ctx["add_ip_to_targets"](
                         normalized_ip, remote_user=remote_user
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     print(f"[error] add_ip_to_targets failed for {normalized_ip}: {e}")
                     update_results = {
                         "pangolin": {"ok": False, "detail": str(e), "enabled": True},
@@ -629,7 +629,7 @@ def create_image_request_handler(ctx: dict):
             results = {}
             try:
                 results = ctx["add_ip_to_targets"](ip, remote_user=remote_user)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 print(f"[error] add_ip_to_targets failed for {ip}: {e}")
                 results = {
                     "pangolin": {"ok": False, "detail": str(e), "enabled": True},
