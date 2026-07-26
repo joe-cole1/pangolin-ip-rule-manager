@@ -67,7 +67,7 @@ def test_run_cscli_nonzero_return(monkeypatch):
         stderr = "something failed"
 
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: FakeResult())
-    rc, out, err = crowdsec_connector.run_cscli(["allowlist", "list"])
+    rc, _out, err = crowdsec_connector.run_cscli(["allowlist", "list"])
     assert rc == 1
     assert err == "something failed"
 
@@ -107,7 +107,7 @@ def test_run_cscli_generic_exception(monkeypatch):
         raise RuntimeError("unexpected failure")
 
     monkeypatch.setattr(subprocess, "run", raise_generic)
-    rc, out, err = crowdsec_connector.run_cscli(["allowlist", "list"])
+    rc, _out, err = crowdsec_connector.run_cscli(["allowlist", "list"])
     assert rc == 1
     assert "unexpected failure" in err
 
