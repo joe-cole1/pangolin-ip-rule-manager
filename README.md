@@ -93,7 +93,7 @@ On each check-in, the service computes the **intersection** of these two: the re
 
 This means a family member with a limited role only ever bootstraps access to the resources their role allows, even if the service is configured to manage many more. An administrator with broader permissions bootstraps access to more of them.
 
-**Fail-closed by design.** If the service cannot identify the user (the `Remote-User` header is absent) or any required Pangolin API call fails, it whitelists nothing and returns an error. It never falls back to whitelisting everything. This is a deliberate security property: a misconfiguration or API hiccup results in *no access granted*, never *over-broad access granted*.
+**Fail-closed by design.** If the service cannot identify the user (both `Remote-User-Id` and `Remote-User` are absent) or any required Pangolin API call fails, it whitelists nothing and returns an error. It never falls back to whitelisting everything. This is a deliberate security property: a misconfiguration or API hiccup results in *no access granted*, never *over-broad access granted*.
 
 ---
 
@@ -108,7 +108,7 @@ This service uses the [Pangolin Integration API](https://docs.pangolin.net/self-
 ### API Token Permissions
 
 Create a Pangolin API token with the following permissions:
-- **Get Organization User** — look up a user by username to read their roles
+- **Get Organization User** — look up a user by ID (or by username on older Pangolin/Badger versions) to read their roles
 - **List Resources** — discover resources in the organization (used at startup)
 - **Get Resource** — fetch each resource's name and public domain
 - **List Allowed Resource Roles** — read which roles are permitted on each resource
@@ -298,14 +298,14 @@ This service must be exposed through a Pangolin resource so that Pangolin handle
 
 **This is the most important and most easily missed part of the setup.**
 
-The resource fronting this service **must use SSO/platform authentication**, not a resource password or pincode. SSO is what causes Pangolin to forward the `Remote-User` header that identifies the checking-in user.
+The resource fronting this service **must use SSO/platform authentication**, not a resource password or pincode. SSO is what causes Pangolin to forward the `Remote-User-Id` and `Remote-User` headers that identify the checking-in user.
 
 Requiring SSO on the check-in resource is what makes role-based access control possible and what guarantees the service never grants access to an unidentified caller.
 
 ### Resource Setup Steps
 
 1. In Pangolin, create a new resource (e.g., `checkin.yourdomain.com`) pointing to this container on the configured `LISTEN_PORT` (default `8080`)
-2. Configure the resource for **SSO authentication** (see above) so `Remote-User` is forwarded
+2. Configure the resource for **SSO authentication** (see above) so `Remote-User-Id` and `Remote-User` are forwarded
 3. Confirm your API token has all the [required permissions](#api-token-permissions)
 
 ---
@@ -396,9 +396,9 @@ On startup the service:
 
 ### On Each Check-in Request
 
-1. The `Remote-User` header is read. If absent, the service **fails closed**: it whitelists nothing and returns an error result with the reason in the technical details
+1. `Remote-User-Id` is read as the preferred, globally unique identity; `Remote-User` is retained for display and as a backward-compatible fallback. If both are absent, the service **fails closed**: it whitelists nothing and returns an error result with the reason in the technical details
 2. The client IP is extracted in priority order: `X-Real-IP` → first entry of `X-Forwarded-For` → socket address. Header IPs must be globally routable (private, loopback, link-local, and multicast addresses are rejected and the next candidate is tried)
-3. The user's `roleIds` and `userId` are looked up in Pangolin. For each resource in `RESOURCE_IDS`, the service checks whether the user's role is permitted on that resource **or** whether the user is directly assigned to it — mirroring Pangolin's own OR logic. **Any API failure here causes a fail-closed error — nothing is whitelisted**
+3. The user's `roleIds` and `userId` are looked up in Pangolin. When available, the forwarded user ID is used directly, so external SSO users work without configuring or guessing an `idpId`; older Pangolin/Badger versions fall back to username lookup. For each resource in `RESOURCE_IDS`, the service checks whether the user's role is permitted on that resource **or** whether the user is directly assigned to it — mirroring Pangolin's own OR logic. **Any API failure here causes a fail-closed error — nothing is whitelisted**
 4. For each authorized resource, a Pangolin IP rule is created (if one does not already exist), and the resource's name and domain are fetched for the success-page link
 5. If CrowdSec is enabled and the IP is not already in the allowlist cache, it is added via `cscli`
 6. The response depends on the request's `Accept` header:
@@ -423,9 +423,9 @@ State is stored as JSON at `STATE_FILE` (default `/data/state.json`). Mount a na
 
 ## Security Notes
 
-- **Fail-closed identity:** If the `Remote-User` header is absent or any Pangolin API call fails during authorization, the service whitelists nothing. It never falls back to granting broad access.
+- **Fail-closed identity:** If both `Remote-User-Id` and `Remote-User` are absent or any Pangolin API call fails during authorization, the service whitelists nothing. It never falls back to granting broad access.
 - **Role intersection:** A user only ever bootstraps access to resources their Pangolin account permits, regardless of how many resources `RESOURCE_IDS` contains.
-- **Live user validation:** Every check-in performs a real-time lookup of the `Remote-User` value against the Pangolin API. A request with a forged or unknown username is rejected before any rule is created.
+- **Live user validation:** Every check-in performs a real-time lookup of the forwarded Pangolin user identity against the Pangolin API. `Remote-User-Id` is preferred because it is unambiguous across identity providers; username lookup remains as a compatibility fallback. A forged or unknown identity is rejected before any rule is created.
 - **IP validation:** IPs from `X-Real-IP` and `X-Forwarded-For` are validated and must be globally routable. The socket address fallback is not validated, as it is controlled by the OS/kernel rather than the caller.
 - **Header redaction in logs:** `Authorization` and `Proxy-Authorization` headers are redacted in all log output.
 - **Secrets:** All credentials should be stored in a secrets manager (e.g., Bitwarden) and injected at runtime. Never hardcode them in compose files or Dockerfiles.

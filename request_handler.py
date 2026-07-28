@@ -303,7 +303,8 @@ def create_image_request_handler(ctx: dict):
       - state_lock: threading.Lock
       - now_utc_iso: callable () -> str
       - save_state: callable () -> None
-      - add_ip_to_targets: callable (ip: str) -> dict
+      - add_ip_to_targets: callable (ip: str, remote_user: str,
+        remote_user_id: str) -> dict
       - banner_png: bytes
       - banner_gif: bytes
       - redact_headers_for_log: callable (headers: dict[str, str]) -> dict[str, str]
@@ -436,8 +437,12 @@ def create_image_request_handler(ctx: dict):
 
             ip = self._get_real_ip()
             remote_user = self.headers.get("Remote-User", "")
+            remote_user_id = self.headers.get("Remote-User-Id", "")
 
-            print(f"New request from {ip}  user: {remote_user}  path: {path}")
+            print(
+                f"New request from {ip}  user: {remote_user}  "
+                f"user_id: {remote_user_id}  path: {path}"
+            )
 
             if ctx.get("debug_log_headers"):
                 redact = ctx.get("redact_headers_for_log")
@@ -509,8 +514,11 @@ def create_image_request_handler(ctx: dict):
 
                 update_results = {}
                 try:
+                    identity_args = {"remote_user": remote_user}
+                    if remote_user_id:
+                        identity_args["remote_user_id"] = remote_user_id
                     update_results = ctx["add_ip_to_targets"](
-                        normalized_ip, remote_user=remote_user
+                        normalized_ip, **identity_args
                     )
                 except Exception as e:  # noqa: BLE001
                     print(f"[error] add_ip_to_targets failed for {normalized_ip}: {e}")
@@ -628,7 +636,10 @@ def create_image_request_handler(ctx: dict):
             # Run checkin against all targets
             results = {}
             try:
-                results = ctx["add_ip_to_targets"](ip, remote_user=remote_user)
+                identity_args = {"remote_user": remote_user}
+                if remote_user_id:
+                    identity_args["remote_user_id"] = remote_user_id
+                results = ctx["add_ip_to_targets"](ip, **identity_args)
             except Exception as e:  # noqa: BLE001
                 print(f"[error] add_ip_to_targets failed for {ip}: {e}")
                 results = {

@@ -91,6 +91,39 @@ def test_banner_serves_png_and_updates_state(app_module):
         assert "last_seen" in rec
 
 
+def test_banner_forwards_remote_user_id_to_targets(app_module):
+    """The unambiguous Pangolin user ID must reach the authorization layer."""
+    from request_handler import create_image_request_handler
+
+    app = app_module
+    calls = []
+    handler_ctx = app._make_image_handler_context()
+
+    def fake_add_ip_to_targets(ip, remote_user="", remote_user_id=""):
+        calls.append((ip, remote_user, remote_user_id))
+        return {}
+
+    handler_ctx["add_ip_to_targets"] = fake_add_ip_to_targets
+    handler = create_image_request_handler(handler_ctx)
+
+    with start_server(handler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request(
+            "GET",
+            "/checkin.png",
+            headers={
+                "X-Real-IP": "1.2.3.4",
+                "Remote-User": "external-subject",
+                "Remote-User-Id": "pangolin-user-123",
+            },
+        )
+        resp = conn.getresponse()
+        _ = resp.read()
+        assert resp.status == 200
+
+    assert calls == [("1.2.3.4", "external-subject", "pangolin-user-123")]
+
+
 def test_rules_cache_uses_cache(monkeypatch, app_module):
     app = app_module
 
@@ -496,6 +529,66 @@ def test_add_ip_to_targets_intersection_filters_by_role(monkeypatch, app_module)
         assert "6" not in state_resources, (
             "resource 6 should be skipped (role mismatch)"
         )
+
+
+def test_add_ip_to_targets_uses_user_id_for_external_sso_user(monkeypatch, app_module):
+    """Remote-User-Id avoids the IdP-specific username lookup for OIDC users."""
+    app = app_module
+
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+    requested_urls = []
+
+    def fake_http_json(method, url, body=None):
+        requested_urls.append(url)
+        if "user-by-username" in url:
+            raise AssertionError(
+                "username lookup must not run when userId is available"
+            )
+        if url.endswith("/v1/org/test-org/user/pangolin-user-123"):
+            return {
+                "data": {
+                    "userId": "pangolin-user-123",
+                    "username": "external-subject",
+                    "idpId": 2,
+                    "roleIds": [5],
+                },
+                "success": True,
+            }
+        if "/resource/5/roles" in url:
+            return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}}
+        if "/resource/5/users" in url:
+            return {"data": {"users": []}}
+        if url.endswith("/resource/5"):
+            return {
+                "data": {
+                    "resourceId": 5,
+                    "name": "Jellyfin",
+                    "fullDomain": "jellyfin.example.com",
+                    "ssl": True,
+                }
+            }
+        if "/rules" in url:
+            return {"data": {"rules": []}}
+        if method == "PUT":
+            return {"success": True, "data": {"rule": {"ruleId": 99}}}
+        return {}
+
+    monkeypatch.setattr(app, "http_json", fake_http_json)
+
+    results = app.add_ip_to_targets(
+        "1.2.3.4",
+        remote_user="external-subject",
+        remote_user_id="pangolin-user-123",
+    )
+
+    assert results["pangolin"]["ok"] is True
+    assert any(
+        url.endswith("/v1/org/test-org/user/pangolin-user-123")
+        for url in requested_urls
+    )
+    assert not any("user-by-username" in url for url in requested_urls)
 
 
 def _reload_app_with_crowdsec(monkeypatch, temp_state_file):

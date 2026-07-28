@@ -287,9 +287,10 @@ if CROWDSEC_ENABLED:
 # --------------------------
 
 
-def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
+def add_ip_to_targets(ip: str, remote_user: str = "", remote_user_id: str = "") -> dict:
     """Add/allow this IP across configured targets (Pangolin, CrowdSec, etc.).
-    Requires remote_user (value of the Remote-User header forwarded by Pangolin).
+    Uses Remote-User-Id when available and falls back to Remote-User for older
+    Pangolin/Badger versions.
     Fails closed: returns ok=False without touching any target if the user cannot
     be identified or is not authorised for any configured resource.
     Returns a dict of per-target results for display purposes.
@@ -306,32 +307,42 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
             },
         }
 
-    if not remote_user:
+    if not remote_user_id and not remote_user:
         return _fail(
-            "Remote-User header not present — cannot identify user. "
+            "Remote-User-Id and Remote-User headers not present — cannot identify user. "
             "Ensure this resource uses SSO authentication in Pangolin."
         )
 
+    # The Pangolin user ID is globally unique across identity providers. Prefer it
+    # for both lookup and rate-limit isolation when Badger supplies the header.
+    identity = remote_user_id or remote_user
+    display_identity = remote_user or remote_user_id
+
     # Skip API fan-out if this IP was successfully processed recently for this user
-    cache_key = (ip, remote_user)
+    cache_key = (ip, identity)
     if RATE_LIMIT_SECONDS > 0:
         with _api_rate_limit_lock:
             entry = _api_rate_limit.get(cache_key)  # type: ignore[arg-type]
             if entry and (time.monotonic() - entry[0]) < RATE_LIMIT_SECONDS:
                 print(
-                    f"[targets] rate limited {ip} for user {remote_user!r} — returning cached result"
+                    f"[targets] rate limited {ip} for user {display_identity!r} — returning cached result"
                 )
                 return entry[1]
 
     ctx = make_pangolin_context()
     try:
-        effective_resources = pg_filter_resources_for_user(ctx, ORG_ID, remote_user)
+        if remote_user_id:
+            effective_resources = pg_filter_resources_for_user(
+                ctx, ORG_ID, remote_user, remote_user_id
+            )
+        else:
+            effective_resources = pg_filter_resources_for_user(ctx, ORG_ID, remote_user)
     except Exception as e:  # noqa: BLE001
-        return _fail(f"User authorization failed for {remote_user!r}: {e}")
+        return _fail(f"User authorization failed for {display_identity!r}: {e}")
 
     if not effective_resources:
         return _fail(
-            f"User {remote_user!r} is not authorised for any configured resource."
+            f"User {display_identity!r} is not authorised for any configured resource."
         )
 
     effective_ids = [r["resourceId"] for r in effective_resources]
