@@ -438,10 +438,6 @@ def create_image_request_handler(ctx: dict):
             remote_user = self.headers.get("Remote-User", "")
             remote_user_id = self.headers.get("Remote-User-Id", "")
 
-            print(f"TEST remote_user {remote_user}")
-            print(f"TEST remote_user_id {remote_user_id}")
-
-
             print(f"New request from {ip}  user: {remote_user} user_id: {remote_user_id}  path: {path}")
 
             if ctx.get("debug_log_headers"):
@@ -633,7 +629,7 @@ def create_image_request_handler(ctx: dict):
             # Run checkin against all targets
             results = {}
             try:
-                results = ctx["add_ip_to_targets"](ip, remote_user=remote_user)
+                results = ctx["add_ip_to_targets"](ip, remote_user=remote_user, remote_user_id=remote_user_id)
             except Exception as e:  # noqa: BLE001
                 print(f"[error] add_ip_to_targets failed for {ip}: {e}")
                 results = {
