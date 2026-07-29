@@ -6,6 +6,15 @@ import time as _time_mod
 
 import pytest
 
+TEST_PROXY_SECRET = "test-proxy-secret"
+
+
+def proxy_request(conn, method, path, *, headers=None):
+    """Send a request through the test proxy boundary."""
+    request_headers = {"X-Proxy-Secret": TEST_PROXY_SECRET}
+    request_headers.update(headers or {})
+    conn.request(method, path, headers=request_headers)
+
 
 @contextlib.contextmanager
 def start_server(handler_cls):
@@ -32,6 +41,11 @@ def temp_state_file(tmp_path):
     return str(p)
 
 
+@pytest.fixture(autouse=True)
+def required_proxy_secret(monkeypatch):
+    monkeypatch.setenv("PROXY_SHARED_SECRET", TEST_PROXY_SECRET)
+
+
 def _reload_app_and_dependencies():
     import importlib
     import sys
@@ -52,6 +66,7 @@ def app_module(monkeypatch, temp_state_file):
     monkeypatch.setenv("RESOURCE_IDS", "5")
     monkeypatch.setenv("LISTEN_PORT", "0")
     monkeypatch.setenv("STATE_FILE", temp_state_file)
+    monkeypatch.setenv("PROXY_SHARED_SECRET", TEST_PROXY_SECRET)
 
     # Import or reload module to apply env
     app = _reload_app_and_dependencies()
@@ -74,10 +89,11 @@ def test_banner_serves_png_and_updates_state(app_module):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
-            # Remote-User is optional; include to ensure logging path works
+            # This test only covers image/state behavior; authorization fails closed
+            # because the identity pair is intentionally incomplete.
             "Remote-User": "alice",
         }
-        conn.request("GET", "/anything-can-work-123.png", headers=headers)
+        proxy_request(conn, "GET", "/anything-can-work-123.png", headers=headers)
         resp = conn.getresponse()
         data = resp.read()
         assert resp.status == 200
@@ -159,7 +175,7 @@ def test_gif_serves_gif_and_updates_state(app_module):
         headers = {
             "X-Real-IP": test_ip,
         }
-        conn.request("GET", "/beacon.gif", headers=headers)
+        proxy_request(conn, "GET", "/beacon.gif", headers=headers)
         resp = conn.getresponse()
         data = resp.read()
         assert resp.status == 200
@@ -177,14 +193,14 @@ def test_invalid_paths_denied(app_module):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
 
         # Test root path
-        conn.request("GET", "/")
+        proxy_request(conn, "GET", "/")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 403
 
         # Test path without file extension
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", "/some-random-path")
+        proxy_request(conn, "GET", "/some-random-path")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 404
@@ -311,7 +327,7 @@ def test_update_endpoint_enabled_adds_arbitrary_ip(monkeypatch, temp_state_file)
 
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", "/update?ip=1.2.3.4")
+        proxy_request(conn, "GET", "/update?ip=1.2.3.4")
         resp = conn.getresponse()
         data = resp.read()
         assert resp.status == 200
@@ -329,7 +345,7 @@ def test_update_endpoint_disabled_returns_404(monkeypatch, temp_state_file):
 
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", "/update?ip=1.2.3.4")
+        proxy_request(conn, "GET", "/update?ip=1.2.3.4")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 404
@@ -340,7 +356,7 @@ def test_update_endpoint_missing_ip_param_400(monkeypatch, temp_state_file):
 
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", "/update")
+        proxy_request(conn, "GET", "/update")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 400
@@ -351,7 +367,7 @@ def test_update_endpoint_invalid_ip_400(monkeypatch, temp_state_file):
 
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", "/update?ip=999.999.999.999")
+        proxy_request(conn, "GET", "/update?ip=999.999.999.999")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 400
@@ -365,7 +381,7 @@ def test_update_endpoint_ipv6_success(monkeypatch, temp_state_file):
 
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", f"/update?ip={encoded}")
+        proxy_request(conn, "GET", f"/update?ip={encoded}")
         resp = conn.getresponse()
         data = resp.read()
         assert resp.status == 200
@@ -383,7 +399,7 @@ def test_update_endpoint_last_seen_updates(monkeypatch, temp_state_file):
     ip = "5.6.7.8"
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", f"/update?ip={ip}")
+        proxy_request(conn, "GET", f"/update?ip={ip}")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 200
@@ -394,7 +410,7 @@ def test_update_endpoint_last_seen_updates(monkeypatch, temp_state_file):
     _time.sleep(1.1)
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", f"/update?ip={ip}")
+        proxy_request(conn, "GET", f"/update?ip={ip}")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 200
@@ -413,7 +429,7 @@ def test_update_endpoint_returns_html_when_accepted(monkeypatch, temp_state_file
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
-        conn.request("GET", "/update?ip=1.2.3.4", headers=headers)
+        proxy_request(conn, "GET", "/update?ip=1.2.3.4", headers=headers)
         resp = conn.getresponse()
         data = resp.read()
         assert resp.status == 200
@@ -425,9 +441,20 @@ def test_update_endpoint_returns_html_when_accepted(monkeypatch, temp_state_file
 def test_add_ip_to_targets_fails_closed_without_remote_user(app_module):
     """No targets should be touched when Remote-User is absent."""
     app = app_module
-    results = app.add_ip_to_targets("1.2.3.4", remote_user="")
+    results = app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-alice", remote_user=""
+    )
     assert results["pangolin"]["ok"] is False
     assert "Remote-User" in results["pangolin"]["detail"]
+    assert results["crowdsec"]["detail"] == "not reached"
+
+
+def test_add_ip_to_targets_fails_closed_without_remote_user_id(app_module):
+    """No targets should be touched when Remote-User-Id is absent."""
+    app = app_module
+    results = app.add_ip_to_targets("1.2.3.4", remote_user_id="", remote_user="alice")
+    assert results["pangolin"]["ok"] is False
+    assert "Remote-User-Id" in results["pangolin"]["detail"]
     assert results["crowdsec"]["detail"] == "not reached"
 
 
@@ -440,9 +467,13 @@ def test_add_ip_to_targets_intersection_filters_by_role(monkeypatch, app_module)
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "user-by-username" in url:
+        if "/org/test-org/user/user-denise" in url:
             return {
-                "data": {"userId": "user-denise", "roleIds": [5]},
+                "data": {
+                    "userId": "user-denise",
+                    "username": "denise@example.com",
+                    "roleIds": [5],
+                },
                 "success": True,
                 "error": False,
             }
@@ -481,7 +512,11 @@ def test_add_ip_to_targets_intersection_filters_by_role(monkeypatch, app_module)
     with app.state_lock:
         app.state.clear()
 
-    results = app.add_ip_to_targets("1.2.3.4", remote_user="denise@example.com")
+    results = app.add_ip_to_targets(
+        "1.2.3.4",
+        remote_user_id="user-denise",
+        remote_user="denise@example.com",
+    )
 
     assert results["pangolin"]["ok"] is True
     assert "resources" in results, "results should include resource metadata"
@@ -510,9 +545,13 @@ def _reload_app_with_crowdsec(monkeypatch, temp_state_file):
 
 def _standard_fake_http_json(method, url, body=None):
     """Shared fake http_json for resource 5 with roleId 5 — used in CrowdSec tests."""
-    if "user-by-username" in url:
+    if "/org/test-org/user/user-abc" in url:
         return {
-            "data": {"userId": "user-abc", "roleIds": [5]},
+            "data": {
+                "userId": "user-abc",
+                "username": "joe@example.com",
+                "roleIds": [5],
+            },
             "success": True,
             "error": False,
         }
@@ -546,10 +585,14 @@ def test_add_ip_to_targets_fails_closed_empty_intersection(monkeypatch, app_modu
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "user-by-username" in url:
+        if "/org/test-org/user/user-nobody" in url:
             # User has roleId 99 which matches no resource, and is not directly assigned
             return {
-                "data": {"userId": "user-nobody", "roleIds": [99]},
+                "data": {
+                    "userId": "user-nobody",
+                    "username": "nobody@example.com",
+                    "roleIds": [99],
+                },
                 "success": True,
                 "error": False,
             }
@@ -566,7 +609,11 @@ def test_add_ip_to_targets_fails_closed_empty_intersection(monkeypatch, app_modu
 
     monkeypatch.setattr(app, "http_json", fake_http_json)
 
-    results = app.add_ip_to_targets("1.2.3.4", remote_user="nobody@example.com")
+    results = app.add_ip_to_targets(
+        "1.2.3.4",
+        remote_user_id="user-nobody",
+        remote_user="nobody@example.com",
+    )
 
     assert results["pangolin"]["ok"] is False
     assert "not authorised" in results["pangolin"]["detail"]
@@ -574,7 +621,7 @@ def test_add_ip_to_targets_fails_closed_empty_intersection(monkeypatch, app_modu
 
 
 def test_add_ip_to_targets_fails_closed_user_not_found(monkeypatch, app_module):
-    """user-by-username returns no roleIds field (user not in org) — fail-closed."""
+    """Organization user lookup returns no user data — fail-closed."""
     app = app_module
 
     monkeypatch.setattr(app, "ORG_ID", "test-org")
@@ -582,14 +629,18 @@ def test_add_ip_to_targets_fails_closed_user_not_found(monkeypatch, app_module):
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "user-by-username" in url:
+        if "/org/test-org/user/user-ghost" in url:
             # No roleIds in response — user not found
             return {"data": {}, "success": False, "error": True}
         return {}
 
     monkeypatch.setattr(app, "http_json", fake_http_json)
 
-    results = app.add_ip_to_targets("1.2.3.4", remote_user="ghost@example.com")
+    results = app.add_ip_to_targets(
+        "1.2.3.4",
+        remote_user_id="user-ghost",
+        remote_user="ghost@example.com",
+    )
 
     assert results["pangolin"]["ok"] is False
     assert "authorization failed" in results["pangolin"]["detail"].lower()
@@ -607,9 +658,13 @@ def test_add_ip_to_targets_fails_closed_on_roles_api_error(monkeypatch, app_modu
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "user-by-username" in url:
+        if "/org/test-org/user/user-joe" in url:
             return {
-                "data": {"userId": "user-joe", "roleIds": [5]},
+                "data": {
+                    "userId": "user-joe",
+                    "username": "joe@example.com",
+                    "roleIds": [5],
+                },
                 "success": True,
                 "error": False,
             }
@@ -624,7 +679,9 @@ def test_add_ip_to_targets_fails_closed_on_roles_api_error(monkeypatch, app_modu
     with app.state_lock:
         app.state.clear()
 
-    results = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    results = app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-joe", remote_user="joe@example.com"
+    )
 
     assert results["pangolin"]["ok"] is False
     assert "authorization failed" in results["pangolin"]["detail"].lower()
@@ -646,9 +703,13 @@ def test_add_ip_to_targets_fails_closed_on_resource_metadata_error(
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "user-by-username" in url:
+        if "/org/test-org/user/user-joe" in url:
             return {
-                "data": {"userId": "user-joe", "roleIds": [5]},
+                "data": {
+                    "userId": "user-joe",
+                    "username": "joe@example.com",
+                    "roleIds": [5],
+                },
                 "success": True,
                 "error": False,
             }
@@ -668,7 +729,9 @@ def test_add_ip_to_targets_fails_closed_on_resource_metadata_error(
     with app.state_lock:
         app.state.clear()
 
-    results = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    results = app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-joe", remote_user="joe@example.com"
+    )
 
     assert results["pangolin"]["ok"] is False
     assert "authorization failed" in results["pangolin"]["detail"].lower()
@@ -687,9 +750,13 @@ def test_add_ip_to_targets_pangolin_rule_creation_failure(monkeypatch, app_modul
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "user-by-username" in url:
+        if "/org/test-org/user/user-joe" in url:
             return {
-                "data": {"userId": "user-joe", "roleIds": [5]},
+                "data": {
+                    "userId": "user-joe",
+                    "username": "joe@example.com",
+                    "roleIds": [5],
+                },
                 "success": True,
                 "error": False,
             }
@@ -721,7 +788,9 @@ def test_add_ip_to_targets_pangolin_rule_creation_failure(monkeypatch, app_modul
     with app.state_lock:
         app.state.clear()
 
-    results = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    results = app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-joe", remote_user="joe@example.com"
+    )
 
     assert results["pangolin"]["ok"] is False
     assert "500" in results["pangolin"]["detail"]
@@ -742,7 +811,9 @@ def test_add_ip_to_targets_crowdsec_called_when_enabled(monkeypatch, temp_state_
     with app.state_lock:
         app.state.clear()
 
-    results = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    results = app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-abc", remote_user="joe@example.com"
+    )
 
     assert results["pangolin"]["ok"] is True
     assert results["crowdsec"]["ok"] is True
@@ -767,7 +838,9 @@ def test_add_ip_to_targets_crowdsec_failure_isolated(monkeypatch, temp_state_fil
     with app.state_lock:
         app.state.clear()
 
-    results = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    results = app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-abc", remote_user="joe@example.com"
+    )
 
     assert results["pangolin"]["ok"] is True, (
         "Pangolin should succeed regardless of CrowdSec"
@@ -793,10 +866,14 @@ def test_add_ip_to_targets_authorised_via_direct_user_assignment(
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "user-by-username" in url:
+        if "/org/test-org/user/user-direct" in url:
             # User has a role that does NOT match the resource
             return {
-                "data": {"userId": "user-direct", "roleIds": [99]},
+                "data": {
+                    "userId": "user-direct",
+                    "username": "direct@example.com",
+                    "roleIds": [99],
+                },
                 "success": True,
                 "error": False,
             }
@@ -837,7 +914,11 @@ def test_add_ip_to_targets_authorised_via_direct_user_assignment(
     with app.state_lock:
         app.state.clear()
 
-    results = app.add_ip_to_targets("1.2.3.4", remote_user="direct@example.com")
+    results = app.add_ip_to_targets(
+        "1.2.3.4",
+        remote_user_id="user-direct",
+        remote_user="direct@example.com",
+    )
 
     assert results["pangolin"]["ok"] is True, (
         "User directly assigned to resource must be authorised even with no role match"
@@ -858,9 +939,13 @@ def test_add_ip_to_targets_fails_closed_on_users_api_error(monkeypatch, app_modu
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "user-by-username" in url:
+        if "/org/test-org/user/user-joe" in url:
             return {
-                "data": {"userId": "user-joe", "roleIds": [5]},
+                "data": {
+                    "userId": "user-joe",
+                    "username": "joe@example.com",
+                    "roleIds": [5],
+                },
                 "success": True,
                 "error": False,
             }
@@ -880,7 +965,9 @@ def test_add_ip_to_targets_fails_closed_on_users_api_error(monkeypatch, app_modu
     with app.state_lock:
         app.state.clear()
 
-    results = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    results = app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-joe", remote_user="joe@example.com"
+    )
 
     assert results["pangolin"]["ok"] is False
     assert "authorization failed" in results["pangolin"]["detail"].lower()
@@ -907,12 +994,16 @@ def test_rate_limit_skips_api_on_repeat_call(monkeypatch, app_module):
     with app.state_lock:
         app.state.clear()
 
-    first = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    first = app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-abc", remote_user="joe@example.com"
+    )
     assert first["pangolin"]["ok"] is True
     calls_after_first = api_calls["count"]
     assert calls_after_first > 0
 
-    second = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    second = app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-abc", remote_user="joe@example.com"
+    )
     assert second["pangolin"]["ok"] is True
     assert api_calls["count"] == calls_after_first, (
         "API should not be called again within the rate limit window"
@@ -931,13 +1022,15 @@ def test_rate_limit_expires_after_window(monkeypatch, app_module):
     with app.state_lock:
         app.state.clear()
 
-    first = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    first = app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-abc", remote_user="joe@example.com"
+    )
     assert first["pangolin"]["ok"] is True
 
     # Back-date the cache entry so it looks expired
     with app._api_rate_limit_lock:
-        ts, result = app._api_rate_limit[("1.2.3.4", "joe@example.com")]
-        app._api_rate_limit[("1.2.3.4", "joe@example.com")] = (ts - 400, result)
+        ts, result = app._api_rate_limit[("1.2.3.4", "user-abc")]
+        app._api_rate_limit[("1.2.3.4", "user-abc")] = (ts - 400, result)
 
     api_calls = {"count": 0}
 
@@ -947,7 +1040,9 @@ def test_rate_limit_expires_after_window(monkeypatch, app_module):
 
     monkeypatch.setattr(app, "http_json", counting_http_json)
 
-    second = app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    second = app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-abc", remote_user="joe@example.com"
+    )
     assert second["pangolin"]["ok"] is True
     assert api_calls["count"] > 0, "API must be called again after the window expires"
 
@@ -970,11 +1065,15 @@ def test_rate_limit_zero_disables_limiting(monkeypatch, app_module):
     with app.state_lock:
         app.state.clear()
 
-    app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-abc", remote_user="joe@example.com"
+    )
     calls_after_first = api_calls["count"]
     assert calls_after_first > 0
 
-    app.add_ip_to_targets("1.2.3.4", remote_user="joe@example.com")
+    app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-abc", remote_user="joe@example.com"
+    )
     assert api_calls["count"] > calls_after_first, (
         "With RATE_LIMIT_SECONDS=0, both calls must hit the API"
     )
@@ -998,9 +1097,9 @@ def test_app_loads_without_custom_header_env(monkeypatch, temp_state_file):
 
 
 def test_request_without_custom_header_reaches_handler(monkeypatch, temp_state_file):
-    """A request with no passthrough header must no longer be rejected with 403.
-    It should proceed to the handler logic and return 200 (serving the image or error page).
-    Previously the custom header check fired first and returned 403 unconditionally.
+    """The removed legacy custom-header settings are not required.
+
+    The request still includes the mandatory X-Proxy-Secret through proxy_request.
     """
     monkeypatch.setenv("PANGOLIN_TOKEN", "")
     monkeypatch.setenv("RESOURCE_IDS", "5")
@@ -1015,22 +1114,20 @@ def test_request_without_custom_header_reaches_handler(monkeypatch, temp_state_f
 
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        # No custom header sent — previously this would be 403
-        conn.request("GET", "/checkin.png", headers={"X-Real-IP": "1.2.3.4"})
+        # No legacy custom header is sent; proxy_request adds X-Proxy-Secret.
+        proxy_request(conn, "GET", "/checkin.png", headers={"X-Real-IP": "1.2.3.4"})
         resp = conn.getresponse()
         _ = resp.read()
         # Must not be 403 — handler logic should have run
         assert resp.status != 403, (
-            "Request without custom header should no longer be rejected with 403 "
-            "— the passthrough header check has been removed"
+            "The removed legacy passthrough-header settings must not affect requests"
         )
         assert resp.status == 200
 
 
 def test_no_remote_user_fails_closed_no_ip_added(monkeypatch, temp_state_file):
     """Without Remote-User, the identity check fails closed: no IP is added to state,
-    and the response is still 200 (error page rendered). This is now the primary gate,
-    replacing the removed custom header check.
+    and the response is still 200 (error page rendered).
     """
     monkeypatch.setenv("PANGOLIN_TOKEN", "")
     monkeypatch.setenv("RESOURCE_IDS", "5")
@@ -1046,8 +1143,13 @@ def test_no_remote_user_fails_closed_no_ip_added(monkeypatch, temp_state_file):
     test_ip = "9.9.9.9"
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        # No Remote-User header — identity check must fail closed
-        conn.request("GET", "/checkin.png", headers={"X-Real-IP": test_ip})
+        # Remote-User-Id alone is insufficient — identity check must fail closed.
+        proxy_request(
+            conn,
+            "GET",
+            "/checkin.png",
+            headers={"X-Real-IP": test_ip, "Remote-User-Id": "user-1"},
+        )
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 200
@@ -1150,6 +1252,13 @@ def test_redact_headers_proxy_authorization(app_module):
     assert result["Proxy-Authorization"] == "<redacted>"
 
 
+def test_redact_headers_proxy_shared_secret(app_module):
+    """The trusted-ingress secret must never be emitted by debug logging."""
+    app = app_module
+    result = app.redact_headers_for_log({"X-Proxy-Secret": "do-not-log-me"})
+    assert result["X-Proxy-Secret"] == "<redacted>"
+
+
 def test_redact_headers_case_insensitive(app_module):
     """Redaction must match header names case-insensitively."""
     app = app_module
@@ -1158,6 +1267,7 @@ def test_redact_headers_case_insensitive(app_module):
             "authorization": "Bearer lower",
             "AUTHORIZATION": "Bearer upper",
             "Authorization": "Bearer mixed",
+            "x-PrOxY-SeCrEt": "secret",
         }
     )
     for k in result:
@@ -1533,7 +1643,11 @@ def test_cleanup_skips_ip_with_invalid_last_seen_format(monkeypatch, app_module)
 # ---------------------------------------------------------------------------
 
 
-def _make_handler_for_ip_test(headers: dict, socket_ip: str = "10.20.30.40"):
+def _make_handler_for_ip_test(
+    headers: dict,
+    socket_ip: str = "10.20.30.40",
+    proxy_shared_secret: str = "",
+):
     """Return an ImageRequestHandler instance with fake headers and socket address.
     Uses object.__new__ to bypass BaseHTTPRequestHandler.__init__ (which requires
     a live socket).
@@ -1545,11 +1659,12 @@ def _make_handler_for_ip_test(headers: dict, socket_ip: str = "10.20.30.40"):
         "retention_minutes": 1440,
         "crowdsec_enabled": False,
         "site_name": "",
+        "proxy_shared_secret": proxy_shared_secret,
         "state": {},
         "state_lock": threading.Lock(),
         "now_utc_iso": lambda: "2025-01-01T00:00:00+00:00",
         "save_state": lambda: None,
-        "add_ip_to_targets": lambda ip, remote_user="": {},
+        "add_ip_to_targets": (lambda ip, remote_user_id="", remote_user="": {}),
         "banner_png": b"",
         "banner_gif": b"",
         "redact_headers_for_log": lambda h: h,
@@ -1619,6 +1734,22 @@ def test_get_real_ip_ipv6_accepted():
     assert h._get_real_ip() == "2606:4700:4700::1111"
 
 
+def test_identity_header_rejects_duplicate_values():
+    headers = http.client.HTTPMessage()
+    headers.add_header("Remote-User-Id", "victim-id")
+    headers.add_header("Remote-User-Id", "attacker-id")
+    h = _make_handler_for_ip_test(headers)
+    assert h._get_identity_header("Remote-User-Id") == ""
+
+
+@pytest.mark.parametrize("value", ["", " user-1", "user-1 ", "x" * 513])
+def test_identity_header_rejects_invalid_value(value):
+    headers = http.client.HTTPMessage()
+    headers.add_header("Remote-User-Id", value)
+    h = _make_handler_for_ip_test(headers)
+    assert h._get_identity_header("Remote-User-Id") == ""
+
+
 # ---------------------------------------------------------------------------
 # Proxy shared-secret gate (Finding H-3)
 # ---------------------------------------------------------------------------
@@ -1685,18 +1816,33 @@ def test_proxy_secret_correct_header_allowed(monkeypatch, temp_state_file):
         assert resp.status == 200
 
 
-def test_proxy_secret_unset_disables_gate(monkeypatch, temp_state_file):
-    """With no PROXY_SHARED_SECRET configured, requests are not gated (200)."""
+def test_proxy_secret_unset_rejects_request(monkeypatch, temp_state_file):
+    """An invalid empty configuration remains fail-closed at request time."""
     app = _reload_app_with_secret(monkeypatch, temp_state_file, "")
     with app.state_lock:
         app.state.clear()
 
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", "/checkin.png", headers={"X-Real-IP": "1.2.3.4"})
+        conn.request(
+            "GET",
+            "/checkin.png",
+            headers={"X-Real-IP": "1.2.3.4", "X-Proxy-Secret": TEST_PROXY_SECRET},
+        )
         resp = conn.getresponse()
         _ = resp.read()
-        assert resp.status == 200
+        assert resp.status == 403
+
+
+def test_proxy_secret_duplicate_headers_rejected():
+    headers = http.client.HTTPMessage()
+    headers.add_header("X-Proxy-Secret", "s3cret")
+    headers.add_header("X-Proxy-Secret", "s3cret")
+    h = _make_handler_for_ip_test(
+        headers,
+        proxy_shared_secret="s3cret",
+    )
+    assert h._proxy_secret_ok() is False
 
 
 def test_healthz_ok_and_bypasses_secret_gate(monkeypatch, temp_state_file):
@@ -2041,13 +2187,138 @@ def test_cache_expired_triggers_refresh():
 # --- no-token guards ---
 
 
+def test_get_user_info_external_oidc_uses_org_scoped_id_lookup():
+    """Issue #108 OIDC identity resolves without username/idpId lookup."""
+    import pangolin_connector
+
+    calls = []
+    remote_user_id = "uelzf8m52bz4uq3"
+    remote_user = "3ad3020246532f5a7224496b08e385e20ff79a239766cc3ad8aac5a55ff74c3a"
+
+    def fake_http(method, url, body=None):
+        calls.append((method, url))
+        return {
+            "data": {
+                "orgId": "primary",
+                "userId": remote_user_id,
+                "username": remote_user,
+                "type": "oidc",
+                "idpId": 2,
+                "roleIds": [1, 5],
+            },
+            "success": True,
+            "error": False,
+        }
+
+    ctx = _make_pg_ctx(http_json=fake_http)
+    result = pangolin_connector.get_user_info(
+        ctx, "primary", remote_user_id, remote_user
+    )
+
+    assert result == (remote_user_id, [1, 5])
+    assert calls == [
+        (
+            "GET",
+            f"https://pg.test/v1/org/primary/user/{remote_user_id}",
+        )
+    ]
+
+
+def test_get_user_info_internal_user_uses_same_id_lookup():
+    """Internal Pangolin users use the same flow as external OIDC users."""
+    import pangolin_connector
+
+    def fake_http(method, url, body=None):
+        return {
+            "data": {
+                "orgId": "primary",
+                "userId": "internal-123",
+                "username": "alice",
+                "type": "internal",
+                "idpId": None,
+                "roleIds": [7],
+            },
+            "success": True,
+            "error": False,
+        }
+
+    ctx = _make_pg_ctx(http_json=fake_http)
+    assert pangolin_connector.get_user_info(
+        ctx, "primary", "internal-123", "alice"
+    ) == ("internal-123", [7])
+
+
+@pytest.mark.parametrize(
+    ("api_user_id", "api_username", "match"),
+    [
+        ("victim-id", "attacker", "userId"),
+        ("attacker-id", "victim", "username"),
+    ],
+)
+def test_get_user_info_rejects_spoofed_identity_pair(api_user_id, api_username, match):
+    import pangolin_connector
+
+    ctx = _make_pg_ctx(
+        http_json=lambda method, url, body=None: {
+            "data": {
+                "userId": api_user_id,
+                "username": api_username,
+                "roleIds": [1],
+            },
+            "success": True,
+        }
+    )
+    with pytest.raises(RuntimeError, match=match):
+        pangolin_connector.get_user_info(ctx, "primary", "attacker-id", "attacker")
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        None,
+        {},
+        {"userId": "user-1", "username": "alice"},
+        {"userId": "user-1", "username": "alice", "roleIds": "1"},
+        {"userId": "user-1", "username": "alice", "roleIds": [True]},
+    ],
+)
+def test_get_user_info_rejects_malformed_response(data):
+    import pangolin_connector
+
+    ctx = _make_pg_ctx(
+        http_json=lambda method, url, body=None: {
+            "data": data,
+            "success": True,
+        }
+    )
+    with pytest.raises(RuntimeError, match="unexpected response shape"):
+        pangolin_connector.get_user_info(ctx, "primary", "user-1", "alice")
+
+
+def test_get_user_info_rejects_api_failure_even_with_data():
+    import pangolin_connector
+
+    ctx = _make_pg_ctx(
+        http_json=lambda method, url, body=None: {
+            "data": {
+                "userId": "user-1",
+                "username": "alice",
+                "roleIds": [1],
+            },
+            "success": False,
+        }
+    )
+    with pytest.raises(RuntimeError, match="API reported failure"):
+        pangolin_connector.get_user_info(ctx, "primary", "user-1", "alice")
+
+
 def test_get_user_info_no_token_raises():
     """get_user_info raises RuntimeError immediately when token is empty."""
     import pangolin_connector
 
     ctx = _make_pg_ctx(token="")
     with pytest.raises(RuntimeError, match="PANGOLIN_TOKEN"):
-        pangolin_connector.get_user_info(ctx, "org1", "user@test.com")
+        pangolin_connector.get_user_info(ctx, "org1", "user-123", "user@test.com")
 
 
 def test_get_resource_allowed_role_ids_no_token_raises():
@@ -2228,6 +2499,16 @@ def test_self_check_missing_resource_ids_raises(monkeypatch, app_module):
         app.self_check()
 
 
+def test_self_check_missing_proxy_shared_secret_raises(monkeypatch, app_module):
+    """PROXY_SHARED_SECRET is required to enforce the trusted ingress path."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PROXY_SHARED_SECRET", "")
+    with pytest.raises(RuntimeError, match="PROXY_SHARED_SECRET"):
+        app.self_check()
+
+
 def test_self_check_empty_token_warns_not_raises(
     monkeypatch, app_module, capsys, tmp_path
 ):
@@ -2317,7 +2598,7 @@ def test_update_endpoint_non_global_ip_400(monkeypatch, temp_state_file):
     app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=True)
     with start_server(app.ImageRequestHandler) as (_httpd, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", "/update?ip=192.168.1.1")
+        proxy_request(conn, "GET", "/update?ip=192.168.1.1")
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 400
@@ -2747,31 +3028,31 @@ def test_rate_limit_caching_success_only(app_module, monkeypatch):
     # 1) First call fails (Pangolin API error)
     calls = []
 
-    def fake_fail(ctx, org_id, username):
-        calls.append(username)
+    def fake_fail(ctx, org_id, user_id, username):
+        calls.append((user_id, username))
         raise RuntimeError("api down")
 
     monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_fail)
 
-    res1 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
+    res1 = app.add_ip_to_targets("1.1.1.1", remote_user_id="id-1", remote_user="user-1")
     assert res1["pangolin"]["ok"] is False
     assert len(calls) == 1
 
     # 2) Second call should NOT be rate limited and should call filter_resources_for_user again
-    res2 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
+    res2 = app.add_ip_to_targets("1.1.1.1", remote_user_id="id-1", remote_user="user-1")
     assert res2["pangolin"]["ok"] is False
     assert len(calls) == 2
 
 
-def test_rate_limit_cache_keyed_by_ip_and_user(app_module, monkeypatch):
+def test_rate_limit_cache_keyed_by_ip_and_stable_user_id(app_module, monkeypatch):
     app = app_module
     monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 10)
     monkeypatch.setenv("PANGOLIN_TOKEN", "fake")
 
     calls = []
 
-    def fake_success(ctx, org_id, username):
-        calls.append(username)
+    def fake_success(ctx, org_id, user_id, username):
+        calls.append((user_id, username))
         return [{"resourceId": 5, "name": "Res", "fullDomain": "d.com", "ssl": True}]
 
     monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_success)
@@ -2781,17 +3062,23 @@ def test_rate_limit_cache_keyed_by_ip_and_user(app_module, monkeypatch):
         monkeypatch.setattr(t, "add_ip", lambda ip, resource_ids=None: None)
 
     # 1) Check in first user
-    res1 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
+    res1 = app.add_ip_to_targets(
+        "1.1.1.1", remote_user_id="id-1", remote_user="same-username"
+    )
     assert res1["pangolin"]["ok"] is True
     assert len(calls) == 1
 
-    # 2) Check in second user from same IP - should NOT hit cache because of different remote_user
-    res2 = app.add_ip_to_targets("1.1.1.1", remote_user="user-2")
+    # A different stable ID with the same username must not share the cache.
+    res2 = app.add_ip_to_targets(
+        "1.1.1.1", remote_user_id="id-2", remote_user="same-username"
+    )
     assert res2["pangolin"]["ok"] is True
     assert len(calls) == 2
 
     # 3) Check in first user again - should be rate limited and return cached result
-    res3 = app.add_ip_to_targets("1.1.1.1", remote_user="user-1")
+    res3 = app.add_ip_to_targets(
+        "1.1.1.1", remote_user_id="id-1", remote_user="same-username"
+    )
     assert res3["pangolin"]["ok"] is True
     assert len(calls) == 2  # No new call
 
@@ -2851,7 +3138,7 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
 
     state_mock = {"succeed": True}
 
-    def fake_filter(ctx, org_id, username):
+    def fake_filter(ctx, org_id, user_id, username):
         if state_mock["succeed"]:
             return [
                 {
@@ -2881,10 +3168,11 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
+            "Remote-User-Id": "user-alice",
             "Remote-User": "alice",
             "Accept": "text/html",
         }
-        conn.request("GET", "/check.png", headers=headers)
+        proxy_request(conn, "GET", "/check.png", headers=headers)
         resp = conn.getresponse()
         data = resp.read().decode("utf-8")
         assert resp.status == 200
@@ -2905,10 +3193,11 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
+            "Remote-User-Id": "user-alice",
             "Remote-User": "alice",
             "Accept": "text/html",
         }
-        conn.request("GET", "/check.png", headers=headers)
+        proxy_request(conn, "GET", "/check.png", headers=headers)
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 302
@@ -2930,10 +3219,11 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
+            "Remote-User-Id": "user-alice",
             "Remote-User": "alice",
             "Accept": "text/html",
         }
-        conn.request("GET", "/check.png", headers=headers)
+        proxy_request(conn, "GET", "/check.png", headers=headers)
         resp = conn.getresponse()
         data = resp.read().decode("utf-8")
         assert resp.status == 200
@@ -2953,10 +3243,11 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
+            "Remote-User-Id": "user-alice",
             "Remote-User": "alice",
             "Accept": "text/html",
         }
-        conn.request("GET", "/check.png", headers=headers)
+        proxy_request(conn, "GET", "/check.png", headers=headers)
         resp = conn.getresponse()
         data = resp.read().decode("utf-8")
         assert resp.status == 200
@@ -2995,10 +3286,11 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         headers = {
             "X-Real-IP": test_ip,
+            "Remote-User-Id": "user-alice",
             "Remote-User": "alice",
             "Accept": "text/html",
         }
-        conn.request("GET", "/check.png", headers=headers)
+        proxy_request(conn, "GET", "/check.png", headers=headers)
         resp = conn.getcall = (
             conn.getcall
             if hasattr(conn, "getcall")

@@ -49,6 +49,7 @@ All configuration is injected at runtime via environment variables.
 |---|---|
 | `PANGOLIN_URL` | Pangolin Integration API base URL, e.g. `https://api.yourdomain.com` |
 | `RESOURCE_IDS` | Comma-separated resource IDs to protect, e.g. `1,2` |
+| `PROXY_SHARED_SECRET` | High-entropy secret configured in the app and the Pangolin resource's `X-Proxy-Secret` custom request header |
 
 ### Required for core functionality — startup warns and continues without these
 
@@ -170,8 +171,9 @@ These apply to every session. Do not deviate without explicit instruction.
 
 - **Python 3.14, stdlib only.** No new pip runtime dependencies.
 - **Linter:** ruff. Run `ruff check .` before presenting changes.
-- **Fail-closed everywhere.** If `Remote-User` is absent or any Pangolin API
-  call fails, nothing is whitelisted and no resources are written to state.
+- **Fail-closed everywhere.** If the proxy secret is absent or invalid, either
+  identity header is absent or malformed, the header pair does not match Pangolin,
+  or any Pangolin API call fails, nothing is whitelisted and no resources are written to state.
   (`last_seen` is stamped before auth so the request is logged, but `resources`
   remains empty. This is intentional and must be preserved.)
 - **OR logic for access.** A user is authorised for a resource if their role
@@ -250,14 +252,19 @@ OS-controlled, not caller-controlled).
 
 ### Authorization chain (`app.py` → `add_ip_to_targets`)
 
-1. `Remote-User` header must be present (set by Pangolin SSO).
-   Absent → fail-closed. No rules are created; no resources are written to state.
+1. `X-Proxy-Secret` must exactly match required `PROXY_SHARED_SECRET`.
+   Missing or invalid → HTTP 403 before any state write or API call.
+2. Exactly one non-empty `Remote-User-Id` and one non-empty `Remote-User` must be
+   present (set by Badger v1.4.1+ after Pangolin user authentication).
+   Absent, duplicated, or malformed → fail-closed. No rules are created; no resources are written to state.
    (`last_seen` is stamped for logging purposes, but `resources` stays empty.)
-2. `pg_filter_resources_for_user` is called: username → role IDs → for each
-   configured resource, role match OR direct-user assignment is checked.
+3. `pg_filter_resources_for_user` uses the organization-scoped user endpoint:
+   stable user ID → API user record. The API `userId` and `username` must exactly
+   match both headers before current roles are accepted.
+4. For each configured resource, role match OR direct-user assignment is checked.
    Any API error → fail-closed.
-3. Empty effective resource list → fail-closed.
-4. Only resources the user is authorised for receive the rule.
+5. Empty effective resource list → fail-closed.
+6. Only resources the user is authorised for receive the rule.
 
 ### State and cleanup
 

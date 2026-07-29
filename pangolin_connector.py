@@ -227,30 +227,64 @@ def list_org_resources(ctx: PangolinContext, org_id: str) -> None:
 
 
 def get_user_info(
-    ctx: PangolinContext, org_id: str, username: str
+    ctx: PangolinContext, org_id: str, user_id: str, username: str
 ) -> tuple[str, list[int]]:
-    """Return (userId, roleIds) for the given username in the org.
+    """Return (userId, roleIds) for a verified Pangolin identity in the org.
     Raises RuntimeError on any failure (caller is responsible for fail-closed behaviour).
 
-    Replaces the former get_user_role_ids(); userId is now also returned so that direct
-    resource-user assignments can be checked in filter_resources_for_user without an
-    additional API call.
+    The stable Remote-User-Id value is the lookup key. The returned username must
+    exactly match Remote-User so a forged ID cannot be paired with a different
+    authenticated username.
     """
     if not ctx.token:
         raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up user")
-    url = f"{ctx.url}/v1/org/{org_id}/user-by-username?username={quote(username, safe='')}"
+    if not user_id:
+        raise RuntimeError("Remote-User-Id header is empty")
+    if not username:
+        raise RuntimeError("Remote-User header is empty")
+
+    url = f"{ctx.url}/v1/org/{quote(org_id, safe='')}/user/{quote(user_id, safe='')}"
     resp = _retry(
         lambda: ctx.http_json("GET", url),
-        label=f"GET user-by-username username={username}",
+        label=f"GET org user user_id={user_id}",
     )
-    data = resp.get("data", {})
-    role_ids = data.get("roleIds")
-    user_id = data.get("userId")
-    if role_ids is None or user_id is None:
+    if resp.get("success") is not True:
         raise RuntimeError(
-            f"User {username!r} not found in org {org_id!r} (or unexpected response shape)"
+            f"User {user_id!r} not found in org {org_id!r} "
+            "(Pangolin API reported failure)"
         )
-    return user_id, role_ids
+    data = resp.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError(  # noqa: TRY004 - malformed upstream response
+            f"User {user_id!r} not found in org {org_id!r} "
+            "(or unexpected response shape)"
+        )
+
+    role_ids = data.get("roleIds")
+    api_user_id = data.get("userId")
+    api_username = data.get("username")
+    if (
+        not isinstance(api_user_id, str)
+        or not isinstance(api_username, str)
+        or not isinstance(role_ids, list)
+        or any(
+            not isinstance(role_id, int) or isinstance(role_id, bool)
+            for role_id in role_ids
+        )
+    ):
+        raise RuntimeError(
+            f"User {user_id!r} not found in org {org_id!r} "
+            "(or unexpected response shape)"
+        )
+    if api_user_id != user_id:
+        raise RuntimeError(
+            "Pangolin identity mismatch: API userId does not match Remote-User-Id"
+        )
+    if api_username != username:
+        raise RuntimeError(
+            "Pangolin identity mismatch: API username does not match Remote-User"
+        )
+    return api_user_id, role_ids
 
 
 def get_resource_allowed_role_ids(ctx: PangolinContext, rid: int) -> set[int]:
@@ -308,7 +342,7 @@ def get_resource(ctx: PangolinContext, rid: int) -> dict:
 
 
 def filter_resources_for_user(
-    ctx: PangolinContext, org_id: str, username: str
+    ctx: PangolinContext, org_id: str, user_id: str, username: str
 ) -> list[dict]:
     """Return the subset of ctx.resource_ids the user is authorised for, with metadata.
     Each entry is {"resourceId": int, "name": str, "fullDomain": str, "ssl": bool}.
@@ -321,7 +355,7 @@ def filter_resources_for_user(
     Raises on any API error (fail-closed). Returns an empty list if no resource matches
     but no error occurred.
     """
-    user_id, user_role_ids_list = get_user_info(ctx, org_id, username)
+    user_id, user_role_ids_list = get_user_info(ctx, org_id, user_id, username)
     user_role_ids = set(user_role_ids_list)
     effective: list[dict] = []
     for rid in ctx.resource_ids:

@@ -308,7 +308,7 @@ def create_image_request_handler(ctx: dict):
       - banner_gif: bytes
       - redact_headers_for_log: callable (headers: dict[str, str]) -> dict[str, str]
       - site_name: str
-      - proxy_shared_secret: str (optional; when set, X-Proxy-Secret must match)
+      - proxy_shared_secret: str (required; X-Proxy-Secret must match)
     """
 
     class ImageRequestHandler(BaseHTTPRequestHandler):
@@ -357,15 +357,32 @@ def create_image_request_handler(ctx: dict):
             return "text/html" in accept
 
         def _proxy_secret_ok(self) -> bool:
-            """Defense-in-depth gate. When PROXY_SHARED_SECRET is configured, the
-            upstream proxy must inject a matching X-Proxy-Secret header. Compared with
-            hmac.compare_digest to avoid timing leaks. Returns True when no secret is
-            configured (feature disabled) or the provided secret matches."""
+            """Require the Pangolin-injected X-Proxy-Secret value."""
             expected = ctx.get("proxy_shared_secret", "")
             if not expected:
-                return True
-            provided = self.headers.get("X-Proxy-Secret", "")
+                return False
+            values = self.headers.get_all("X-Proxy-Secret", []) or []
+            if len(values) != 1:
+                return False
+            provided = values[0]
             return hmac.compare_digest(provided, expected)
+
+        def _get_identity_header(self, name: str) -> str:
+            """Return one canonical identity header value or an empty string.
+
+            Duplicate, blank, whitespace-padded, and excessively long values are
+            rejected so intermediaries cannot choose a different identity value.
+            """
+            values = self.headers.get_all(name, []) or []
+            if len(values) != 1:
+                if values:
+                    print(f"[error] Rejected duplicate {name} headers")
+                return ""
+            value = values[0]
+            if not value or value != value.strip() or len(value) > 512:
+                print(f"[error] Rejected invalid {name} header")
+                return ""
+            return value
 
         def _send_security_headers(self) -> None:
             self.send_header("X-Content-Type-Options", "nosniff")
@@ -435,9 +452,13 @@ def create_image_request_handler(ctx: dict):
                 return
 
             ip = self._get_real_ip()
-            remote_user = self.headers.get("Remote-User", "")
+            remote_user_id = self._get_identity_header("Remote-User-Id")
+            remote_user = self._get_identity_header("Remote-User")
 
-            print(f"New request from {ip}  user: {remote_user}  path: {path}")
+            print(
+                f"New request from {ip}  user_id: {remote_user_id} "
+                f"user: {remote_user}  path: {path}"
+            )
 
             if ctx.get("debug_log_headers"):
                 redact = ctx.get("redact_headers_for_log")
@@ -510,7 +531,9 @@ def create_image_request_handler(ctx: dict):
                 update_results = {}
                 try:
                     update_results = ctx["add_ip_to_targets"](
-                        normalized_ip, remote_user=remote_user
+                        normalized_ip,
+                        remote_user_id=remote_user_id,
+                        remote_user=remote_user,
                     )
                 except Exception as e:  # noqa: BLE001
                     print(f"[error] add_ip_to_targets failed for {normalized_ip}: {e}")
@@ -628,7 +651,11 @@ def create_image_request_handler(ctx: dict):
             # Run checkin against all targets
             results = {}
             try:
-                results = ctx["add_ip_to_targets"](ip, remote_user=remote_user)
+                results = ctx["add_ip_to_targets"](
+                    ip,
+                    remote_user_id=remote_user_id,
+                    remote_user=remote_user,
+                )
             except Exception as e:  # noqa: BLE001
                 print(f"[error] add_ip_to_targets failed for {ip}: {e}")
                 results = {

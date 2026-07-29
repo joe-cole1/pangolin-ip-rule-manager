@@ -30,7 +30,8 @@ A lightweight Python service that automatically manages Pangolin IP bypass rules
   - [CrowdSec](#crowdsec)
   - [Optional](#optional)
 - [Pangolin Resource Setup](#pangolin-resource-setup)
-  - [SSO Authentication Requirement](#sso-authentication-requirement)
+  - [Pangolin User Authentication Requirement](#pangolin-user-authentication-requirement)
+  - [Set the Pangolin Proxy Secret](#set-the-pangolin-proxy-secret)
   - [Resource Setup Steps](#resource-setup-steps)
 - [CrowdSec Integration](#crowdsec-integration)
 - [Advanced Features](#advanced-features)
@@ -48,7 +49,7 @@ A lightweight Python service that automatically manages Pangolin IP bypass rules
 
 ## Overview
 
-When a service sits behind Pangolin's SSO, every request must be authenticated. That works for browsers, but native TV apps (Roku, Android TV, Fire TV) have no way to complete a browser-based login flow. This service solves that by letting an already-authenticated device register its public IP, which creates a temporary, per-resource bypass rule so other devices sharing that IP can reach the service directly.
+When a service sits behind Pangolin user authentication, every request must be authenticated. That works for browsers, but native TV apps (Roku, Android TV, Fire TV) have no way to complete a browser-based login flow. This service solves that by letting an already-authenticated device register its public IP, which creates a temporary, per-resource bypass rule so other devices sharing that IP can reach the service directly. Both Pangolin-managed users and users from an external OIDC provider such as Authentik are supported.
 
 Crucially, it does this **without weakening your security posture**: it identifies who is checking in, intersects their Pangolin role permissions against the resources you've configured, and only ever whitelists resources that user is actually entitled to. If it cannot positively identify the user, it creates nothing.
 
@@ -60,7 +61,7 @@ Jellyfin's native apps (and many others like it) cannot authenticate through Pan
 
 This service bridges the gap:
 
-1. A **check-in URL** is placed behind Pangolin SSO authentication — your phone can reach it after logging in
+1. A **check-in URL** is placed behind Pangolin user authentication — your phone can reach it after logging in
 2. You visit that URL on your phone and authenticate with Pangolin
 3. The service identifies you, confirms which resources you are permitted in Pangolin, records your public IP, and creates a bypass rule for each permitted resource
 4. Your TV, on the same network and sharing the same public IP, can now reach those services without authenticating
@@ -93,7 +94,7 @@ On each check-in, the service computes the **intersection** of these two: the re
 
 This means a family member with a limited role only ever bootstraps access to the resources their role allows, even if the service is configured to manage many more. An administrator with broader permissions bootstraps access to more of them.
 
-**Fail-closed by design.** If the service cannot identify the user (the `Remote-User` header is absent) or any required Pangolin API call fails, it whitelists nothing and returns an error. It never falls back to whitelisting everything. This is a deliberate security property: a misconfiguration or API hiccup results in *no access granted*, never *over-broad access granted*.
+**Fail-closed by design.** If the Pangolin proxy secret is absent or invalid, either `Remote-User-Id` or `Remote-User` is absent, the two identity values do not match Pangolin's organization user record, or any required Pangolin API call fails, the service whitelists nothing. It never falls back to whitelisting everything. This is a deliberate security property: a misconfiguration or API hiccup results in *no access granted*, never *over-broad access granted*.
 
 ---
 
@@ -108,7 +109,7 @@ This service uses the [Pangolin Integration API](https://docs.pangolin.net/self-
 ### API Token Permissions
 
 Create a Pangolin API token with the following permissions:
-- **Get Organization User** — look up a user by username to read their roles
+- **Get Organization User** — look up the stable `Remote-User-Id` within the organization and read the user's current username and roles
 - **List Resources** — discover resources in the organization (used at startup)
 - **Get Resource** — fetch each resource's name and public domain
 - **List Allowed Resource Roles** — read which roles are permitted on each resource
@@ -143,6 +144,7 @@ services:
       PANGOLIN_TOKEN: ${PANGOLIN_TOKEN}
       ORG_ID: ${ORG_ID}
       RESOURCE_IDS: ${RESOURCE_IDS}
+      PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:?set PROXY_SHARED_SECRET}
 
       # Retention and cleanup
       RETENTION_MINUTES: "43200"       # 30 days
@@ -230,9 +232,9 @@ Set `RESOURCE_IDS` to the correct IDs and restart.
 
 At minimum you need:
 
-- `PANGOLIN_URL`, `PANGOLIN_TOKEN`, `ORG_ID`, `RESOURCE_IDS`
+- `PANGOLIN_URL`, `PANGOLIN_TOKEN`, `ORG_ID`, `RESOURCE_IDS`, `PROXY_SHARED_SECRET`
 
-The app will **refuse to start** if `PANGOLIN_URL` or `RESOURCE_IDS` are missing or empty.
+The app will **refuse to start** if `PANGOLIN_URL`, `RESOURCE_IDS`, or `PROXY_SHARED_SECRET` are missing or empty. The API token and organization ID are also required for successful check-ins.
 
 ---
 
@@ -246,6 +248,7 @@ The app will **refuse to start** if `PANGOLIN_URL` or `RESOURCE_IDS` are missing
 | `PANGOLIN_TOKEN` | — | **Yes** | Bearer token for the Pangolin API. Rules will not be created or deleted without this. |
 | `ORG_ID` | — | **Yes** | Your Pangolin organization ID. Used to list resources at startup and to look up users during check-in. |
 | `RESOURCE_IDS` | — | **Yes** | Comma-separated list of Pangolin resource IDs the service is permitted to manage (e.g., `3,5,12`). This is the administrative safety gate; per-user role permissions further filter it. |
+| `PROXY_SHARED_SECRET` | — | **Yes** | Random secret shared by Pangolin and this app. Add the same value to the app environment and the Pangolin resource's `X-Proxy-Secret` custom request header. |
 
 ### Behaviour
 
@@ -294,19 +297,60 @@ CrowdSec integration is disabled by default. When enabled, the service adds IPs 
 
 This service must be exposed through a Pangolin resource so that Pangolin handles authentication and forwards requests to the container.
 
-### SSO Authentication Requirement
+### Pangolin User Authentication Requirement
 
 **This is the most important and most easily missed part of the setup.**
 
-The resource fronting this service **must use SSO/platform authentication**, not a resource password or pincode. SSO is what causes Pangolin to forward the `Remote-User` header that identifies the checking-in user.
+The resource fronting this service **must use Pangolin user authentication**. The user may have a Pangolin-managed account or may sign in through an external provider such as Authentik. Both types of account follow the same check-in process.
 
-Requiring SSO on the check-in resource is what makes role-based access control possible and what guarantees the service never grants access to an unidentified caller.
+Resource passwords, PINs, share links, and authentication bypasses are not supported because they do not identify a Pangolin user. Badger **v1.4.1 or newer is required** so Pangolin can send the user information the app needs.
+
+The app checks both identity values against Pangolin before granting access. If the ID and username do not belong to the same current Pangolin user, the check-in is rejected.
+
+### Set the Pangolin Proxy Secret
+
+`PROXY_SHARED_SECRET` is required. Pangolin and the app must use the same secret value.
+
+1. Generate a random secret. It should be at least 32 characters long. One way to generate one is:
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+2. Save that value in your secret manager.
+
+3. Set the app's `PROXY_SHARED_SECRET` environment variable to that value. If you use the provided Compose file, add it to your `.env` file:
+
+   ```env
+   PROXY_SHARED_SECRET=your-generated-secret
+   ```
+
+4. In Pangolin, open the resource for this app and find **Additional Proxy Settings**.
+
+5. In **Custom Request Headers**, add this line, replacing the example text with the same secret:
+
+   ```text
+   X-Proxy-Secret: your-generated-secret
+   ```
+
+6. Click **Save Settings**.
+
+![Pangolin Custom Request Headers field showing the X-Proxy-Secret entry](docs/images/pangolin-custom-request-header.png)
+
+The screenshot uses placeholder text. Do not copy that placeholder into your live configuration, and do not publish a screenshot containing your real secret.
+
+Pangolin adds this header before sending the request to the app. The app rejects any check-in that does not contain the matching value. This helps prevent someone from reaching the app directly and supplying fake Pangolin identity headers.
+
+Do not make the app's port directly accessible from the Internet. The app should only be reachable through Pangolin. If you use the provided Compose file, no change is needed; it already keeps the port private.
 
 ### Resource Setup Steps
 
-1. In Pangolin, create a new resource (e.g., `checkin.yourdomain.com`) pointing to this container on the configured `LISTEN_PORT` (default `8080`)
-2. Configure the resource for **SSO authentication** (see above) so `Remote-User` is forwarded
-3. Confirm your API token has all the [required permissions](#api-token-permissions)
+1. In Pangolin, create a resource for the app (for example, `checkin.yourdomain.com`) and set its target to this app on port `8080`
+2. Configure the resource for **Pangolin user authentication**; internal accounts and external OIDC providers are both supported
+3. Confirm Badger is v1.4.1 or newer
+4. Follow [Set the Pangolin Proxy Secret](#set-the-pangolin-proxy-secret)
+5. Make sure the app is reachable only through Pangolin, not directly from the Internet
+6. Confirm your API token has all the [required permissions](#api-token-permissions)
 
 ---
 
@@ -385,7 +429,7 @@ Replace the URL with your actual check-in domain. The path can be anything as lo
 
 On startup the service:
 
-1. Validates that `PANGOLIN_URL` and `RESOURCE_IDS` are set — exits with an error if not
+1. Validates that `PANGOLIN_URL`, `RESOURCE_IDS`, and `PROXY_SHARED_SECRET` are set — exits with an error if not
 2. Warns (but does not exit) if `PANGOLIN_TOKEN` is empty or `ORG_ID` is unset
 3. Checks that the state file directory exists and is writable
 4. Loads existing state from the state file
@@ -396,12 +440,14 @@ On startup the service:
 
 ### On Each Check-in Request
 
-1. The `Remote-User` header is read. If absent, the service **fails closed**: it whitelists nothing and returns an error result with the reason in the technical details
-2. The client IP is extracted in priority order: `X-Real-IP` → first entry of `X-Forwarded-For` → socket address. Header IPs must be globally routable (private, loopback, link-local, and multicast addresses are rejected and the next candidate is tried)
-3. The user's `roleIds` and `userId` are looked up in Pangolin. For each resource in `RESOURCE_IDS`, the service checks whether the user's role is permitted on that resource **or** whether the user is directly assigned to it — mirroring Pangolin's own OR logic. **Any API failure here causes a fail-closed error — nothing is whitelisted**
-4. For each authorized resource, a Pangolin IP rule is created (if one does not already exist), and the resource's name and domain are fetched for the success-page link
-5. If CrowdSec is enabled and the IP is not already in the allowlist cache, it is added via `cscli`
-6. The response depends on the request's `Accept` header:
+1. `X-Proxy-Secret` must exactly match `PROXY_SHARED_SECRET`. A missing or incorrect value receives HTTP 403 before any state write or Pangolin API call
+2. Exactly one non-empty `Remote-User-Id` and one non-empty `Remote-User` header must be present. Duplicate, malformed, or missing identity headers fail closed
+3. The client IP is extracted in priority order: `X-Real-IP` → first entry of `X-Forwarded-For` → socket address. Header IPs must be globally routable (private, loopback, link-local, and multicast addresses are rejected and the next candidate is tried)
+4. The service looks up `Remote-User-Id` using Pangolin's organization-scoped user endpoint and requires the returned `userId` and `username` to exactly match both headers. It then reads the current `roleIds`
+5. For each resource in `RESOURCE_IDS`, the service checks whether the user's role is permitted on that resource **or** whether the user is directly assigned to it — mirroring Pangolin's own OR logic. **Any API failure here causes a fail-closed error — nothing is whitelisted**
+6. For each authorized resource, a Pangolin IP rule is created (if one does not already exist), and the resource's name and domain are fetched for the success-page link
+7. If CrowdSec is enabled and the IP is not already in the allowlist cache, it is added via `cscli`
+8. The response depends on the request's `Accept` header:
    - `Accept: text/html` → styled status page showing per-target results, the IP, the expiry time, and an **"Open &lt;Name&gt;"** link for each whitelisted resource
    - All other requests → 1×1 transparent image (PNG or GIF depending on the path extension)
 
@@ -423,11 +469,13 @@ State is stored as JSON at `STATE_FILE` (default `/data/state.json`). Mount a na
 
 ## Security Notes
 
-- **Fail-closed identity:** If the `Remote-User` header is absent or any Pangolin API call fails during authorization, the service whitelists nothing. It never falls back to granting broad access.
+- **Required Pangolin proxy secret:** Every check-in must carry the `X-Proxy-Secret` value configured on the Pangolin resource. The app port must remain private so callers cannot bypass Pangolin.
+- **Authenticated identity headers:** Badger v1.4.1 or newer must strip client-supplied `Remote-*` headers and forward both `Remote-User-Id` and `Remote-User` only after Pangolin user authentication.
+- **Fail-closed identity:** If either identity header is missing, duplicated, or malformed, or any Pangolin API call fails during authorization, the service whitelists nothing. It never falls back to granting broad access.
 - **Role intersection:** A user only ever bootstraps access to resources their Pangolin account permits, regardless of how many resources `RESOURCE_IDS` contains.
-- **Live user validation:** Every check-in performs a real-time lookup of the `Remote-User` value against the Pangolin API. A request with a forged or unknown username is rejected before any rule is created.
+- **Live identity validation:** Every check-in performs a real-time organization-scoped lookup by stable user ID. The returned `userId` and `username` must exactly match both trusted identity headers, and current role assignments drive authorization.
 - **IP validation:** IPs from `X-Real-IP` and `X-Forwarded-For` are validated and must be globally routable. The socket address fallback is not validated, as it is controlled by the OS/kernel rather than the caller.
-- **Header redaction in logs:** `Authorization` and `Proxy-Authorization` headers are redacted in all log output.
+- **Header redaction in logs:** `Authorization`, `Proxy-Authorization`, and `X-Proxy-Secret` headers are redacted in all log output.
 - **Secrets:** All credentials should be stored in a secrets manager (e.g., Bitwarden) and injected at runtime. Never hardcode them in compose files or Dockerfiles.
 - **Scope of deletions:** The service only deletes Pangolin rules it created itself. It will never touch rules that existed before it ran.
 - **Docker socket:** Only required for CrowdSec integration (`docker exec crowdsec cscli ...`). Prefer the isolated socket proxy in `docker-compose.yml`; mounting the raw socket read-only does not restrict Docker API operations.

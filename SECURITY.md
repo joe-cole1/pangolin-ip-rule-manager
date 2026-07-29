@@ -5,6 +5,10 @@
 Only the latest released version on `master` is supported. Please upgrade to the
 most recent release before reporting an issue.
 
+Deployments must use Badger v1.4.1 or newer. The application requires a private
+backend port, an `X-Proxy-Secret` configured in Pangolin, and both Pangolin
+identity headers (`Remote-User-Id` and `Remote-User`).
+
 ## Reporting a vulnerability
 
 Please report security vulnerabilities **privately** — do not open a public issue
@@ -30,7 +34,8 @@ fix to be validated before any public disclosure.
 This service gates network access to protected resources. Findings in the
 following areas are especially valued:
 
-- The request authorization chain (`Remote-User` handling, resource filtering).
+- The request authorization chain (Pangolin proxy boundary, both Pangolin identity
+  headers, organization-scoped user validation, and resource filtering).
 - IP extraction from forwarded headers.
 - The `/update` endpoint and any HTML rendered from user-controlled input.
 - Container/deployment configuration (Docker socket exposure, secrets handling).
