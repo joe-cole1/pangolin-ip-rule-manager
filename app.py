@@ -323,8 +323,6 @@ def add_ip_to_targets(ip: str, remote_user: str = "", remote_user_id: str = "") 
                 )
                 return entry[1]
 
-    print(f"username_id(3): {remote_user_id}")
-
     ctx = make_pangolin_context()
     try:
         effective_resources = pg_filter_resources_for_user(ctx, ORG_ID, remote_user, remote_user_id)
