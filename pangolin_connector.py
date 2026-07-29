@@ -251,6 +251,8 @@ def get_user_info(
     )
     data = resp.get("data", {})
 
+    print(data)
+
     user_type = data.get("type")
 
     if user_type is None:
