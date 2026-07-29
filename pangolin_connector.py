@@ -239,7 +239,10 @@ def get_user_info(
     if not ctx.token:
         raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up user")
 
-    print(username_id)
+    if user_type is None:
+        raise RuntimeError(
+            f"username_id is empty"
+        )
     
     url = f"{ctx.url}/v1/user/{quote(username_id, safe='')}"
     resp = _retry(
