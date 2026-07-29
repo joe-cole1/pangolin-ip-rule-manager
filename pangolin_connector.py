@@ -244,7 +244,7 @@ def get_user_info(
             f"username_id is empty"
         )
     else:
-        print(f"username_id: {username_id}")
+        print(f"username_id(1): {username_id}")
     
     url = f"{ctx.url}/v1/user/{quote(username_id, safe='')}"
     resp = _retry(
@@ -357,6 +357,8 @@ def filter_resources_for_user(
     Raises on any API error (fail-closed). Returns an empty list if no resource matches
     but no error occurred.
     """
+    print(f"username_id(2): {username_id}")
+
     user_id, user_role_ids_list = get_user_info(ctx, org_id, username, username_id)
     user_role_ids = set(user_role_ids_list)
     effective: list[dict] = []
