@@ -6,10 +6,32 @@
 
 A lightweight Python service that automatically manages Pangolin IP bypass rules and (optionally) CrowdSec allowlist entries based on observed client IPs. It bootstraps trust from an authenticated device (like a phone) to a device that cannot authenticate (like a TV), while honoring each user's role-based permissions in Pangolin.
 
+## 🚨 BREAKING CHANGE: Upgrade Requirements
+
+Before upgrading to this version, make these changes:
+
+1. **Upgrade Badger to v1.4.1 or newer.** Older versions do not send the
+   `Remote-User-Id` value required to verify the user.
+2. **Add the `List Users` permission to the Pangolin API key used by this app.**
+   In Pangolin, open **Organization → API Keys**, select the key, open
+   **Permissions**, enable **List Users** under **Organization**, and click
+   **Save**. This changes the key's permissions but does not change the token
+   value, so you do not need to replace `PANGOLIN_TOKEN`.
+3. **Configure the required proxy secret.** Set `PROXY_SHARED_SECRET` in the
+   app and configure Pangolin to add the same value as the `X-Proxy-Secret`
+   custom request header. Follow [Set the Pangolin Proxy Secret](#set-the-pangolin-proxy-secret).
+4. **Pull the new image and force-recreate the container.** A normal restart
+   does not replace a container that was created from an older image.
+
+Do not enable **Allow All** and do not use a root API key. Keep the API key
+limited to the permissions listed below. The old **Get Organization User**
+permission is not used by this version and may be removed after the upgrade.
+
 ---
 
 ## Table of Contents
 
+- [🚨 Breaking Change: Upgrade Requirements](#-breaking-change-upgrade-requirements)
 - [Overview](#overview)
 - [The Problem It Solves](#the-problem-it-solves)
 - [How It Works](#how-it-works)
@@ -102,14 +124,14 @@ This means a family member with a limited role only ever bootstraps access to th
 
 ### Pangolin Integration API
 
-This service uses the [Pangolin Integration API](https://docs.pangolin.net/self-host/advanced/integration-api). You must enable it and generate a token in your Pangolin instance before proceeding.
+This service uses the [Pangolin Integration API](https://docs.pangolin.net/manage/integration-api). You must enable it and generate a token in your Pangolin instance before proceeding.
 
 `PANGOLIN_URL` is the dedicated **Integration API endpoint** you configure when enabling the API (e.g., `https://api.yourdomain.com`) — not your general Pangolin instance URL. All API calls are made to `/v1/` paths under this URL.
 
 ### API Token Permissions
 
 Create a Pangolin API token with the following permissions:
-- **Get Organization User** — look up the stable `Remote-User-Id` within the organization and read the user's current username and roles
+- **List Users** — find the current organization user, verify both identity headers, and read the user's current roles
 - **List Resources** — discover resources in the organization (used at startup)
 - **Get Resource** — fetch each resource's name and public domain
 - **List Allowed Resource Roles** — read which roles are permitted on each resource
@@ -443,7 +465,7 @@ On startup the service:
 1. `X-Proxy-Secret` must exactly match `PROXY_SHARED_SECRET`. A missing or incorrect value receives HTTP 403 before any state write or Pangolin API call
 2. Exactly one non-empty `Remote-User-Id` and one non-empty `Remote-User` header must be present. Duplicate, malformed, or missing identity headers fail closed
 3. The client IP is extracted in priority order: `X-Real-IP` → first entry of `X-Forwarded-For` → socket address. Header IPs must be globally routable (private, loopback, link-local, and multicast addresses are rejected and the next candidate is tried)
-4. The service looks up `Remote-User-Id` using Pangolin's organization-scoped user endpoint and requires the returned `userId` and `username` to exactly match both headers. It then reads the current `roleIds`
+4. The service searches Pangolin's organization user list for `Remote-User`, then requires the returned permanent user ID and username to exactly match `Remote-User-Id` and `Remote-User`. It reads the user's current roles only after both values match
 5. For each resource in `RESOURCE_IDS`, the service checks whether the user's role is permitted on that resource **or** whether the user is directly assigned to it — mirroring Pangolin's own OR logic. **Any API failure here causes a fail-closed error — nothing is whitelisted**
 6. For each authorized resource, a Pangolin IP rule is created (if one does not already exist), and the resource's name and domain are fetched for the success-page link
 7. If CrowdSec is enabled and the IP is not already in the allowlist cache, it is added via `cscli`
@@ -473,7 +495,7 @@ State is stored as JSON at `STATE_FILE` (default `/data/state.json`). Mount a na
 - **Authenticated identity headers:** Badger v1.4.1 or newer must strip client-supplied `Remote-*` headers and forward both `Remote-User-Id` and `Remote-User` only after Pangolin user authentication.
 - **Fail-closed identity:** If either identity header is missing, duplicated, or malformed, or any Pangolin API call fails during authorization, the service whitelists nothing. It never falls back to granting broad access.
 - **Role intersection:** A user only ever bootstraps access to resources their Pangolin account permits, regardless of how many resources `RESOURCE_IDS` contains.
-- **Live identity validation:** Every check-in performs a real-time organization-scoped lookup by stable user ID. The returned `userId` and `username` must exactly match both trusted identity headers, and current role assignments drive authorization.
+- **Live identity validation:** Every check-in searches the current Pangolin organization user list. The returned permanent user ID and username must exactly match both trusted identity headers before current role assignments are accepted.
 - **IP validation:** IPs from `X-Real-IP` and `X-Forwarded-For` are validated and must be globally routable. The socket address fallback is not validated, as it is controlled by the OS/kernel rather than the caller.
 - **Header redaction in logs:** `Authorization`, `Proxy-Authorization`, and `X-Proxy-Secret` headers are redacted in all log output.
 - **Secrets:** All credentials should be stored in a secrets manager (e.g., Bitwarden) and injected at runtime. Never hardcode them in compose files or Dockerfiles.

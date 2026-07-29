@@ -258,9 +258,11 @@ OS-controlled, not caller-controlled).
    present (set by Badger v1.4.1+ after Pangolin user authentication).
    Absent, duplicated, or malformed → fail-closed. No rules are created; no resources are written to state.
    (`last_seen` is stamped for logging purposes, but `resources` stays empty.)
-3. `pg_filter_resources_for_user` uses the organization-scoped user endpoint:
-   stable user ID → API user record. The API `userId` and `username` must exactly
-   match both headers before current roles are accepted.
+3. `pg_filter_resources_for_user` searches the organization `List Users`
+   endpoint using `Remote-User`. The result's permanent `id` and `username`
+   must exactly match `Remote-User-Id` and `Remote-User` before current roles
+   are accepted. The API key therefore requires `List Users`; the broken
+   `Get Organization User` integration route is not used.
 4. For each configured resource, role match OR direct-user assignment is checked.
    Any API error → fail-closed.
 5. Empty effective resource list → fail-closed.

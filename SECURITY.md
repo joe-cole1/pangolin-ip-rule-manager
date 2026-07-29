@@ -7,7 +7,9 @@ most recent release before reporting an issue.
 
 Deployments must use Badger v1.4.1 or newer. The application requires a private
 backend port, an `X-Proxy-Secret` configured in Pangolin, and both Pangolin
-identity headers (`Remote-User-Id` and `Remote-User`).
+identity headers (`Remote-User-Id` and `Remote-User`). The organization API key
+must have the `List Users` permission so the application can verify that both
+headers identify the same current organization user.
 
 ## Reporting a vulnerability
 

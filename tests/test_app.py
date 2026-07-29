@@ -9,6 +9,30 @@ import pytest
 TEST_PROXY_SECRET = "test-proxy-secret"
 
 
+def org_users_response(*users, total=None, page=1, page_size=100, success=True):
+    """Build the current Pangolin List Users response shape."""
+    return {
+        "data": {
+            "users": list(users),
+            "pagination": {
+                "total": len(users) if total is None else total,
+                "page": page,
+                "pageSize": page_size,
+            },
+        },
+        "success": success,
+        "error": not success,
+    }
+
+
+def org_user(user_id, username, role_ids):
+    return {
+        "id": user_id,
+        "username": username,
+        "roles": [{"roleId": role_id, "roleName": ""} for role_id in role_ids],
+    }
+
+
 def proxy_request(conn, method, path, *, headers=None):
     """Send a request through the test proxy boundary."""
     request_headers = {"X-Proxy-Secret": TEST_PROXY_SECRET}
@@ -467,16 +491,10 @@ def test_add_ip_to_targets_intersection_filters_by_role(monkeypatch, app_module)
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "/org/test-org/user/user-denise" in url:
-            return {
-                "data": {
-                    "userId": "user-denise",
-                    "username": "denise@example.com",
-                    "roleIds": [5],
-                },
-                "success": True,
-                "error": False,
-            }
+        if "/org/test-org/users?query=denise%40example.com" in url:
+            return org_users_response(
+                org_user("user-denise", "denise@example.com", [5])
+            )
         if "/resource/5/roles" in url:
             return {
                 "data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]},
@@ -545,16 +563,8 @@ def _reload_app_with_crowdsec(monkeypatch, temp_state_file):
 
 def _standard_fake_http_json(method, url, body=None):
     """Shared fake http_json for resource 5 with roleId 5 — used in CrowdSec tests."""
-    if "/org/test-org/user/user-abc" in url:
-        return {
-            "data": {
-                "userId": "user-abc",
-                "username": "joe@example.com",
-                "roleIds": [5],
-            },
-            "success": True,
-            "error": False,
-        }
+    if "/org/test-org/users?query=joe%40example.com" in url:
+        return org_users_response(org_user("user-abc", "joe@example.com", [5]))
     if "/resource/5/roles" in url:
         return {"data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]}, "success": True}
     if "/resource/5/users" in url:
@@ -585,17 +595,11 @@ def test_add_ip_to_targets_fails_closed_empty_intersection(monkeypatch, app_modu
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "/org/test-org/user/user-nobody" in url:
+        if "/org/test-org/users?query=nobody%40example.com" in url:
             # User has roleId 99 which matches no resource, and is not directly assigned
-            return {
-                "data": {
-                    "userId": "user-nobody",
-                    "username": "nobody@example.com",
-                    "roleIds": [99],
-                },
-                "success": True,
-                "error": False,
-            }
+            return org_users_response(
+                org_user("user-nobody", "nobody@example.com", [99])
+            )
         if "/resource/5/roles" in url:
             # Resource 5 only allows roleId 5
             return {
@@ -629,9 +633,8 @@ def test_add_ip_to_targets_fails_closed_user_not_found(monkeypatch, app_module):
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "/org/test-org/user/user-ghost" in url:
-            # No roleIds in response — user not found
-            return {"data": {}, "success": False, "error": True}
+        if "/org/test-org/users?query=ghost%40example.com" in url:
+            return org_users_response()
         return {}
 
     monkeypatch.setattr(app, "http_json", fake_http_json)
@@ -658,16 +661,8 @@ def test_add_ip_to_targets_fails_closed_on_roles_api_error(monkeypatch, app_modu
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "/org/test-org/user/user-joe" in url:
-            return {
-                "data": {
-                    "userId": "user-joe",
-                    "username": "joe@example.com",
-                    "roleIds": [5],
-                },
-                "success": True,
-                "error": False,
-            }
+        if "/org/test-org/users?query=joe%40example.com" in url:
+            return org_users_response(org_user("user-joe", "joe@example.com", [5]))
         if "/resource/5/roles" in url:
             raise RuntimeError(
                 "HTTP 403 Forbidden: key lacks List Allowed Resource Roles permission"
@@ -703,16 +698,8 @@ def test_add_ip_to_targets_fails_closed_on_resource_metadata_error(
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "/org/test-org/user/user-joe" in url:
-            return {
-                "data": {
-                    "userId": "user-joe",
-                    "username": "joe@example.com",
-                    "roleIds": [5],
-                },
-                "success": True,
-                "error": False,
-            }
+        if "/org/test-org/users?query=joe%40example.com" in url:
+            return org_users_response(org_user("user-joe", "joe@example.com", [5]))
         if "/resource/5/roles" in url:
             return {
                 "data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]},
@@ -750,16 +737,8 @@ def test_add_ip_to_targets_pangolin_rule_creation_failure(monkeypatch, app_modul
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "/org/test-org/user/user-joe" in url:
-            return {
-                "data": {
-                    "userId": "user-joe",
-                    "username": "joe@example.com",
-                    "roleIds": [5],
-                },
-                "success": True,
-                "error": False,
-            }
+        if "/org/test-org/users?query=joe%40example.com" in url:
+            return org_users_response(org_user("user-joe", "joe@example.com", [5]))
         if "/resource/5/roles" in url:
             return {
                 "data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]},
@@ -866,17 +845,11 @@ def test_add_ip_to_targets_authorised_via_direct_user_assignment(
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "/org/test-org/user/user-direct" in url:
+        if "/org/test-org/users?query=direct%40example.com" in url:
             # User has a role that does NOT match the resource
-            return {
-                "data": {
-                    "userId": "user-direct",
-                    "username": "direct@example.com",
-                    "roleIds": [99],
-                },
-                "success": True,
-                "error": False,
-            }
+            return org_users_response(
+                org_user("user-direct", "direct@example.com", [99])
+            )
         if "/resource/5/roles" in url:
             # Resource only allows roleId 5 — no role match
             return {
@@ -939,16 +912,8 @@ def test_add_ip_to_targets_fails_closed_on_users_api_error(monkeypatch, app_modu
     monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
 
     def fake_http_json(method, url, body=None):
-        if "/org/test-org/user/user-joe" in url:
-            return {
-                "data": {
-                    "userId": "user-joe",
-                    "username": "joe@example.com",
-                    "roleIds": [5],
-                },
-                "success": True,
-                "error": False,
-            }
+        if "/org/test-org/users?query=joe%40example.com" in url:
+            return org_users_response(org_user("user-joe", "joe@example.com", [5]))
         if "/resource/5/roles" in url:
             return {
                 "data": {"roles": [{"roleId": 5, "name": "Jellyfin"}]},
@@ -2187,8 +2152,8 @@ def test_cache_expired_triggers_refresh():
 # --- no-token guards ---
 
 
-def test_get_user_info_external_oidc_uses_org_scoped_id_lookup():
-    """Issue #108 OIDC identity resolves without username/idpId lookup."""
+def test_get_user_info_external_oidc_uses_org_user_search():
+    """Issue #108 OIDC identity resolves through the current List Users route."""
     import pangolin_connector
 
     calls = []
@@ -2197,18 +2162,9 @@ def test_get_user_info_external_oidc_uses_org_scoped_id_lookup():
 
     def fake_http(method, url, body=None):
         calls.append((method, url))
-        return {
-            "data": {
-                "orgId": "primary",
-                "userId": remote_user_id,
-                "username": remote_user,
-                "type": "oidc",
-                "idpId": 2,
-                "roleIds": [1, 5],
-            },
-            "success": True,
-            "error": False,
-        }
+        user = org_user(remote_user_id, remote_user, [1, 5])
+        user.update({"orgId": "primary", "type": "oidc", "idpId": 2})
+        return org_users_response(user)
 
     ctx = _make_pg_ctx(http_json=fake_http)
     result = pangolin_connector.get_user_info(
@@ -2219,28 +2175,22 @@ def test_get_user_info_external_oidc_uses_org_scoped_id_lookup():
     assert calls == [
         (
             "GET",
-            f"https://pg.test/v1/org/primary/user/{remote_user_id}",
+            (
+                f"https://pg.test/v1/org/primary/users?query={remote_user}"
+                "&pageSize=100&page=1"
+            ),
         )
     ]
 
 
-def test_get_user_info_internal_user_uses_same_id_lookup():
+def test_get_user_info_internal_user_uses_same_search_and_exact_match():
     """Internal Pangolin users use the same flow as external OIDC users."""
     import pangolin_connector
 
     def fake_http(method, url, body=None):
-        return {
-            "data": {
-                "orgId": "primary",
-                "userId": "internal-123",
-                "username": "alice",
-                "type": "internal",
-                "idpId": None,
-                "roleIds": [7],
-            },
-            "success": True,
-            "error": False,
-        }
+        user = org_user("internal-123", "alice", [7])
+        user.update({"orgId": "primary", "type": "internal", "idpId": None})
+        return org_users_response(user)
 
     ctx = _make_pg_ctx(http_json=fake_http)
     assert pangolin_connector.get_user_info(
@@ -2251,22 +2201,17 @@ def test_get_user_info_internal_user_uses_same_id_lookup():
 @pytest.mark.parametrize(
     ("api_user_id", "api_username", "match"),
     [
-        ("victim-id", "attacker", "userId"),
-        ("attacker-id", "victim", "username"),
+        ("victim-id", "attacker", "Remote-User-Id"),
+        ("attacker-id", "victim", "Remote-User"),
     ],
 )
 def test_get_user_info_rejects_spoofed_identity_pair(api_user_id, api_username, match):
     import pangolin_connector
 
     ctx = _make_pg_ctx(
-        http_json=lambda method, url, body=None: {
-            "data": {
-                "userId": api_user_id,
-                "username": api_username,
-                "roleIds": [1],
-            },
-            "success": True,
-        }
+        http_json=lambda method, url, body=None: org_users_response(
+            org_user(api_user_id, api_username, [1])
+        )
     )
     with pytest.raises(RuntimeError, match=match):
         pangolin_connector.get_user_info(ctx, "primary", "attacker-id", "attacker")
@@ -2277,9 +2222,25 @@ def test_get_user_info_rejects_spoofed_identity_pair(api_user_id, api_username, 
     [
         None,
         {},
-        {"userId": "user-1", "username": "alice"},
-        {"userId": "user-1", "username": "alice", "roleIds": "1"},
-        {"userId": "user-1", "username": "alice", "roleIds": [True]},
+        {"users": []},
+        {
+            "users": [{"id": "user-1", "username": "alice"}],
+            "pagination": {"total": 1, "page": 1, "pageSize": 100},
+        },
+        {
+            "users": [{"id": "user-1", "username": "alice", "roles": "not-a-list"}],
+            "pagination": {"total": 1, "page": 1, "pageSize": 100},
+        },
+        {
+            "users": [
+                {
+                    "id": "user-1",
+                    "username": "alice",
+                    "roles": [{"roleId": True}],
+                }
+            ],
+            "pagination": {"total": 1, "page": 1, "pageSize": 100},
+        },
     ],
 )
 def test_get_user_info_rejects_malformed_response(data):
@@ -2300,16 +2261,57 @@ def test_get_user_info_rejects_api_failure_even_with_data():
 
     ctx = _make_pg_ctx(
         http_json=lambda method, url, body=None: {
-            "data": {
-                "userId": "user-1",
-                "username": "alice",
-                "roleIds": [1],
-            },
+            "data": org_users_response(org_user("user-1", "alice", [1]))["data"],
             "success": False,
         }
     )
     with pytest.raises(RuntimeError, match="API reported failure"):
         pangolin_connector.get_user_info(ctx, "primary", "user-1", "alice")
+
+
+def test_get_user_info_paginates_until_exact_identity_match():
+    import pangolin_connector
+
+    calls = []
+
+    def fake_http(method, url, body=None):
+        calls.append(url)
+        if url.endswith("page=1"):
+            return org_users_response(
+                org_user("other-id", "alice.smith", [99]),
+                total=2,
+                page=1,
+                page_size=1,
+            )
+        return org_users_response(
+            org_user("user-1", "alice", [7]),
+            total=2,
+            page=2,
+            page_size=1,
+        )
+
+    ctx = _make_pg_ctx(http_json=fake_http)
+    assert pangolin_connector.get_user_info(ctx, "primary", "user-1", "alice") == (
+        "user-1",
+        [7],
+    )
+    assert calls[-1].endswith("page=2")
+
+
+def test_get_user_info_list_users_permission_error_fails_closed(monkeypatch):
+    import pangolin_connector
+
+    calls = []
+    monkeypatch.setattr(_time_mod, "sleep", lambda _: None)
+
+    def fake_http(method, url, body=None):
+        calls.append(url)
+        raise RuntimeError("HTTP 403 Forbidden: key lacks the List Users permission")
+
+    ctx = _make_pg_ctx(http_json=fake_http)
+    with pytest.raises(RuntimeError, match="List Users"):
+        pangolin_connector.get_user_info(ctx, "primary", "user-1", "alice")
+    assert len(calls) == 1, "authorization errors must not be retried"
 
 
 def test_get_user_info_no_token_raises():
