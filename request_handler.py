@@ -438,6 +438,10 @@ def create_image_request_handler(ctx: dict):
             remote_user = self.headers.get("Remote-User", "")
             remote_user_id = self.headers.get("Remote-User-Id", "")
 
+            print(f"TEST remote_user {remote_user}")
+            print(f"TEST remote_user_id {remote_user_id}")
+
+
             print(f"New request from {ip}  user: {remote_user} user_id: {remote_user_id}  path: {path}")
 
             if ctx.get("debug_log_headers"):
