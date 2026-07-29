@@ -243,6 +243,8 @@ def get_user_info(
         raise RuntimeError(
             f"username_id is empty"
         )
+    else:
+        print(f"username_id: {username_id}")
     
     url = f"{ctx.url}/v1/user/{quote(username_id, safe='')}"
     resp = _retry(
