@@ -227,7 +227,7 @@ def list_org_resources(ctx: PangolinContext, org_id: str) -> None:
 
 
 def get_user_info(
-    ctx: PangolinContext, org_id: str, username: str
+    ctx: PangolinContext, org_id: str, username: str, username_id: str
 ) -> tuple[str, list[int]]:
     """Return (userId, roleIds) for the given username in the org.
     Raises RuntimeError on any failure (caller is responsible for fail-closed behaviour).
@@ -238,12 +238,40 @@ def get_user_info(
     """
     if not ctx.token:
         raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up user")
-    url = f"{ctx.url}/v1/org/{org_id}/user-by-username?username={quote(username, safe='')}"
+    url = f"{ctx.url}/v1/user/{quote(username_id, safe='')}"
+    resp = _retry(
+        lambda: ctx.http_json("GET", url),
+        label=f"GET user username_id={username_id}",
+    )
+    data = resp.get("data", {})
+
+    user_type = data.get("type")
+
+    if user_type is None:
+        raise RuntimeError(
+            f"unexpected response shape"
+        )
+    
+    # OIDC USER
+    if user_type is "oidc":
+        user_idp_id = data.get("idpId")
+        if user_idp_id is None:
+            raise RuntimeError(
+               f"unexpected response shape"
+            )
+
+        url = f"{ctx.url}/v1/org/{org_id}/user-by-username?username={quote(username, safe='')}?idpId={quote(user_idp_id, safe='')}"
+
+    # Internal User
+    else:
+        url = f"{ctx.url}/v1/org/{org_id}/user-by-username?username={quote(username, safe='')}"
+
     resp = _retry(
         lambda: ctx.http_json("GET", url),
         label=f"GET user-by-username username={username}",
     )
     data = resp.get("data", {})
+
     role_ids = data.get("roleIds")
     user_id = data.get("userId")
     if role_ids is None or user_id is None:
@@ -308,7 +336,7 @@ def get_resource(ctx: PangolinContext, rid: int) -> dict:
 
 
 def filter_resources_for_user(
-    ctx: PangolinContext, org_id: str, username: str
+    ctx: PangolinContext, org_id: str, username: str, username_id: str
 ) -> list[dict]:
     """Return the subset of ctx.resource_ids the user is authorised for, with metadata.
     Each entry is {"resourceId": int, "name": str, "fullDomain": str, "ssl": bool}.
@@ -321,7 +349,7 @@ def filter_resources_for_user(
     Raises on any API error (fail-closed). Returns an empty list if no resource matches
     but no error occurred.
     """
-    user_id, user_role_ids_list = get_user_info(ctx, org_id, username)
+    user_id, user_role_ids_list = get_user_info(ctx, org_id, username, username_id)
     user_role_ids = set(user_role_ids_list)
     effective: list[dict] = []
     for rid in ctx.resource_ids:

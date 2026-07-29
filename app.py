@@ -287,7 +287,7 @@ if CROWDSEC_ENABLED:
 # --------------------------
 
 
-def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
+def add_ip_to_targets(ip: str, remote_user: str = "", remote_user_id: str = "") -> dict:
     """Add/allow this IP across configured targets (Pangolin, CrowdSec, etc.).
     Requires remote_user (value of the Remote-User header forwarded by Pangolin).
     Fails closed: returns ok=False without touching any target if the user cannot
@@ -325,7 +325,7 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
 
     ctx = make_pangolin_context()
     try:
-        effective_resources = pg_filter_resources_for_user(ctx, ORG_ID, remote_user)
+        effective_resources = pg_filter_resources_for_user(ctx, ORG_ID, remote_user, remote_user_id)
     except Exception as e:  # noqa: BLE001
         return _fail(f"User authorization failed for {remote_user!r}: {e}")
 
