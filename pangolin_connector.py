@@ -238,6 +238,9 @@ def get_user_info(
     """
     if not ctx.token:
         raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up user")
+
+    print(username_id)
+    
     url = f"{ctx.url}/v1/user/{quote(username_id, safe='')}"
     resp = _retry(
         lambda: ctx.http_json("GET", url),
