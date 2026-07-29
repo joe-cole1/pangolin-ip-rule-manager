@@ -266,6 +266,9 @@ def get_user_info(
     # OIDC USER
     if user_type == "oidc":
         user_idp_id = data.get("idpId")
+
+        print(user_idp_id)
+        
         if user_idp_id is None:
             raise RuntimeError(
                f"unexpected response shape"
