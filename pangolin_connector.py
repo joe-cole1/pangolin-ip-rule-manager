@@ -274,7 +274,7 @@ def get_user_info(
                f"unexpected response shape"
             )
 
-        url = f"{ctx.url}/v1/org/{org_id}/user-by-username?username={quote(username, safe='')}?idpId={quote(user_idp_id, safe='')}"
+        url = f"{ctx.url}/v1/org/{org_id}/user-by-username?username={quote(username, safe='')}&idpId={quote(user_idp_id, safe='')}"
 
     print(url)
 
