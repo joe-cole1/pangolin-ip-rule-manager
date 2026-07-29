@@ -261,7 +261,7 @@ def get_user_info(
         )
     
     # OIDC USER
-    if user_type is "oidc":
+    if user_type == "oidc":
         user_idp_id = data.get("idpId")
         if user_idp_id is None:
             raise RuntimeError(
