@@ -259,7 +259,10 @@ def get_user_info(
         raise RuntimeError(
             f"unexpected response shape"
         )
-    
+
+    # Internal User
+    url = f"{ctx.url}/v1/org/{org_id}/user-by-username?username={quote(username, safe='')}"
+
     # OIDC USER
     if user_type == "oidc":
         user_idp_id = data.get("idpId")
@@ -270,9 +273,7 @@ def get_user_info(
 
         url = f"{ctx.url}/v1/org/{org_id}/user-by-username?username={quote(username, safe='')}?idpId={quote(user_idp_id, safe='')}"
 
-    # Internal User
-    else:
-        url = f"{ctx.url}/v1/org/{org_id}/user-by-username?username={quote(username, safe='')}"
+    print(url)
 
     resp = _retry(
         lambda: ctx.http_json("GET", url),
