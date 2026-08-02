@@ -16,6 +16,8 @@ services:
       PANGOLIN_TOKEN: ${PANGOLIN_TOKEN}
       ORG_ID: ${ORG_ID}
       RESOURCE_IDS: ${RESOURCE_IDS}
+      # Required: use the same value in Pangolin's X-Proxy-Secret request header.
+      PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:?set PROXY_SHARED_SECRET}
 
       # Retention and cleanup
       RETENTION_MINUTES: "1440"
@@ -61,14 +63,6 @@ services:
       # Optional endpoints
       # ---------------------------------------------------------------------------
       UPDATE_ENDPOINT_ENABLED: "false"
-
-      # ---------------------------------------------------------------------------
-      # Defense-in-depth shared secret (optional, STRONGLY RECOMMENDED)
-      # ---------------------------------------------------------------------------
-      # When set, the upstream proxy must inject a matching X-Proxy-Secret header or
-      # the request is rejected with 403 before any state write or API call. Configure
-      # Pangolin/Traefik to add this header and strip any client-supplied copy.
-      # PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET}
 
     volumes:
       - pangolin-ip-rule-manager-data:/data

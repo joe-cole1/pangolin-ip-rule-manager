@@ -42,9 +42,9 @@ ENV PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
     PYTHONUNBUFFERED=1 \
     HOME=/tmp
 
-# Operational defaults — PANGOLIN_URL, PANGOLIN_TOKEN, ORG_ID, and RESOURCE_IDS
-# are not set here; they must always be injected at runtime via your orchestrator
-# (Portainer, compose, etc.)
+# Operational defaults — PANGOLIN_URL, PANGOLIN_TOKEN, ORG_ID, RESOURCE_IDS, and
+# PROXY_SHARED_SECRET are not set here; they must always be injected at runtime
+# via your orchestrator (Portainer, compose, etc.)
 ENV RETENTION_MINUTES="1440" \
     LISTEN_PORT="8080" \
     STATE_FILE="/data/state.json" \

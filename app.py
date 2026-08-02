@@ -61,12 +61,11 @@ SITE_NAME = os.getenv("SITE_NAME", "").strip()
 UPDATE_ENDPOINT_ENABLED = os.getenv(
     "UPDATE_ENDPOINT_ENABLED", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
-# Optional: defense-in-depth shared secret that the upstream proxy (Pangolin/Traefik)
-# must inject as the X-Proxy-Secret header. When set, requests missing or mismatching
-# the secret are rejected before any state write or API call. Leave empty to disable
-# (the service then relies solely on network topology to keep it behind the proxy).
+# Required shared secret that Pangolin sends in the X-Proxy-Secret request header.
+# Requests missing or mismatching the secret are rejected before any state write
+# or API call.
 PROXY_SHARED_SECRET = os.getenv("PROXY_SHARED_SECRET", "")
-# Optional: log all request headers (with Authorization redacted) for debugging.
+# Optional: log request headers with credentials and the proxy secret redacted.
 DEBUG_LOG_HEADERS = os.getenv("DEBUG_LOG_HEADERS", "false").strip().lower() in (
     "1",
     "true",
@@ -128,7 +127,7 @@ rules_cache = {
 # CrowdSec allowlist readiness/caches live in crowdsec_connector; app.py does not
 # duplicate them.
 
-# Per-(IP, user) rate limit cache: {(ip, user): (monotonic_timestamp, last_result)}
+# Per-(IP, stable Pangolin user ID) rate limit cache.
 _api_rate_limit: dict[tuple[str, str], tuple[float, dict]] = {}
 _api_rate_limit_lock = threading.Lock()
 
@@ -139,13 +138,13 @@ def now_utc_iso() -> str:
 
 def redact_headers_for_log(headers: dict[str, str]) -> dict[str, str]:
     """Return a copy of headers suitable for logging.
-    - Redacts Authorization/Proxy-Authorization values.
+    - Redacts Authorization, Proxy-Authorization, and X-Proxy-Secret values.
     Header names are matched case-insensitively.
     """
     redacted: dict[str, str] = {}
     for k, v in headers.items():
         kl = k.lower()
-        if kl in ("authorization", "proxy-authorization"):
+        if kl in ("authorization", "proxy-authorization", "x-proxy-secret"):
             redacted[k] = "<redacted>"
         else:
             redacted[k] = v
@@ -287,9 +286,9 @@ if CROWDSEC_ENABLED:
 # --------------------------
 
 
-def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
+def add_ip_to_targets(ip: str, remote_user_id: str = "", remote_user: str = "") -> dict:
     """Add/allow this IP across configured targets (Pangolin, CrowdSec, etc.).
-    Requires remote_user (value of the Remote-User header forwarded by Pangolin).
+    Requires the Remote-User-Id and Remote-User values forwarded by Pangolin.
     Fails closed: returns ok=False without touching any target if the user cannot
     be identified or is not authorised for any configured resource.
     Returns a dict of per-target results for display purposes.
@@ -306,32 +305,45 @@ def add_ip_to_targets(ip: str, remote_user: str = "") -> dict:
             },
         }
 
+    if not remote_user_id:
+        return _fail(
+            "Remote-User-Id header not present — cannot identify user. "
+            "Require Badger v1.4.1 or newer and Pangolin user authentication."
+        )
+
     if not remote_user:
         return _fail(
             "Remote-User header not present — cannot identify user. "
-            "Ensure this resource uses SSO authentication in Pangolin."
+            "Ensure this resource uses Pangolin user authentication."
         )
 
     # Skip API fan-out if this IP was successfully processed recently for this user
-    cache_key = (ip, remote_user)
+    cache_key = (ip, remote_user_id)
     if RATE_LIMIT_SECONDS > 0:
         with _api_rate_limit_lock:
             entry = _api_rate_limit.get(cache_key)  # type: ignore[arg-type]
             if entry and (time.monotonic() - entry[0]) < RATE_LIMIT_SECONDS:
                 print(
-                    f"[targets] rate limited {ip} for user {remote_user!r} — returning cached result"
+                    f"[targets] rate limited {ip} for user_id {remote_user_id!r} "
+                    "— returning cached result"
                 )
                 return entry[1]
 
     ctx = make_pangolin_context()
     try:
-        effective_resources = pg_filter_resources_for_user(ctx, ORG_ID, remote_user)
+        effective_resources = pg_filter_resources_for_user(
+            ctx, ORG_ID, remote_user_id, remote_user
+        )
     except Exception as e:  # noqa: BLE001
-        return _fail(f"User authorization failed for {remote_user!r}: {e}")
+        return _fail(
+            f"User authorization failed for user_id {remote_user_id!r}, "
+            f"username {remote_user!r}: {e}"
+        )
 
     if not effective_resources:
         return _fail(
-            f"User {remote_user!r} is not authorised for any configured resource."
+            f"User {remote_user!r} ({remote_user_id}) is not authorised for any "
+            "configured resource."
         )
 
     effective_ids = [r["resourceId"] for r in effective_resources]
@@ -504,6 +516,8 @@ def self_check():
         missing.append("PANGOLIN_URL")
     if not RESOURCE_IDS:
         missing.append("RESOURCE_IDS")
+    if not PROXY_SHARED_SECRET:
+        missing.append("PROXY_SHARED_SECRET")
     if missing:
         print(
             "[self-check] WARNING: Missing required environment variables: "
@@ -541,13 +555,6 @@ def self_check():
         print()
     if not ORG_ID:
         print("[warn] ORG_ID is not set; startup resource listing will be skipped.")
-    if not PROXY_SHARED_SECRET:
-        print(
-            "[warn] PROXY_SHARED_SECRET is not set; the service relies solely on network "
-            "topology to stay behind the proxy. Set it and have Pangolin/Traefik inject "
-            "the X-Proxy-Secret header for defense-in-depth."
-        )
-
     # Verify state file directory is writable before we need it
     state_dir = os.path.dirname(os.path.abspath(STATE_FILE))
     if not os.path.isdir(state_dir):

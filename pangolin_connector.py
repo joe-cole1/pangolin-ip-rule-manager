@@ -227,30 +227,117 @@ def list_org_resources(ctx: PangolinContext, org_id: str) -> None:
 
 
 def get_user_info(
-    ctx: PangolinContext, org_id: str, username: str
+    ctx: PangolinContext, org_id: str, user_id: str, username: str
 ) -> tuple[str, list[int]]:
-    """Return (userId, roleIds) for the given username in the org.
+    """Return (userId, roleIds) for a verified Pangolin identity in the org.
     Raises RuntimeError on any failure (caller is responsible for fail-closed behaviour).
 
-    Replaces the former get_user_role_ids(); userId is now also returned so that direct
-    resource-user assignments can be checked in filter_resources_for_user without an
-    additional API call.
+    Pangolin's List Users route is searched with Remote-User. A result is trusted
+    only when its exact username and stable ID match Remote-User and
+    Remote-User-Id, respectively.
     """
     if not ctx.token:
         raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up user")
-    url = f"{ctx.url}/v1/org/{org_id}/user-by-username?username={quote(username, safe='')}"
-    resp = _retry(
-        lambda: ctx.http_json("GET", url),
-        label=f"GET user-by-username username={username}",
-    )
-    data = resp.get("data", {})
-    role_ids = data.get("roleIds")
-    user_id = data.get("userId")
-    if role_ids is None or user_id is None:
-        raise RuntimeError(
-            f"User {username!r} not found in org {org_id!r} (or unexpected response shape)"
+    if not user_id:
+        raise RuntimeError("Remote-User-Id header is empty")
+    if not username:
+        raise RuntimeError("Remote-User header is empty")
+
+    encoded_org_id = quote(org_id, safe="")
+    encoded_username = quote(username, safe="")
+    page = 1
+    page_size = 100
+    username_was_found = False
+    user_id_was_found = False
+
+    def unexpected_response_error() -> RuntimeError:
+        return RuntimeError(
+            f"User {user_id!r} not found in org {org_id!r} "
+            "(or unexpected response shape)"
         )
-    return user_id, role_ids
+
+    while True:
+        url = (
+            f"{ctx.url}/v1/org/{encoded_org_id}/users"
+            f"?query={encoded_username}&pageSize={page_size}&page={page}"
+        )
+        resp = _retry(
+            lambda request_url=url: ctx.http_json("GET", request_url),
+            label=f"GET org users query for user_id={user_id} page={page}",
+        )
+        if resp.get("success") is not True:
+            raise RuntimeError(
+                f"User {user_id!r} not found in org {org_id!r} "
+                "(Pangolin API reported failure)"
+            )
+
+        data = resp.get("data")
+        if not isinstance(data, dict):
+            raise unexpected_response_error()
+
+        users = data.get("users")
+        pagination = data.get("pagination")
+        if not isinstance(users, list) or not isinstance(pagination, dict):
+            raise unexpected_response_error()
+
+        total = pagination.get("total")
+        response_page = pagination.get("page")
+        response_page_size = pagination.get("pageSize")
+        pagination_values = (total, response_page, response_page_size)
+        if (
+            any(
+                not isinstance(value, int) or isinstance(value, bool)
+                for value in pagination_values
+            )
+            or total < 0
+            or response_page != page
+            or response_page_size <= 0
+        ):
+            raise unexpected_response_error()
+
+        for api_user in users:
+            if not isinstance(api_user, dict):
+                raise unexpected_response_error()
+
+            api_user_id = api_user.get("id")
+            api_username = api_user.get("username")
+            if not isinstance(api_user_id, str) or not isinstance(api_username, str):
+                raise unexpected_response_error()
+
+            username_was_found = username_was_found or api_username == username
+            user_id_was_found = user_id_was_found or api_user_id == user_id
+            if api_user_id != user_id or api_username != username:
+                continue
+
+            roles = api_user.get("roles")
+            if not isinstance(roles, list):
+                raise unexpected_response_error()
+
+            role_ids: list[int] = []
+            for role in roles:
+                if not isinstance(role, dict):
+                    raise unexpected_response_error()
+                role_id = role.get("roleId")
+                if not isinstance(role_id, int) or isinstance(role_id, bool):
+                    raise unexpected_response_error()
+                role_ids.append(role_id)
+            return api_user_id, role_ids
+
+        if page * response_page_size >= total:
+            break
+        if not users:
+            raise unexpected_response_error()
+        page += 1
+
+    if username_was_found:
+        raise RuntimeError(
+            "Pangolin identity mismatch: API user id does not match Remote-User-Id"
+        )
+    if user_id_was_found:
+        raise RuntimeError(
+            "Pangolin identity mismatch: API username does not match Remote-User"
+        )
+    raise RuntimeError(f"User {user_id!r} not found in org {org_id!r}")
 
 
 def get_resource_allowed_role_ids(ctx: PangolinContext, rid: int) -> set[int]:
@@ -308,7 +395,7 @@ def get_resource(ctx: PangolinContext, rid: int) -> dict:
 
 
 def filter_resources_for_user(
-    ctx: PangolinContext, org_id: str, username: str
+    ctx: PangolinContext, org_id: str, user_id: str, username: str
 ) -> list[dict]:
     """Return the subset of ctx.resource_ids the user is authorised for, with metadata.
     Each entry is {"resourceId": int, "name": str, "fullDomain": str, "ssl": bool}.
@@ -321,7 +408,7 @@ def filter_resources_for_user(
     Raises on any API error (fail-closed). Returns an empty list if no resource matches
     but no error occurred.
     """
-    user_id, user_role_ids_list = get_user_info(ctx, org_id, username)
+    user_id, user_role_ids_list = get_user_info(ctx, org_id, user_id, username)
     user_role_ids = set(user_role_ids_list)
     effective: list[dict] = []
     for rid in ctx.resource_ids:
