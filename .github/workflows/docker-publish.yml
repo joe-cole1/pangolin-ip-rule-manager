@@ -7,6 +7,8 @@ on:
 
 jobs:
   build-and-push:
+    # Defense in depth: repository Actions policy should enforce the same boundary before execution.
+    if: github.actor == github.repository_owner
     runs-on: ubuntu-latest
     permissions:
       contents: read
