@@ -2,7 +2,7 @@
 
 # Start from the current patched Python 3.14 Alpine image. The digest is
 # multi-architecture and Dependabot keeps it current.
-FROM python:3.14.7-alpine3.24@sha256:3f818d6811ff5f3f2b5e5d836df3d25c2dd2e588d3b4981338a8ba17e422f74f AS runtime-root
+FROM python:3.14.7-alpine3.24@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01 AS runtime-root
 
 # Keep the existing 100:101 identity stable so upgrades can read and write named
 # volumes created by earlier images. New named volumes inherit /data's ownership
