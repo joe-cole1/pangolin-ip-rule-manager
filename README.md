@@ -55,6 +55,10 @@ permission is not used by this version and may be removed after the upgrade.
   - [Pangolin User Authentication Requirement](#pangolin-user-authentication-requirement)
   - [Set the Pangolin Proxy Secret](#set-the-pangolin-proxy-secret)
   - [Resource Setup Steps](#resource-setup-steps)
+- [Pangolin 1.24 Compatibility](#pangolin-124-compatibility)
+  - [HTTP Method Rules and Priority](#http-method-rules-and-priority)
+  - [Response Headers and Caching](#response-headers-and-caching)
+  - [Upgrade Validation](#upgrade-validation)
 - [CrowdSec Integration](#crowdsec-integration)
 - [Advanced Features](#advanced-features)
   - [Manual IP Override](#manual-ip-override-update-endpoint)
@@ -90,6 +94,8 @@ This service bridges the gap:
 5. Rules expire automatically after a configurable TTL
 
 **Known limitation:** This approach requires the phone and TV to share the same public IP address (e.g., both on home Wi-Fi). This is a known design constraint, not a bug. Carrier-grade NAT (CGNAT) weakens the trust model but does not cause a functional failure.
+
+Sharing Wi-Fi does not always mean sharing a public IP. A phone using a full-tunnel VPN, a Pangolin exit node, mobile data, or a privacy relay may send its check-in through a different Internet connection from the TV. Compare the IP on the HTML check-in page with the TV network's public IP. If they differ, route the phone's check-in through the same connection as the TV and check in again. A split-tunnel VPN only affects this if it routes the check-in traffic through a different connection.
 
 ---
 
@@ -279,7 +285,7 @@ The app will **refuse to start** if `PANGOLIN_URL`, `RESOURCE_IDS`, or `PROXY_SH
 | `LISTEN_PORT` | `8080` | No | Port the HTTP server listens on inside the container. |
 | `RETENTION_MINUTES` | `1440` | No | How long after the last check-in (in minutes) before a rule is considered stale and removed. |
 | `CLEANUP_INTERVAL_MINUTES` | `60` | No | How frequently (in minutes) the cleanup background thread runs. |
-| `RULE_PRIORITY` | `0` | No | Priority assigned to created Pangolin IP rules. |
+| `RULE_PRIORITY` | `0` | No | Priority assigned to created Pangolin IP rules. Lower numbers run first; the first matching enabled rule wins. See [HTTP Method Rules and Priority](#http-method-rules-and-priority). |
 | `RULES_CACHE_TTL_SECONDS` | `3600` | No | How long (in seconds) to cache Pangolin rule existence checks before re-querying. Reduces API traffic. |
 | `RATE_LIMIT_SECONDS` | `300` | No | Minimum seconds between Pangolin API fan-out calls for the same IP. Repeat check-ins within this window return a cached result without calling Pangolin. Set to `0` to disable. |
 | `STATE_FILE` | `/data/state.json` | No | Path to the persistent state file. Mount a volume at the parent directory to survive restarts. |
@@ -363,6 +369,8 @@ The screenshot uses placeholder text. Do not copy that placeholder into your liv
 
 Pangolin adds this header before sending the request to the app. The app rejects any check-in that does not contain the matching value. This helps prevent someone from reaching the app directly and supplying fake Pangolin identity headers.
 
+Pangolin 1.24 has separate **Custom Request Headers** and **Custom Response Headers** fields. Keep `X-Proxy-Secret` in **Custom Request Headers**. Putting it in response headers sends the secret to the client and does not authenticate the request to this app. The upgrade migrates existing request headers; confirm the entry is still in the request field after upgrading.
+
 Do not make the app's port directly accessible from the Internet. The app should only be reachable through Pangolin. If you use the provided Compose file, no change is needed; it already keeps the port private.
 
 ### Resource Setup Steps
@@ -373,6 +381,51 @@ Do not make the app's port directly accessible from the Internet. The app should
 4. Follow [Set the Pangolin Proxy Secret](#set-the-pangolin-proxy-secret)
 5. Make sure the app is reachable only through Pangolin, not directly from the Internet
 6. Confirm your API token has all the [required permissions](#api-token-permissions)
+
+---
+
+## Pangolin 1.24 Compatibility
+
+Pangolin [1.24.0](https://github.com/fosrl/pangolin/releases/tag/1.24.0) does not require new app environment variables or API permissions. The app uses the existing IP rule API and reads only resource display metadata, so the new `requestHeaders` and `responseHeaders` resource fields do not change its check-in flow. Keep the [existing upgrade requirements](#-breaking-change-upgrade-requirements), including Badger v1.4.1 or newer and **List Users** permission.
+
+### HTTP Method Rules and Priority
+
+Pangolin 1.24 adds `METHOD` rules, such as `GET` or `POST,PUT`. The manager creates `IP` / `ACCEPT` rules and leaves METHOD rules alone. Pangolin checks enabled rules from lowest to highest priority number and uses the **first match**:
+
+| Action | What happens when the rule matches |
+|---|---|
+| `ACCEPT` | Bypass Pangolin authentication. |
+| `DROP` | Deny the request. |
+| `PASS` | Stop checking rules and continue through the resource's normal authentication. |
+
+For example, on a managed Jellyfin resource:
+
+| Priority | Rule | Result for a POST from the checked-in IP |
+|---|---|---|
+| `0` | IP / `ACCEPT` for the checked-in IP | Matches first; Pangolin authentication is bypassed. |
+| `10` | METHOD / `PASS` for `POST,PUT` | Never reached for that IP. |
+
+Moving the METHOD / `PASS` rule ahead of the IP rule makes matching methods require normal authentication, even from a checked-in IP. This can prevent a native TV app from working. Separate IP and METHOD rules do **not** mean "this IP AND this method." Review the intended order, use distinct priorities, and test the TV app before changing `RULE_PRIORITY` or adding METHOD rules. Changing `RULE_PRIORITY` affects newly created rules; it does not reorder existing ones.
+
+Keep the **check-in resource itself** behind Pangolin user authentication. Do not add it to `RESOURCE_IDS` or add an authentication bypass such as METHOD / `ACCEPT` for `GET`. A bypassed request lacks the verified user identity needed to grant access; an HTTP 200 or a returned check-in image alone does not prove that a rule was created.
+
+### Response Headers and Caching
+
+Leave the check-in resource's custom response headers empty unless you need a deliberate override. The app already sends `Cache-Control: no-store, no-cache, must-revalidate, max-age=0`, `Pragma: no-cache`, `Expires: 0`, and browser security headers. A proxy or CDN cache override can serve an old page or image without reaching the app, so the visit will not refresh the IP's expiry time.
+
+The HTML page uses inline styles and scripts for its layout, copy-IP button, and optional redirect countdown. A stricter `Content-Security-Policy` response override can block these features. Confirm the delivered response still has the intended cache and security headers after any override.
+
+### Upgrade Validation
+
+The automated tests use a mocked Pangolin 1.24 API; they do not replace checking the deployed proxy configuration. Before deploying an upgrade, use the separate test container, a throwaway Pangolin resource, and test credentials. Keep CrowdSec disabled for this check so it cannot modify a live allowlist.
+
+1. Confirm `X-Proxy-Secret` is in **Custom Request Headers** and the check-in resource uses Pangolin user authentication. Keep its custom response headers empty for this check.
+2. Check in as a user with limited access. Confirm the displayed IP is correct, only permitted resources gain an IP / `ACCEPT` rule, and the phone and TV use the same public IP. Read the HTML result and inspect the rules rather than relying on HTTP 200.
+3. On a throwaway managed resource, add a METHOD rule with a distinct priority. Check in again and confirm it survives alongside the IP rule. Exercise the TV app's read and write operations to verify the intended first-match order.
+4. In the test container only, set a short retention and cleanup interval and `RATE_LIMIT_SECONDS=0`. Wait for expiry, confirm only manager-created IP rules disappear, then check in again and confirm the IP rule is recreated. METHOD rules and pre-existing IP rules must remain.
+5. Inspect the check-in response in browser developer tools: it should retain `Cache-Control: no-store` and the app's security headers. Confirm the page controls and any enabled redirect countdown work.
+
+Upstream changes: [request and response headers (#3172)](https://github.com/fosrl/pangolin/pull/3172), [HTTP method rules (#3704)](https://github.com/fosrl/pangolin/pull/3704), and [client IP configuration (#3811)](https://github.com/fosrl/pangolin/pull/3811). If you change Pangolin's trusted-proxy or custom-IP-header settings, verify the IP shown by the check-in page before granting access; these are Pangolin settings, not new app environment variables.
 
 ---
 
