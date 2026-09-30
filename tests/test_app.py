@@ -1905,6 +1905,231 @@ def test_error_html_escapes_site_name():
 
 
 # ---------------------------------------------------------------------------
+# Pangolin 1.24 compatibility scenarios
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def pangolin_124_api(monkeypatch, app_module):
+    """Mock the 1.24 response fields and mixed rules; never call live targets."""
+    import secrets
+    from urllib.parse import urlsplit
+
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", secrets.token_hex(32))
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5, 6])
+    monkeypatch.setattr(app, "RULE_PRIORITY", 0)
+    monkeypatch.setattr(app, "RULES_CACHE_TTL_SECONDS", 3600)
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 0)
+    monkeypatch.setattr(app, "RETENTION_MINUTES", 60)
+    monkeypatch.setattr(app, "CROWDSEC_ENABLED", False)
+    monkeypatch.setattr(app, "REDIRECT_TO_LAUNCHER", False)
+    monkeypatch.setattr(app, "TARGETS", [app.PangolinTarget(app.make_pangolin_context)])
+
+    api = {
+        "calls": [],
+        "user_roles": [5],
+        "direct_users": [],
+        "next_rule_id": 100,
+        "rules": {
+            5: [
+                {
+                    "ruleId": 10,
+                    "match": "METHOD",
+                    "value": "POST,PUT",
+                    "action": "PASS",
+                    "priority": 10,
+                    "enabled": True,
+                },
+                {
+                    "ruleId": 11,
+                    "match": "METHOD",
+                    "value": "GET",
+                    "action": "ACCEPT",
+                    "priority": 20,
+                    "enabled": True,
+                },
+                {
+                    "ruleId": 12,
+                    "match": "IP",
+                    "value": "9.9.9.9",
+                    "action": "ACCEPT",
+                    "priority": 30,
+                    "enabled": True,
+                },
+            ],
+            6: [],
+        },
+    }
+    api["original_rules"] = {
+        rid: [dict(rule) for rule in rules] for rid, rules in api["rules"].items()
+    }
+
+    def fake_http(method, url, body=None):
+        api["calls"].append((method, url, body))
+        path = urlsplit(url).path
+        if method == "GET" and path == "/v1/org/test-org/users":
+            return org_users_response(
+                org_user("user-abc", "joe@example.com", api["user_roles"])
+            )
+        parts = path.strip("/").split("/")
+        assert parts[:2] == ["v1", "resource"], f"Unexpected mock request: {path}"
+        rid = int(parts[2])
+        if method == "GET" and parts[3:] == ["roles"]:
+            return {"data": {"roles": [{"roleId": rid}]}, "success": True}
+        if method == "GET" and parts[3:] == ["users"]:
+            users = api["direct_users"] if rid == 5 else []
+            return {"data": {"users": users}, "success": True}
+        if method == "GET" and len(parts) == 3:
+            return {
+                "data": {
+                    "resourceId": rid,
+                    "name": "Jellyfin",
+                    "fullDomain": "jellyfin.example.com",
+                    "ssl": True,
+                    "requestHeaders": [
+                        {"name": "X-Proxy-Secret", "value": TEST_PROXY_SECRET}
+                    ],
+                    "responseHeaders": [
+                        {"name": "X-Content-Type-Options", "value": "nosniff"}
+                    ],
+                },
+                "success": True,
+            }
+        if method == "GET" and parts[3:] == ["rules"]:
+            return {
+                "data": {"rules": [dict(rule) for rule in api["rules"][rid]]},
+                "success": True,
+            }
+        if method == "PUT" and parts[3:] == ["rule"]:
+            rule = {**body, "ruleId": api["next_rule_id"]}
+            api["next_rule_id"] += 1
+            api["rules"][rid].append(rule)
+            return {"data": {"rule": dict(rule)}, "success": True}
+        if method == "DELETE" and parts[3] == "rule":
+            rule_id = int(parts[4])
+            api["rules"][rid] = [
+                rule for rule in api["rules"][rid] if rule["ruleId"] != rule_id
+            ]
+            return {"success": True}
+        raise AssertionError(f"Unexpected mock request: {method} {path}")
+
+    monkeypatch.setattr(app, "http_json", fake_http)
+    return api
+
+
+@pytest.mark.parametrize("access", ["role", "direct_user"])
+def test_pangolin_124_checkin_expiry_and_recheckin_preserve_other_rules(
+    app_module, pangolin_124_api, access
+):
+    """Both access paths survive new header fields and leave other rules untouched."""
+    app = app_module
+    api = pangolin_124_api
+    if access == "direct_user":
+        api["user_roles"] = [99]
+        api["direct_users"] = [{"userId": "user-abc"}]
+    ip = "1.2.3.4"
+
+    results = app.add_ip_to_targets(
+        ip, remote_user_id="user-abc", remote_user="joe@example.com"
+    )
+    assert results["pangolin"]["ok"] is True
+    assert results["resources"] == [
+        {
+            "resourceId": 5,
+            "name": "Jellyfin",
+            "fullDomain": "jellyfin.example.com",
+            "ssl": True,
+        }
+    ], "Display metadata must exclude the request/response headers"
+    assert app.state[ip]["resources"] == {"5": {"created_by_us": True}}
+    assert app.rules_cache[5]["ip_set"] == {ip, "9.9.9.9"}
+    assert api["rules"][5][:-1] == api["original_rules"][5]
+    assert api["rules"][5][-1] == {
+        "ruleId": 100,
+        "match": "IP",
+        "value": ip,
+        "action": "ACCEPT",
+        "priority": 0,
+        "enabled": True,
+    }
+    assert api["rules"][6] == api["original_rules"][6]
+    with open(app.STATE_FILE) as state_file:
+        assert json.load(state_file)[ip]["resources"] == app.state[ip]["resources"]
+
+    app.state[ip]["last_seen"] = "2000-01-01T00:00:00+00:00"
+    app.cleanup_old_ips()
+    assert ip not in app.state
+    assert app.rules_cache[5]["ip_set"] == {"9.9.9.9"}
+    assert api["rules"] == api["original_rules"]
+
+    results = app.add_ip_to_targets(
+        ip, remote_user_id="user-abc", remote_user="joe@example.com"
+    )
+    assert results["pangolin"]["ok"] is True
+    assert api["rules"][5][:-1] == api["original_rules"][5]
+    assert api["rules"][5][-1]["value"] == ip
+    mutations = [(method, url) for method, url, _ in api["calls"] if method != "GET"]
+    assert mutations == [
+        ("PUT", "https://pg.test/v1/resource/5/rule"),
+        ("DELETE", "https://pg.test/v1/resource/5/rule/100"),
+        ("PUT", "https://pg.test/v1/resource/5/rule"),
+    ]
+
+
+def test_pangolin_124_existing_ip_rule_is_not_claimed_or_deleted(
+    app_module, pangolin_124_api
+):
+    """A pre-existing IP in a mixed rules response remains externally owned."""
+    app = app_module
+    api = pangolin_124_api
+    ip = "9.9.9.9"
+    results = app.add_ip_to_targets(
+        ip, remote_user_id="user-abc", remote_user="joe@example.com"
+    )
+    assert results["pangolin"]["ok"] is True
+    assert app.state[ip]["resources"] == {"5": {"created_by_us": False}}
+
+    app.state[ip]["last_seen"] = "2000-01-01T00:00:00+00:00"
+    app.cleanup_old_ips()
+    assert ip not in app.state
+    assert api["rules"] == api["original_rules"]
+    assert all(method == "GET" for method, _, _ in api["calls"])
+
+
+def test_pangolin_124_checkin_without_identity_cannot_grant_access(
+    app_module, pangolin_124_api
+):
+    """A proxy-forwarded GET without user identity must fail closed, even with 200."""
+    app = app_module
+    api = pangolin_124_api
+    handler = app.create_image_request_handler(app._make_image_handler_context())
+    ip = "1.2.3.4"
+    with start_server(handler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        proxy_request(
+            conn,
+            "GET",
+            "/checkin.png",
+            headers={"X-Real-IP": ip, "Accept": "text/html"},
+        )
+        response = conn.getresponse()
+        body = response.read().decode()
+        assert response.status == 200
+        assert "Remote-User-Id header not present" in body
+        assert "no-store" in response.getheader("Cache-Control")
+        assert response.getheader("Content-Security-Policy")
+        assert TEST_PROXY_SECRET not in body
+        conn.close()
+
+    assert app.state[ip]["resources"] == {}
+    assert api["calls"] == [], "Missing identity must stop before any Pangolin API call"
+    assert api["rules"] == api["original_rules"]
+
+
+# ---------------------------------------------------------------------------
 # pangolin_connector unit tests
 # ---------------------------------------------------------------------------
 
