@@ -41,10 +41,9 @@ with arm64 emulation already configured). Local architecture coverage depends on
 the engine; CI requires both native architecture jobs to pass. Image publication
 and production deployment are separate from these checks.
 
-Initial rollout in PR #136 depends on the state-loading correction in
-[PR #137](https://github.com/joe-cole1/pangolin-ip-rule-manager/pull/137). The smoke
-test exposed that existing HTTP handlers retained the pre-load state mapping;
-after restart, new check-ins were not persisted. Merge that correction first,
-update #136 from `master`, and rerun both native smoke jobs. The combined changes
-passed all 227 tests under Python 3.14.8 and both local image smoke tests (native
-amd64 and emulated arm64); #137's source checks also passed under Python 3.14.7.
+The initial smoke test in PR #136 exposed that existing HTTP handlers retained
+the pre-load state mapping, so new check-ins were not persisted after restart.
+The state-loading correction in merged
+[PR #137](https://github.com/joe-cole1/pangolin-ip-rule-manager/pull/137) preserves
+the shared mapping and is included in #136's updated branch. The restart checks
+and HTTP regression test protect this behavior on subsequent image updates.

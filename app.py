@@ -152,14 +152,16 @@ def redact_headers_for_log(headers: dict[str, str]) -> dict[str, str]:
 
 
 def load_state():
-    global state
     if not os.path.exists(STATE_FILE):
         return
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            state = data
+            # The HTTP handler already holds this mapping; preserve its identity.
+            with state_lock:
+                state.clear()
+                state.update(data)
     except Exception as e:  # noqa: BLE001
         print(f"[state] failed to load state: {e}")
 
