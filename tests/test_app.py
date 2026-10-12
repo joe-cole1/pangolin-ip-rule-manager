@@ -1305,6 +1305,33 @@ def test_save_and_load_state_round_trip(monkeypatch, app_module, temp_state_file
         assert app.state == test_state
 
 
+def test_checkin_after_load_preserves_and_saves_state(app_module, temp_state_file):
+    """Startup-loaded state and later HTTP writes must share the same mapping."""
+    app = app_module
+    existing_ip = "1.1.1.1"
+    new_ip = "8.8.8.8"
+    persisted = {existing_ip: {"last_seen": app.now_utc_iso(), "resources": {}}}
+    with open(temp_state_file, "w") as state_file:
+        json.dump(persisted, state_file)
+
+    app.load_state()
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        # Missing identity fails closed while recording the audit timestamp.
+        proxy_request(conn, "GET", "/checkin.png", headers={"X-Real-IP": new_ip})
+        response = conn.getresponse()
+        assert response.status == 200
+        assert response.read() == app.BANNER_PNG
+        conn.close()
+
+    with open(temp_state_file) as state_file:
+        saved = json.load(state_file)
+    assert saved[existing_ip] == persisted[existing_ip]
+    assert saved[new_ip]["resources"] == {}
+    assert saved[new_ip]["last_seen"]
+    assert app.state == saved
+
+
 def test_load_state_ignores_missing_file(monkeypatch, app_module, tmp_path):
     """load_state must not raise when the state file does not exist."""
     app = app_module
