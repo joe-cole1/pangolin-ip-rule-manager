@@ -9,11 +9,21 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v3
     - name: Build the Docker image
-      run: docker buildx build --platform linux/amd64,linux/arm64 . --file Dockerfile --tag my-image-name:$(date +%s)
+      run: docker buildx build --load --platform linux/${{ matrix.arch }} . --file Dockerfile --tag pangolin-smoke:${{ matrix.arch }}
+    - name: Smoke test isolated image (native ${{ matrix.arch }})
+      run: python3 scripts/image_smoke.py --image pangolin-smoke:${{ matrix.arch }} --platform linux/${{ matrix.arch }}

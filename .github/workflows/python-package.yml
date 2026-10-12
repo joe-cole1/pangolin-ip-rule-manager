@@ -1,4 +1,6 @@
 name: Python package
+permissions:
+  contents: read
 
 on:
   workflow_dispatch:
@@ -10,56 +12,34 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    strategy:
-      fail-fast: false
-      matrix:
-        # matrix can stay, but we only need to open the PR on one version to avoid duplicate PRs
-        python-version: ["3.14"]
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-    - name: Set up Python ${{ matrix.python-version }}
+    - name: Read Python version from Dockerfile
+      id: python
+      run: |
+        version=$(python3 scripts/python_version.py)
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Set up Python ${{ steps.python.outputs.version }}
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: ${{ steps.python.outputs.version }}
         cache: 'pip' # Speeds up subsequent runs by caching dependencies
 
+    - name: Verify selected Python runtime
+      run: python scripts/python_version.py --check
+
     - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install pytest ruff
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      run: python -m pip install -r requirements.txt
 
-    # 1. Run Ruff Lint fixes and Formatting directly on the runner
-    - name: Fix and Format with Ruff
+    - name: Check submitted source with Ruff
       run: |
-        ruff check --fix --exit-zero .
-        ruff format .
-
-    # 2. Only attempt to open a PR if changes were made and it's NOT a PR event itself
-    - name: Create Pull Request for Style Fixes
-      if: github.event_name != 'pull_request'
-      uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        commit-message: "style: automated ruff formatting and fixes"
-        title: "Automated Ruff Code Style Fixes"
-        body: "This PR was automatically generated to resolve lint issues and apply styling using Ruff."
-        branch: ruff-auto-fixes
-        delete-branch: true
-
-    # 3. Fail the PR build if the PR author has unformatted code
-    - name: Verify Formatting (PR check only)
-      if: github.event_name == 'pull_request'
-      run: |
-        ruff check .
-        ruff format --check .
+        python -m ruff check .
+        python -m ruff format --check .
 
     - name: Test with pytest
       run: |
-        pytest
+        python -m pytest
 
