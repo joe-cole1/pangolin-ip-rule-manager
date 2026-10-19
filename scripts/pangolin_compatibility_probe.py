@@ -1,52 +1,163 @@
-"""Read-only probes of the Pangolin Integration API response contracts.
+"""Bootstrap only our disposable Compose service; never accept an external URL."""
 
-Only run against a dedicated, disposable test instance and resource.
-No rule creation or deletion is performed in this first phase.
-"""
 from __future__ import annotations
 
+import argparse
+import http.cookiejar
 import json
-import os
 import sys
+import time
+from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import (
+    HTTPCookieProcessor,
+    HTTPRedirectHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
+
+API = "http://pangolin:3003/v1"
+ADMIN = "http://pangolin:3000/api/v1"
+ORG = "compatibility"
+ACTIONS = (
+    "getResource",
+    "listResources",
+    "listUsers",
+    "listResourceRoles",
+    "listResourceUsers",
+    "listResourceRules",
+    "createResourceRule",
+    "deleteResourceRule",
+)
+
+
+class NoRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class Client:
+    """Bootstrap transport: fixed local origins, no redirects/proxies/body logging."""
+
+    def __init__(self, base: str, token: str = ""):
+        if base not in (API, ADMIN):
+            raise ValueError("Only the disposable Pangolin service is allowed")
+        self.base = base
+        self.token = token
+        self.cookies = http.cookiejar.CookieJar()
+        self.opener = build_opener(
+            ProxyHandler({}), NoRedirects(), HTTPCookieProcessor(self.cookies)
+        )
+
+    def call(self, method: str, path: str, body=None):
+        if not path.startswith("/") or path.startswith("//"):
+            raise ValueError("Expected a local API path")
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if self.base == ADMIN:
+            headers["X-CSRF-Token"] = "x-csrf-protection"
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        data = json.dumps(body).encode() if body is not None else None
+        req = Request(self.base + path, data=data, headers=headers, method=method)
+        try:
+            with self.opener.open(req, timeout=15) as result:
+                payload = json.load(result)
+        except HTTPError as exc:
+            raise RuntimeError(f"{method} {path}: HTTP {exc.code}") from None
+        except (URLError, TimeoutError, ValueError):
+            raise RuntimeError(f"{method} {path}: transport or JSON failure") from None
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            raise RuntimeError(f"{method} {path}: unsuccessful API response")
+        return payload["data"]
+
+
+def bootstrap(version: str):
+    credentials = json.loads(Path("/run/compat/credentials.json").read_text())
+    admin = Client(ADMIN)
+    deadline = time.monotonic() + 45
+    while True:
+        try:
+            complete = admin.call("GET", "/auth/initial-setup-complete")["complete"]
+            break
+        except RuntimeError:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "Initial setup endpoint did not become ready"
+                ) from None
+            time.sleep(2)
+    if complete:
+        raise RuntimeError("Refusing to bootstrap a previously initialized instance")
+    identity = {
+        "email": "admin@compatibility.invalid",
+        "password": credentials["password"],
+    }
+    admin.call(
+        "PUT",
+        "/auth/set-server-admin",
+        {**identity, "setupToken": credentials["setup_token"]},
+    )
+    admin.call("POST", "/auth/login", identity)
+    if admin.call("GET", "/server-info")["version"] != version:
+        raise RuntimeError("Running Pangolin version does not match requested release")
+    admin.call(
+        "PUT",
+        "/org",
+        {
+            "orgId": ORG,
+            "name": "Disposable compatibility tests",
+            "subnet": "100.90.128.0/24",
+            "utilitySubnet": "100.96.128.0/24",
+        },
+    )
+    admin.call("PUT", f"/org/{ORG}/site", {"name": "Local test site", "type": "local"})
+    resource = admin.call(
+        "PUT",
+        f"/org/{ORG}/resource",
+        {
+            "name": "Disposable resource",
+            "mode": "http",
+            "domainId": "compat",
+            "subdomain": "resource",
+        },
+    )
+    key = admin.call("PUT", f"/org/{ORG}/api-key", {"name": "IP rule manager"})
+    admin.call(
+        "POST",
+        f"/org/{ORG}/api-key/{key['apiKeyId']}/actions",
+        {"actionIds": list(ACTIONS)},
+    )
+    if admin.call("GET", f"/org/{ORG}/api-key/{key['apiKeyId']}")["isRoot"]:
+        raise RuntimeError("Application test key must not be root")
+    granted = admin.call("GET", f"/org/{ORG}/api-key/{key['apiKeyId']}/actions")
+    if {item["actionId"] for item in granted["actions"]} != set(ACTIONS):
+        raise RuntimeError(
+            "Application test key does not have exactly the required actions"
+        )
+    api = Client(API, f"{key['apiKeyId']}.{key['apiKey']}")
+    rid = resource["resourceId"]
+    if api.call("GET", f"/resource/{rid}")["resourceId"] != rid:
+        raise RuntimeError("Authenticated resource lookup returned the wrong resource")
+    if not any(
+        item["resourceId"] == rid
+        for item in api.call("GET", f"/org/{ORG}/resources")["resources"]
+    ):
+        raise RuntimeError("Authenticated resource listing omitted the test resource")
+    print("PASS Bootstrap: admin, organization, local site, resource, scoped token")
+    print(f"PASS API authentication and resource discovery against Pangolin {version}")
+    return admin, api, rid
 
 
 def main() -> int:
-    base = os.environ["PANGOLIN_URL"].rstrip("/")
-    token = os.environ["PANGOLIN_TOKEN"]
-    resource_id = int(os.environ["COMPAT_RESOURCE_ID"])
-
-    # Keep this probe read-only. A separate phase will provision a fully
-    # disposable Pangolin instance before testing mutations.
-    paths = (
-        (f"/v1/resource/{resource_id}", "resource"),
-        (f"/v1/resource/{resource_id}/rules?limit=10000", "rules"),
-        (f"/v1/resource/{resource_id}/roles", "roles"),
-        (f"/v1/resource/{resource_id}/users", "users"),
-    )
-    failed = False
-    for path, field in paths:
-        request = Request(
-            base + path,
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-        )
-        try:
-            with urlopen(request, timeout=15) as response:
-                data = json.load(response)
-            if not isinstance(data, dict) or not isinstance(data.get("data"), dict):
-                raise ValueError("missing data object")
-            payload = data["data"]
-            if field != "resource" and not isinstance(payload.get(field), list):
-                raise ValueError(f"missing {field} list")
-            if field == "resource" and not payload:
-                raise ValueError("empty resource metadata")
-            print(f"PASS {path}")
-        except (HTTPError, URLError, ValueError, TimeoutError, json.JSONDecodeError) as exc:
-            # Avoid echoing API response bodies, tokens, or sensitive URLs.
-            print(f"FAIL {field}: {type(exc).__name__}", file=sys.stderr)
-            failed = True
-    return 1 if failed else 0
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", required=True, choices=("1.24.0", "1.25.0-rc.0"))
+    args = parser.parse_args()
+    try:
+        bootstrap(args.version)
+        return 0
+    except (RuntimeError, OSError, KeyError, TypeError, ValueError) as exc:
+        print(f"FAIL Bootstrap: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
