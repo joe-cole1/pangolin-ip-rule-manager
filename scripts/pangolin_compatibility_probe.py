@@ -1,4 +1,4 @@
-"""Bootstrap only our disposable Compose service; never accept an external URL."""
+"""Bootstrap and test our disposable Compose service; never accept an external URL."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import http.cookiejar
 import json
 import sys
 import time
-from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import (
     HTTPCookieProcessor,
@@ -72,8 +71,7 @@ class Client:
         return payload["data"]
 
 
-def bootstrap(version: str):
-    credentials = json.loads(Path("/run/compat/credentials.json").read_text())
+def bootstrap(version: str, credentials):
     admin = Client(ADMIN)
     deadline = time.monotonic() + 45
     while True:
@@ -151,12 +149,20 @@ def bootstrap(version: str):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True, choices=("1.24.0", "1.25.0-rc.0"))
+    parser.add_argument("--fail-after-bootstrap", action="store_true")
     args = parser.parse_args()
     try:
-        bootstrap(args.version)
+        admin, api, rid = bootstrap(args.version, json.load(sys.stdin))
+        if args.fail_after_bootstrap:
+            raise RuntimeError(
+                "Intentional failure after bootstrap: teardown rehearsal"
+            )
+        from live_checks import run_checks
+
+        run_checks(admin, api, rid, ORG, ACTIONS)
         return 0
     except (RuntimeError, OSError, KeyError, TypeError, ValueError) as exc:
-        print(f"FAIL Bootstrap: {exc}", file=sys.stderr)
+        print(f"FAIL Compatibility: {exc}", file=sys.stderr)
         return 1
 
 

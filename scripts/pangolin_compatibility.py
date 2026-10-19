@@ -23,12 +23,13 @@ IMAGES = {
 }
 
 
-def docker(args, *, env, timeout=60):
+def docker(args, *, env, timeout=60, input=None):
     return subprocess.run(
         ["docker", "--context", "default", *args],
         env=env,
         capture_output=True,
         text=True,
+        input=input,
         timeout=timeout,
         check=True,
     ).stdout.strip()
@@ -55,6 +56,7 @@ def main() -> int:
     parser.add_argument("--version", choices=IMAGES, default="1.24.0")
     parser.add_argument("--project", default="pangolin-compat-" + secrets.token_hex(8))
     parser.add_argument("--cleanup", action="store_true")
+    parser.add_argument("--fail-after-bootstrap", action="store_true")
     args = parser.parse_args()
     if not re.fullmatch(r"pangolin-compat-[a-z0-9-]+", args.project):
         parser.error("Expected a generated pangolin-compat- project name")
@@ -89,13 +91,6 @@ def main() -> int:
         server_secret = secrets.token_hex(32)
         password = secrets.token_urlsafe(32) + "aA1!"
         credentials = {"setup_token": setup_token, "password": password}
-        for name, content in {
-            "credentials.json": json.dumps(credentials),
-            "pangolin.env": f"PANGOLIN_SETUP_TOKEN={setup_token}\nSERVER_SECRET={server_secret}\n",
-        }.items():
-            path = directory / name
-            path.write_text(content)
-            path.chmod(0o600)
         config = {
             "app": {
                 "dashboard_url": "http://pangolin:3000",
@@ -131,6 +126,8 @@ def main() -> int:
                 "COMPAT_GID": str(os.getgid()),
                 "COMPAT_VERSION": args.version,
                 "COMPAT_REPO": str(REPO),
+                "COMPAT_SETUP_TOKEN": setup_token,
+                "COMPAT_SERVER_SECRET": server_secret,
             }
         )
         compose = [
@@ -177,20 +174,40 @@ def main() -> int:
                 != "true"
             ):
                 raise RuntimeError("Test network must be internal")
-            stage = "bootstrap"
+            stage = "bootstrap / live compatibility"
+            command = [*compose, "run", "--rm", "--no-deps", "-T", "runner"]
+            if args.fail_after_bootstrap:
+                command.extend(
+                    [
+                        "python",
+                        "-B",
+                        "scripts/pangolin_compatibility_probe.py",
+                        "--version",
+                        args.version,
+                        "--fail-after-bootstrap",
+                    ]
+                )
             output = docker(
-                [*compose, "run", "--rm", "--no-deps", "-T", "runner"],
+                command,
                 env=env,
-                timeout=180,
+                timeout=300,
+                input=json.dumps(credentials),
             )
             print(sanitized(output))
-            results.append("Bootstrap and authenticated resource discovery: PASS")
+            results.extend(
+                line for line in output.splitlines() if line.startswith("PASS ")
+            )
         except (subprocess.SubprocessError, OSError, RuntimeError) as exc:
             failed = True
             results.append(f"{stage}: FAIL ({type(exc).__name__})")
             print(f"FAIL {stage}: {type(exc).__name__}", file=sys.stderr)
             if isinstance(exc, subprocess.CalledProcessError):
                 print(sanitized(exc.stdout + exc.stderr))
+                results.extend(
+                    line
+                    for line in (exc.stdout + exc.stderr).splitlines()
+                    if line.startswith(("PASS ", "FAIL "))
+                )
             try:
                 print(
                     sanitized(

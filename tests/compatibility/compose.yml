@@ -1,7 +1,9 @@
 services:
   pangolin:
     image: ${COMPAT_PANGOLIN_IMAGE:?}
-    env_file: ${COMPAT_DIR:?}/pangolin.env
+    environment:
+      PANGOLIN_SETUP_TOKEN: ${COMPAT_SETUP_TOKEN:?}
+      SERVER_SECRET: ${COMPAT_SERVER_SECRET:?}
     volumes:
       - config:/app/config
       - ${COMPAT_DIR:?}/config.yml:/app/config/config.yml:ro
@@ -22,13 +24,12 @@ services:
     working_dir: /work
     command: [python, -B, scripts/pangolin_compatibility_probe.py, --version, "${COMPAT_VERSION:?}"]
     environment:
-      PYTHONPATH: /work
+      PYTHONPATH: /work:/work/tests/compatibility
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       CROWDSEC_ENABLED: "false"
     volumes:
       - ${COMPAT_REPO:?}:/work:ro
-      - ${COMPAT_DIR:?}:/run/compat:ro
     networks: [isolated]
     read_only: true
     tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777"]

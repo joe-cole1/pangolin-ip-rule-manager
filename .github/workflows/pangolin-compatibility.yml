@@ -2,6 +2,16 @@ name: Pangolin compatibility
 
 on:
   workflow_dispatch:
+    inputs:
+      pangolin_version:
+        description: Pinned Pangolin release to launch (both compares baseline and candidate)
+        type: choice
+        options: [both, 1.24.0, 1.25.0-rc.0]
+        default: both
+      exercise_failure:
+        description: Intentionally fail after bootstrap to verify diagnostics and teardown
+        type: boolean
+        default: false
   # Owner-applied label: pre-merge validation without automatic runs on PR changes.
   pull_request:
     types: [labeled]
@@ -13,19 +23,31 @@ jobs:
   compatibility:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.label.name == 'pangolin-compatibility' &&
+      ((github.event.label.name == 'pangolin-compatibility' ||
+        github.event.label.name == 'pangolin-compatibility-failure') &&
        github.actor == github.repository_owner &&
        github.event.pull_request.head.repo.full_name == github.repository)
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(inputs.pangolin_version == '1.24.0' && '["1.24.0"]' || inputs.pangolin_version == '1.25.0-rc.0' && '["1.25.0-rc.0"]' || '["1.24.0", "1.25.0-rc.0"]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     env:
-      COMPAT_PROJECT: pangolin-compat-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPAT_PROJECT: pangolin-compat-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      COMPAT_VERSION: ${{ matrix.version }}
+      COMPAT_EXERCISE_FAILURE: ${{ inputs.exercise_failure || github.event.label.name == 'pangolin-compatibility-failure' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Bootstrap disposable Pangolin baseline
-        run: python3 scripts/pangolin_compatibility.py --version 1.24.0 --project "$COMPAT_PROJECT"
+      - name: Run live compatibility checks (${{ matrix.version }})
+        run: |
+          args=()
+          if [ "$COMPAT_EXERCISE_FAILURE" = true ]; then
+            args+=(--fail-after-bootstrap)
+          fi
+          python3 scripts/pangolin_compatibility.py --version "$COMPAT_VERSION" --project "$COMPAT_PROJECT" "${args[@]}"
       - name: Fallback teardown (including cancelled or failed tests)
         if: always()
         run: python3 scripts/pangolin_compatibility.py --cleanup --project "$COMPAT_PROJECT"
