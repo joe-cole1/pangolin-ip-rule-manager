@@ -1,0 +1,49 @@
+name: Pangolin API compatibility (isolated test instance)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pangolin_version:
+        description: 'Version label of the isolated test instance (informational)'
+        required: true
+        default: '1.25.0-rc.0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pangolin-compatibility
+  cancel-in-progress: false
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pangolin-compatibility
+    env:
+      PANGOLIN_URL: ${{ secrets.COMPAT_PANGOLIN_URL }}
+      PANGOLIN_TOKEN: ${{ secrets.COMPAT_PANGOLIN_TOKEN }}
+      COMPAT_RESOURCE_ID: ${{ secrets.COMPAT_RESOURCE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Verify isolated test configuration
+        run: |
+          python - <<'PY'
+          import os
+          from urllib.parse import urlsplit
+          required = ("PANGOLIN_URL", "PANGOLIN_TOKEN", "COMPAT_RESOURCE_ID")
+          missing = [name for name in required if not os.getenv(name)]
+          if missing:
+              raise SystemExit("Missing compatibility environment secrets: " + ", ".join(missing))
+          url = urlsplit(os.environ["PANGOLIN_URL"])
+          if url.scheme != "https" or not url.hostname:
+              raise SystemExit("Compatibility API URL must use HTTPS")
+          if not os.environ["COMPAT_RESOURCE_ID"].isdigit():
+              raise SystemExit("COMPAT_RESOURCE_ID must be numeric")
+          print("Configuration present. Operator must ensure endpoint is an isolated test instance.")
+          PY
+      - name: Run read-only compatibility probes
+        run: python scripts/pangolin_compatibility_probe.py
