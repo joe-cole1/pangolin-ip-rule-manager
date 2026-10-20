@@ -15,11 +15,17 @@ generated for each run, passed through process memory/environment and stdin,
 and discarded after teardown. No credential files are written. The repository
 is mounted read-only.
 
-The selected versions are allowlisted and pinned by tag plus multi-platform
-manifest digest in `scripts/pangolin_compatibility.py`. The running server's
-`/api/v1/server-info` version is checked independently after login. A missing
-artifact or version mismatch fails; there is no replacement image or external
-endpoint fallback.
+The requested release tag is validated before creating the matrix. Only numbered
+release tags, including prereleases such as `1.25.0-rc.0`, are accepted; a leading
+`v` and surrounding whitespace are removed. Image names, URLs, `latest`, and shell
+syntax are rejected. The image repository is fixed to `ghcr.io/fosrl/pangolin`.
+The known 1.24.0 baseline retains its checked-in manifest digest. Other versions
+are pulled by tag, resolved through Docker's image metadata, and locked to that
+digest before Compose starts. The exact image is recorded in the job summary.
+Retagging upstream can change the digest on a later run, but cannot change the
+image selected within a run. The running server's `/api/v1/server-info` version
+is checked independently after login. A missing artifact or version mismatch
+fails; there is no replacement image or external endpoint fallback.
 
 Supported bootstrap sequence, verified in both upstream release sources:
 
@@ -75,12 +81,21 @@ The script uses the local default Docker context, rejects a remote TCP endpoint,
 ignores production environment variables and `.env`, and creates its own unique
 project. Never run the inner probe directly against another deployment.
 
-After this workflow exists on `master`, use Actions → Pangolin compatibility →
-Run workflow. Select `both` (default), `1.24.0`, or `1.25.0-rc.0`. The choice
-selects actual pinned containers, not an informational version label. Before
-merge, the repository owner can manually apply the
+Use Actions → Pangolin compatibility → Run workflow. Paste the tag from the
+[official release page](https://github.com/fosrl/pangolin/releases) into
+`pangolin_version` (default `1.25.0-rc.0`). Keep `compare_baseline` checked to also
+run the pinned 1.24.0 baseline in an independent job; uncheck it to test only the
+entered version. Selecting 1.24.0 runs it once. No source edits are needed to try
+a new release. The input selects the actual container, not an informational
+version label. A valid-looking tag with no published image fails during image
+resolution. Future releases may need bootstrap changes; a failure must be
+investigated rather than treated automatically as an application regression.
+
+To validate a workflow change before merge, select its branch when dispatching.
+Alternatively, the repository owner can manually apply the
 `pangolin-compatibility` label to a same-repository PR. This **label event only**
-launches both release jobs; commits and ordinary PR events do not launch it.
+uses the default candidate (1.25.0-rc.0) and baseline; commits and ordinary PR
+events do not launch it.
 Remove and reapply the label to run again. The workflow has read-only repository
 permissions, does not receive repository secrets, and does not persist checkout
 credentials. No schedule is enabled.
@@ -134,10 +149,12 @@ for consumed fields, existing unit coverage, and pre-existing limitations.
 
 To add a live check, extend `tests/compatibility/live_checks.py`, use the generated
 fixtures and actual application calls, verify upstream effects as well as state,
-and emit a named PASS only after all assertions in that category finish. Add a
-new release only after verifying its official manifest digest and source bootstrap
-contracts, then extend the version allowlist and workflow choice/matrix. Never
-add an arbitrary API URL override.
+and emit a named PASS only after all assertions in that category finish. To test
+a new release, enter its tag when dispatching and inspect the resolved digest,
+bootstrap, checks and teardown. If bootstrap fails, compare that release's
+official source with the documented setup contracts. Updating the known baseline
+is a separate reviewed change to `BASELINE_VERSION` and `BASELINE_IMAGE` in
+`scripts/pangolin_compatibility.py`. Never add an arbitrary API URL override.
 
 Scheduling remains deliberately disabled. After sustained successful manual
 runs, add a weekly schedule and narrowly scoped infrastructure-change triggers
@@ -174,14 +191,14 @@ showed the intentional failure and successful removal of containers, volumes,
 and networks; the logged setup token was redacted. The normal-run flag defaults
 to false. No failure was converted into a successful workflow conclusion.
 
-Local validation: 233 pytest tests passed on Python 3.12; the new harness passes
-Ruff 0.17.0 linting, repository-wide Ruff formatting passes, and actionlint
+Local validation: 259 pytest tests passed on Python 3.12; repository-wide
+Ruff 0.17.1 linting and formatting pass, and actionlint
 1.7.12 validates this workflow. Compose configuration was validated by the
 actual hosted runs. This workspace has no Docker Engine, so live execution was
 performed on GitHub rather than claimed as a local test. CodeQL and both native
 application image smoke jobs passed on the validated implementation.
 
-Repository-wide Ruff lint still reports three pre-existing `UP017` findings:
-`app.py` lines 136/400 and `crowdsec_connector.py` line 35. Those same findings
-fail the current master Python workflow before pytest. Production source and
-the canonical lint gate are intentionally unchanged in this compatibility PR.
+The three `UP017` findings that blocked ordinary Python CI are resolved by using
+the standard library's `UTC` alias in `app.py` and `crowdsec_connector.py`. This
+alias is the same timezone object as `timezone.utc`; timestamp formatting,
+expiration behavior and the canonical lint gate are unchanged.

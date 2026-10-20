@@ -1,4 +1,4 @@
-"""Run a pinned Pangolin release in a fresh private Compose project, then remove it."""
+"""Resolve an official Pangolin release, test it in isolation, then remove it."""
 
 from __future__ import annotations
 
@@ -16,11 +16,27 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 COMPOSE = REPO / "tests/compatibility/compose.yml"
-# Official GHCR multi-platform manifests, verified through the public registry.
-IMAGES = {
-    "1.24.0": "ghcr.io/fosrl/pangolin:1.24.0@sha256:17774ddbb4bf13f4a2b9e813cc2dfc3ca8ded1c5745823624af632bab0376488",
-    "1.25.0-rc.0": "ghcr.io/fosrl/pangolin:1.25.0-rc.0@sha256:6d7f18326444a2be961fa86b3c941c83e4058dd770de732ef80b9e88d7655f65",
-}
+IMAGE_REPOSITORY = "ghcr.io/fosrl/pangolin"
+BASELINE_VERSION = "1.24.0"
+# Keep the known baseline immutable even if upstream changes its tag.
+BASELINE_IMAGE = (
+    IMAGE_REPOSITORY
+    + ":1.24.0@sha256:17774ddbb4bf13f4a2b9e813cc2dfc3ca8ded1c5745823624af632bab0376488"
+)
+
+
+def release_version(value: str) -> str:
+    """Accept release tags, never image names, URLs, moving tags or CLI options."""
+    version = value.strip().removeprefix("v")
+    if len(version) > 128 or not re.fullmatch(
+        r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+        r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+        version,
+    ):
+        raise argparse.ArgumentTypeError(
+            "Expected a release tag such as 1.25.0 or 1.25.0-rc.0 (optional v prefix)"
+        )
+    return version
 
 
 def docker(args, *, env, timeout=60, input=None):
@@ -33,6 +49,34 @@ def docker(args, *, env, timeout=60, input=None):
         timeout=timeout,
         check=True,
     ).stdout.strip()
+
+
+def resolve_image(version: str, env) -> str:
+    version = release_version(version)
+    if version == BASELINE_VERSION:
+        return BASELINE_IMAGE
+    tag = f"{IMAGE_REPOSITORY}:{version}"
+    docker(["pull", "--quiet", tag], env=env, timeout=240)
+    try:
+        digests = json.loads(
+            docker(
+                ["image", "inspect", tag, "--format", "{{json .RepoDigests}}"],
+                env=env,
+            )
+        )
+    except ValueError:
+        raise RuntimeError("Docker did not return image digests") from None
+    if not isinstance(digests, list):
+        raise TypeError("Docker did not return image digests")
+    matches = {
+        item
+        for item in digests
+        if isinstance(item, str)
+        and re.fullmatch(re.escape(IMAGE_REPOSITORY) + r"@sha256:[a-f0-9]{64}", item)
+    }
+    if len(matches) != 1:
+        raise RuntimeError("Expected one digest for the official Pangolin image")
+    return f"{tag}@{matches.pop().split('@')[1]}"
 
 
 def clean(project: str, env) -> None:
@@ -53,11 +97,22 @@ def clean(project: str, env) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", choices=IMAGES, default="1.24.0")
+    parser.add_argument("--version", type=release_version, default=BASELINE_VERSION)
     parser.add_argument("--project", default="pangolin-compat-" + secrets.token_hex(8))
-    parser.add_argument("--cleanup", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--cleanup", action="store_true")
+    mode.add_argument(
+        "--matrix", action="store_true", help="Print validated CI versions"
+    )
+    parser.add_argument("--compare-baseline", action="store_true")
     parser.add_argument("--fail-after-bootstrap", action="store_true")
     args = parser.parse_args()
+    if args.matrix:
+        versions = [BASELINE_VERSION] if args.compare_baseline else []
+        print(json.dumps(list(dict.fromkeys([*versions, args.version]))))
+        return 0
+    if args.compare_baseline:
+        parser.error("--compare-baseline requires --matrix")
     if not re.fullmatch(r"pangolin-compat-[a-z0-9-]+", args.project):
         parser.error("Expected a generated pangolin-compat- project name")
     if not shutil.which("docker"):
@@ -119,7 +174,6 @@ def main() -> int:
             parser.error("Dockerfile must pin the Python base image by digest")
         env.update(
             {
-                "COMPAT_PANGOLIN_IMAGE": IMAGES[args.version],
                 "COMPAT_PYTHON_IMAGE": python_image[1],
                 "COMPAT_DIR": temp,
                 "COMPAT_UID": str(os.getuid()),
@@ -147,6 +201,12 @@ def main() -> int:
             return "\n".join("[compat] " + line for line in value.splitlines())
 
         try:
+            stage = "image resolution"
+            image = resolve_image(args.version, env)
+            env["COMPAT_PANGOLIN_IMAGE"] = image
+            results.append(f"Image: `{image}`")
+            print(f"[compat] Resolved image: {image}", flush=True)
+            stage = "configuration"
             docker([*compose, "config", "--quiet"], env=env)
             stage = "image pull"
             docker([*compose, "pull", "--quiet"], env=env, timeout=240)
@@ -197,7 +257,7 @@ def main() -> int:
             results.extend(
                 line for line in output.splitlines() if line.startswith("PASS ")
             )
-        except (subprocess.SubprocessError, OSError, RuntimeError) as exc:
+        except (subprocess.SubprocessError, OSError, RuntimeError, TypeError) as exc:
             failed = True
             results.append(f"{stage}: FAIL ({type(exc).__name__})")
             print(f"FAIL {stage}: {type(exc).__name__}", file=sys.stderr)

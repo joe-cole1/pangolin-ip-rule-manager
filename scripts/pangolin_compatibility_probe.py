@@ -148,7 +148,8 @@ def bootstrap(version: str, credentials):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", required=True, choices=("1.24.0", "1.25.0-rc.0"))
+    # The host validates the tag; bootstrap verifies the actual server version.
+    parser.add_argument("--version", required=True)
     parser.add_argument("--fail-after-bootstrap", action="store_true")
     args = parser.parse_args()
     try:

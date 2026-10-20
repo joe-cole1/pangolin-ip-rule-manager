@@ -4,10 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       pangolin_version:
-        description: Pinned Pangolin release to launch (both compares baseline and candidate)
-        type: choice
-        options: [both, 1.24.0, 1.25.0-rc.0]
-        default: both
+        description: Official Pangolin release tag (e.g. 1.25.0-rc.0; optional v prefix)
+        type: string
+        required: true
+        default: 1.25.0-rc.0
+      compare_baseline:
+        description: Also test the pinned 1.24.0 baseline in a separate job
+        type: boolean
+        default: true
       exercise_failure:
         description: Intentionally fail after bootstrap to verify diagnostics and teardown
         type: boolean
@@ -20,17 +24,40 @@ permissions:
   contents: read
 
 jobs:
-  compatibility:
+  prepare:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       ((github.event.label.name == 'pangolin-compatibility' ||
         github.event.label.name == 'pangolin-compatibility-failure') &&
        github.actor == github.repository_owner &&
        github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      versions: ${{ steps.versions.outputs.versions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Validate release tag and select versions
+        id: versions
+        env:
+          COMPAT_VERSION: ${{ github.event_name == 'pull_request' && '1.25.0-rc.0' || inputs.pangolin_version }}
+          COMPAT_COMPARE_BASELINE: ${{ github.event_name == 'pull_request' || inputs.compare_baseline }}
+        run: |
+          args=()
+          if [ "$COMPAT_COMPARE_BASELINE" = true ]; then
+            args+=(--compare-baseline)
+          fi
+          versions=$(python3 scripts/pangolin_compatibility.py --matrix --version="$COMPAT_VERSION" "${args[@]}")
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+
+  compatibility:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
-        version: ${{ fromJSON(inputs.pangolin_version == '1.24.0' && '["1.24.0"]' || inputs.pangolin_version == '1.25.0-rc.0' && '["1.25.0-rc.0"]' || '["1.24.0", "1.25.0-rc.0"]') }}
+        version: ${{ fromJSON(needs.prepare.outputs.versions) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     env:
