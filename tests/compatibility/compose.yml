@@ -1,0 +1,46 @@
+services:
+  pangolin:
+    image: ${COMPAT_PANGOLIN_IMAGE:?}
+    environment:
+      PANGOLIN_SETUP_TOKEN: ${COMPAT_SETUP_TOKEN:?}
+      SERVER_SECRET: ${COMPAT_SERVER_SECRET:?}
+    volumes:
+      - config:/app/config
+      - ${COMPAT_DIR:?}/config.yml:/app/config/config.yml:ro
+    networks: [isolated]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 2g
+    pids_limit: 256
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://localhost:3003/v1/]
+      interval: 3s
+      timeout: 3s
+      retries: 50
+
+  runner:
+    image: ${COMPAT_PYTHON_IMAGE:?}
+    user: ${COMPAT_UID:?}:${COMPAT_GID:?}
+    working_dir: /work
+    command: [python, -B, scripts/pangolin_compatibility_probe.py, --version, "${COMPAT_VERSION:?}"]
+    environment:
+      PYTHONPATH: /work:/work/tests/compatibility
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      CROWDSEC_ENABLED: "false"
+    volumes:
+      - ${COMPAT_REPO:?}:/work:ro
+    networks: [isolated]
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777"]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
+    pids_limit: 64
+
+networks:
+  isolated:
+    internal: true
+
+volumes:
+  config: {}

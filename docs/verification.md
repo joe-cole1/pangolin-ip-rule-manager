@@ -41,6 +41,12 @@ with arm64 emulation already configured). Local architecture coverage depends on
 the engine; CI requires both native architecture jobs to pass. Image publication
 and production deployment are separate from these checks.
 
+Real Pangolin API compatibility is checked by the separately triggered
+[disposable compatibility suite](pangolin-compatibility.md). It provisions its
+own pinned Pangolin versions and ephemeral credentials. Ordinary image and unit
+jobs do not launch it. Full Traefik/Badger authentication remains a distinct
+manual deployment check.
+
 The initial smoke test in PR #136 exposed that existing HTTP handlers retained
 the pre-load state mapping, so new check-ins were not persisted after restart.
 The state-loading correction in merged
