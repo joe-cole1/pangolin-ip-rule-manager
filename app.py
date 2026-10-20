@@ -5,7 +5,7 @@ import os
 import tempfile
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -133,7 +133,7 @@ _api_rate_limit_lock = threading.Lock()
 
 
 def now_utc_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 def redact_headers_for_log(headers: dict[str, str]) -> dict[str, str]:
@@ -397,7 +397,7 @@ def delete_ip_rule_if_created_by_us(ip: str, rid: int) -> bool:
 def cleanup_old_ips():
     print("[cleanup] starting")
 
-    now_sec = datetime.now(timezone.utc).replace(microsecond=0)
+    now_sec = datetime.now(UTC).replace(microsecond=0)
     cutoff = now_sec - timedelta(minutes=RETENTION_MINUTES)
     with state_lock:
         ips = list(state.keys())

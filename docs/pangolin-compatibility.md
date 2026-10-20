@@ -191,14 +191,14 @@ showed the intentional failure and successful removal of containers, volumes,
 and networks; the logged setup token was redacted. The normal-run flag defaults
 to false. No failure was converted into a successful workflow conclusion.
 
-Local validation: 233 pytest tests passed on Python 3.12; the new harness passes
-Ruff 0.17.0 linting, repository-wide Ruff formatting passes, and actionlint
+Local validation: 259 pytest tests passed on Python 3.12; repository-wide
+Ruff 0.17.1 linting and formatting pass, and actionlint
 1.7.12 validates this workflow. Compose configuration was validated by the
 actual hosted runs. This workspace has no Docker Engine, so live execution was
 performed on GitHub rather than claimed as a local test. CodeQL and both native
 application image smoke jobs passed on the validated implementation.
 
-Repository-wide Ruff lint still reports three pre-existing `UP017` findings:
-`app.py` lines 136/400 and `crowdsec_connector.py` line 35. Those same findings
-fail the current master Python workflow before pytest. Production source and
-the canonical lint gate are intentionally unchanged in this compatibility PR.
+The three `UP017` findings that blocked ordinary Python CI are resolved by using
+the standard library's `UTC` alias in `app.py` and `crowdsec_connector.py`. This
+alias is the same timezone object as `timezone.utc`; timestamp formatting,
+expiration behavior and the canonical lint gate are unchanged.
