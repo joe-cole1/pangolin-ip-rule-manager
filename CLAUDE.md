@@ -33,8 +33,8 @@ pangolin-ip-rule-manager/
     └── test_crowdsec.py     # CrowdSec connector unit tests
 ```
 
-There is no `Makefile` and no `pyproject.toml`. The application uses Python stdlib only —
-no pip dependencies at runtime.
+There is no `Makefile`. `pyproject.toml` configures development tooling. The
+application uses Python stdlib only — no pip dependencies at runtime.
 
 ---
 
@@ -93,6 +93,14 @@ Tests live in `tests/test_app.py` (app-level) and `tests/test_crowdsec.py` (Crow
 connector). `conftest.py` handles `sys.path`. All tests use `monkeypatch` to avoid
 real subprocess or network calls — no live instance or credentials are needed to run
 the suite.
+
+Live Pangolin compatibility checks are separate from ordinary pytest. See
+`docs/pangolin-compatibility.md` and the endpoint inventory in
+`docs/pangolin-api-contracts.md`. The Compose harness creates its own disposable
+Pangolin, organization, users, resources, and scoped credentials on an internal
+network; no production URL or credentials are accepted. Run it manually when
+validating upstream API compatibility. Synthetic identity-header tests do not
+replace manual Traefik/Badger authentication checks.
 
 ---
 

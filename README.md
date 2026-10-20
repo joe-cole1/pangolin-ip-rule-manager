@@ -417,6 +417,11 @@ The HTML page uses inline styles and scripts for its layout, copy-IP button, and
 
 ### Upgrade Validation
 
+For a repeatable real-API check, run the [disposable compatibility suite](docs/pangolin-compatibility.md).
+It provisions its own Pangolin installation and credentials and checks the application's API,
+authorization, rule lifecycle, and ownership behavior. It is separate from ordinary unit/image CI.
+The manual proxy checks below still cover Badger/Traefik behavior outside that suite's scope.
+
 The automated tests use a mocked Pangolin 1.24 API; they do not replace checking the deployed proxy configuration. Before deploying an upgrade, use the separate test container, a throwaway Pangolin resource, and test credentials. Keep CrowdSec disabled for this check so it cannot modify a live allowlist.
 
 1. Confirm `X-Proxy-Secret` is in **Custom Request Headers** and the check-in resource uses Pangolin user authentication. Keep its custom response headers empty for this check.

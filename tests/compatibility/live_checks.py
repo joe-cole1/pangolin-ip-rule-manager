@@ -49,7 +49,7 @@ def run_checks(admin, api, role_resource: int, org: str, actions):
         ].split("-", 1)
         user = type(admin)(admin.base)
         user.call(
-            "POST",
+            "PUT",
             "/auth/signup",
             {
                 "email": email,
@@ -241,6 +241,7 @@ def run_checks(admin, api, role_resource: int, org: str, actions):
                 and matching(rid, ip) == created,
                 "Repeat registration created a duplicate",
             )
+            saved = json.loads(Path(app.STATE_FILE).read_text())
             app.state.clear()
             app.rules_cache.clear()
             app.load_state()
