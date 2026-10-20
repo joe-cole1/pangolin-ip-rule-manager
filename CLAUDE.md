@@ -122,17 +122,26 @@ ruff check --fix .
 ruff format .
 ```
 
-The CI workflow (`python-package.yml`) auto-fixes on push and opens a PR for any
-changes. On a PR build it checks without fixing and fails if violations remain.
+The CI workflow (`python-package.yml`) checks submitted source without rewriting
+it on both pushes and PRs. It runs the pinned tools from `requirements.txt` on
+the exact Python patch version read from `Dockerfile`. Fix lint and formatting
+locally; CI does not open automatic style-fix PRs.
 
 ---
 
-## Current state and next release
+## Release preparation
 
-**Current release:** `v2.3.0` on `master`
+[GitHub Releases](https://github.com/joe-cole1/pangolin-ip-rule-manager/releases)
+and their tags are the source of truth for published versions; `master` may
+contain unreleased changes. Release-note drafts live in `docs/releases/`, and
+version-specific migration instructions live in `docs/upgrading.md`.
 
-No outstanding planned changes. Start the next release cycle by creating a fresh
-`dev` branch from `master`.
+Compare the last published tag with the release commit before drafting notes.
+Describe only included changes, distinguish new breaking changes from historical
+prerequisites, and link to the applicable migration steps from the README.
+Keep deployment changes separate from maintainer-only CI changes. Do not label
+an unreleased version as the current release. Start a new release cycle from
+the latest `master`.
 
 ---
 
@@ -220,7 +229,7 @@ between items.
 2. Make changes on `dev`.
 3. Open PR: `dev` → `master`.
 4. Squash merge.
-5. Tag the release (e.g., `v2.2.3`).
+5. Tag the release commit after the release notes and upgrade guidance are merged.
 6. GitHub Actions (`docker-publish.yml`) triggers on release publish and builds
    a multi-arch image (`linux/amd64`, `linux/arm64`) pushed to
    `ghcr.io/joe-cole1/pangolin-ip-rule-manager:<version>`.
