@@ -6,38 +6,31 @@
 
 A lightweight Python service that automatically manages Pangolin IP bypass rules and (optionally) CrowdSec allowlist entries based on observed client IPs. It bootstraps trust from an authenticated device (like a phone) to a device that cannot authenticate (like a TV), while honoring each user's role-based permissions in Pangolin.
 
-## 🚨 BREAKING CHANGE: Upgrade Requirements
+<!-- Preserve links to the former unversioned upgrade warning. -->
+<a id="-breaking-change-upgrade-requirements"></a>
 
-Before upgrading to this version, make these changes:
+## Upgrading
 
-1. **Upgrade Badger to v1.4.1 or newer.** Older versions do not send the
-   `Remote-User-Id` value required to verify the user.
-2. **Add the `List Users` permission to the Pangolin API key used by this app.**
-   In Pangolin, open **Organization → API Keys**, select the key, open
-   **Permissions**, enable **List Users** under **Organization**, and click
-   **Save**. This changes the key's permissions but does not change the token
-   value, so you do not need to replace `PANGOLIN_TOKEN`.
-3. **Configure the required proxy secret.** Set `PROXY_SHARED_SECRET` in the
-   app and configure Pangolin to add the same value as the `X-Proxy-Secret`
-   custom request header. Follow [Set the Pangolin Proxy Secret](#set-the-pangolin-proxy-secret).
-4. **Pull the new image and force-recreate the container.** A normal restart
-   does not replace a container that was created from an older image.
+| Upgrade path | Required action |
+|---|---|
+| v3.0.0 or v3.0.1 → v3.0.2 | No new configuration, API permissions, Compose settings, or state-file migration. Keep the existing persistent volume and replace the container with the new image. |
+| v2.x or earlier → v3.x | Complete the [v3.0.0 migration](docs/upgrading.md#v300-breaking-changes-upgrading-from-v2x): Badger v1.4.1 or newer, **List Users** permission, and the shared proxy secret. |
 
-Do not enable **Allow All** and do not use a root API key. Keep the API key
-limited to the permissions listed below. The old **Get Organization User**
-permission is not used by this version and may be removed after the upgrade.
+See the [v3.0.2 release notes](docs/releases/v3.0.2.md) and
+[upgrade guide](docs/upgrading.md) for deployment, verification, and rollback.
+Published versions are listed in [GitHub Releases](https://github.com/joe-cole1/pangolin-ip-rule-manager/releases).
 
 ---
 
 ## Table of Contents
 
-- [🚨 Breaking Change: Upgrade Requirements](#-breaking-change-upgrade-requirements)
+- [Upgrading](#upgrading)
 - [Overview](#overview)
 - [The Problem It Solves](#the-problem-it-solves)
 - [How It Works](#how-it-works)
   - [Pangolin IP Rules Explained](#pangolin-ip-rules-explained)
   - [Role-Based Access Control](#role-based-access-control)
-  - [The Full Check-in Flow](#the-full-check-in-flow)
+  - [The Full Check-in Flow](#on-each-check-in-request)
 - [Prerequisites](#prerequisites)
   - [Pangolin Integration API](#pangolin-integration-api)
   - [API Token Permissions](#api-token-permissions)
@@ -386,7 +379,7 @@ Do not make the app's port directly accessible from the Internet. The app should
 
 ## Pangolin 1.24 Compatibility
 
-Pangolin [1.24.0](https://github.com/fosrl/pangolin/releases/tag/1.24.0) does not require new app environment variables or API permissions. The app uses the existing IP rule API and reads only resource display metadata, so the new `requestHeaders` and `responseHeaders` resource fields do not change its check-in flow. Keep the [existing upgrade requirements](#-breaking-change-upgrade-requirements), including Badger v1.4.1 or newer and **List Users** permission.
+Pangolin [1.24.0](https://github.com/fosrl/pangolin/releases/tag/1.24.0) does not require new app environment variables or API permissions. The app uses the existing IP rule API and reads only resource display metadata, so the new `requestHeaders` and `responseHeaders` resource fields do not change its check-in flow. The [v3.0.0 prerequisites](docs/upgrading.md#v300-breaking-changes-upgrading-from-v2x), including Badger v1.4.1 or newer and **List Users** permission, still apply.
 
 ### HTTP Method Rules and Priority
 
@@ -422,7 +415,7 @@ It provisions its own Pangolin installation and credentials and checks the appli
 authorization, rule lifecycle, and ownership behavior. It is separate from ordinary unit/image CI.
 The manual proxy checks below still cover Badger/Traefik behavior outside that suite's scope.
 
-The automated tests use a mocked Pangolin 1.24 API; they do not replace checking the deployed proxy configuration. Before deploying an upgrade, use the separate test container, a throwaway Pangolin resource, and test credentials. Keep CrowdSec disabled for this check so it cannot modify a live allowlist.
+Unit tests use a mocked Pangolin API; the separate compatibility suite uses real disposable Pangolin instances. Neither replaces checking the deployed proxy configuration. For the manual checks below, use a separate test container, a throwaway Pangolin resource, and test credentials. Keep CrowdSec disabled for this check so it cannot modify a live allowlist.
 
 1. Confirm `X-Proxy-Secret` is in **Custom Request Headers** and the check-in resource uses Pangolin user authentication. Keep its custom response headers empty for this check.
 2. Check in as a user with limited access. Confirm the displayed IP is correct, only permitted resources gain an IP / `ACCEPT` rule, and the phone and TV use the same public IP. Read the HTML result and inspect the rules rather than relying on HTTP 200.
@@ -474,7 +467,10 @@ GET /update?ip=203.0.113.42
 
 The IP must be a valid, globally routable address. Loopback, private, and link-local addresses are rejected.
 
-> ***WARNING:*** THIS FEATURE IS SIGNIFICANTLY CHANGING IN A FUTURE UPDATE TO ONLY ALLOW SPECIFIC PANGOLIN ROLES (e.g. Administrator) TO UTILIZE THIS ENDPOINT. THIS WILL BE A BREAKING CHANGE ON RELEASE.
+There is no separate administrator-only role setting for this endpoint. An
+authenticated user can register an IP only for resources their Pangolin account
+permits. Any future change to this access model will be documented in that
+release's migration notes.
 
 ### Invisible Check-in via CSS
 
@@ -499,7 +495,9 @@ Replace the URL with your actual check-in domain. The path can be anything as lo
 
 **Note:** This only works in a web UI. Native apps (Roku, Android TV, etc.) do not execute CSS, which is why the phone-based check-in flow exists in the first place. The two approaches complement each other.
 
-> ***NOTE:*** This functionality will likely be removed in the future. It is causing significant conflicts with the rest of the workflow.
+Invisible requests do not display the HTML result or authorization errors. Use
+an explicit authenticated check-in and inspect the managed rules when verifying
+that access was granted.
 
 ---
 
