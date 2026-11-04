@@ -6,7 +6,7 @@ credentials, CrowdSec, or deployment files are used.
 
 ## Architecture decision
 
-Use Docker Compose with two containers: an official Community/OSS Pangolin SQLite image and
+Use Docker Compose with two containers: an official CE or EE Pangolin SQLite image and
 a Python runner using the application's digest-pinned Python base image. Both
 join a fresh `internal: true` network. No ports are published, no socket is
 mounted, and neither container needs elevated capabilities. Pangolin's database
@@ -15,17 +15,27 @@ generated for each run, passed through process memory/environment and stdin,
 and discarded after teardown. No credential files are written. The repository
 is mounted read-only.
 
-The requested release tag is validated before creating the matrix. Only numbered
+The requested release tag and edition are validated before running. Only numbered
 release tags, including prereleases such as `1.25.0-rc.0`, are accepted; a leading
 `v` and surrounding whitespace are removed. Image names, URLs, `latest`, and shell
 syntax are rejected. The image repository is fixed to `ghcr.io/fosrl/pangolin`.
-The known 1.24.0 baseline retains its checked-in manifest digest. Other versions
+CE uses the numbered tag; EE uses `ee-<version>` from that same official repository.
+The known CE 1.24.0 baseline retains its checked-in manifest digest. Other images
 are pulled by tag, resolved through Docker's image metadata, and locked to that
 digest before Compose starts. The exact image is recorded in the job summary.
 Retagging upstream can change the digest on a later run, but cannot change the
 image selected within a run. The running server's `/api/v1/server-info` version
-is checked independently after login. A missing artifact or version mismatch
-fails; there is no replacement image or external endpoint fallback.
+is checked independently after login, along with `build == oss` for CE or
+`build == enterprise` for EE. EE also reports whether a license is active.
+A missing artifact, wrong edition or version mismatch fails; there is no CE
+fallback for an EE failure or external endpoint fallback.
+
+EE runs use the real Enterprise image without activating a license. The core
+organization, user, resource and IP-rule APIs used here are available without
+license activation. No license keys, license-server calls, database modifications
+to unlock features or licensing bypasses are supplied by the harness. These checks
+cover the updater's core APIs in EE; they do not certify licensed shared-policy,
+OIDC revalidation, session-management or other Enterprise-only features.
 
 Supported bootstrap sequence, verified in both upstream release sources:
 
@@ -75,6 +85,7 @@ Python 3.12 or newer:
 ```sh
 python3 scripts/pangolin_compatibility.py --version 1.24.0
 python3 scripts/pangolin_compatibility.py --version 1.25.0-rc.0
+python3 scripts/pangolin_compatibility.py --version 1.26.0 --edition ee
 ```
 
 The script uses the local default Docker context, rejects a remote TCP endpoint,
@@ -83,9 +94,12 @@ project. Never run the inner probe directly against another deployment.
 
 Use Actions → Pangolin compatibility → Run workflow. Paste the tag from the
 [official release page](https://github.com/fosrl/pangolin/releases) into
-`pangolin_version` (default `1.25.0-rc.0`). Keep `compare_baseline` checked to also
-run the pinned 1.24.0 baseline in an independent job; uncheck it to test only the
-entered version. Selecting 1.24.0 runs it once. No source edits are needed to try
+`pangolin_version` (default `1.26.0`). Choose `both` (the default), `ce` or `ee`
+under `edition`; each edition runs in its own job. Keep `compare_baseline` checked to also
+run 1.24.0 in each selected edition; its CE image is digest-pinned. Uncheck it to
+test only the entered version. Selecting 1.24.0 runs each edition once. The local
+CLI defaults to `--edition ce` for compatibility with existing callers.
+No source edits are needed to try
 a new release. The input selects the actual container, not an informational
 version label. A valid-looking tag with no published image fails during image
 resolution. Future releases may need bootstrap changes; a failure must be
@@ -94,7 +108,7 @@ investigated rather than treated automatically as an application regression.
 To validate a workflow change before merge, select its branch when dispatching.
 Alternatively, the repository owner can manually apply the
 `pangolin-compatibility` label to a same-repository PR. This **label event only**
-uses the default candidate (1.25.0-rc.0) and baseline; commits and ordinary PR
+uses both editions of the default candidate (1.26.0) and baseline; commits and ordinary PR
 events do not launch it.
 Remove and reapply the label to run again. The workflow has read-only repository
 permissions, does not receive repository secrets, and does not persist checkout
@@ -126,8 +140,8 @@ application image in a network-disabled container, also without live Pangolin.
 Neither is a Traefik/Badger end-to-end authentication test. No SSO login, OIDC
 provider, forwarded identity header authenticity, tunnel traffic, or actual
 resource bypass enforcement is tested by this two-container topology. The
-images are the OSS/Community edition; Enterprise licensing and policy overrides
-are not exercised.
+selected image's actual edition is verified. Enterprise license activation,
+licensed feature gates and Enterprise policy overrides are not exercised.
 
 To rehearse failure handling, select `exercise_failure` when dispatching, or
 apply the owner-only `pangolin-compatibility-failure` PR label. This deliberately
@@ -160,6 +174,13 @@ Scheduling remains deliberately disabled. After sustained successful manual
 runs, add a weekly schedule and narrowly scoped infrastructure-change triggers
 in a separate reviewed change. Keep compatibility execution separate from ordinary unit and
 container CI.
+
+The VPS repository can reuse this runner at a full immutable source commit from
+its stack-owned Pangolin CI. That integration derives baseline and candidate
+versions from the PR's Compose diff and runs CE and EE independently for each.
+It does not dispatch this repository's workflow or use production credentials.
+The application code tested is the code at the pinned harness commit, not a
+separately deployed updater image. Updating that source pin requires review.
 
 Result interpretation: both pass means no regression in tested functionality;
 baseline pass/candidate fail needs upstream investigation; both fail suggests a

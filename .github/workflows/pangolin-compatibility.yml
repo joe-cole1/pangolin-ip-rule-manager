@@ -4,10 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       pangolin_version:
-        description: Official Pangolin release tag (e.g. 1.25.0-rc.0; optional v prefix)
+        description: Official Pangolin release tag (e.g. 1.26.0; optional v prefix)
         type: string
         required: true
-        default: 1.25.0-rc.0
+        default: 1.26.0
+      edition:
+        description: Pangolin image editions to test independently
+        type: choice
+        options: [both, ce, ee]
+        default: both
       compare_baseline:
         description: Also test the pinned 1.24.0 baseline in a separate job
         type: boolean
@@ -35,6 +40,7 @@ jobs:
     timeout-minutes: 3
     outputs:
       versions: ${{ steps.versions.outputs.versions }}
+      editions: ${{ steps.versions.outputs.editions }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -42,8 +48,9 @@ jobs:
       - name: Validate release tag and select versions
         id: versions
         env:
-          COMPAT_VERSION: ${{ github.event_name == 'pull_request' && '1.25.0-rc.0' || inputs.pangolin_version }}
+          COMPAT_VERSION: ${{ github.event_name == 'pull_request' && '1.26.0' || inputs.pangolin_version }}
           COMPAT_COMPARE_BASELINE: ${{ github.event_name == 'pull_request' || inputs.compare_baseline }}
+          COMPAT_EDITION: ${{ github.event_name == 'pull_request' && 'both' || inputs.edition }}
         run: |
           args=()
           if [ "$COMPAT_COMPARE_BASELINE" = true ]; then
@@ -51,6 +58,13 @@ jobs:
           fi
           versions=$(python3 scripts/pangolin_compatibility.py --matrix --version="$COMPAT_VERSION" "${args[@]}")
           echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          case "$COMPAT_EDITION" in
+            both) editions='["ce","ee"]' ;;
+            ce) editions='["ce"]' ;;
+            ee) editions='["ee"]' ;;
+            *) echo 'Unsupported edition selection' >&2; exit 1 ;;
+          esac
+          echo "editions=$editions" >> "$GITHUB_OUTPUT"
 
   compatibility:
     needs: prepare
@@ -58,23 +72,25 @@ jobs:
       fail-fast: false
       matrix:
         version: ${{ fromJSON(needs.prepare.outputs.versions) }}
+        edition: ${{ fromJSON(needs.prepare.outputs.editions) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     env:
       COMPAT_PROJECT: pangolin-compat-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
       COMPAT_VERSION: ${{ matrix.version }}
+      COMPAT_EDITION: ${{ matrix.edition }}
       COMPAT_EXERCISE_FAILURE: ${{ inputs.exercise_failure || github.event.label.name == 'pangolin-compatibility-failure' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Run live compatibility checks (${{ matrix.version }})
+      - name: Run live compatibility checks (${{ matrix.version }}, ${{ matrix.edition }})
         run: |
           args=()
           if [ "$COMPAT_EXERCISE_FAILURE" = true ]; then
             args+=(--fail-after-bootstrap)
           fi
-          python3 scripts/pangolin_compatibility.py --version "$COMPAT_VERSION" --project "$COMPAT_PROJECT" "${args[@]}"
+          python3 scripts/pangolin_compatibility.py --version "$COMPAT_VERSION" --edition "$COMPAT_EDITION" --project "$COMPAT_PROJECT" "${args[@]}"
       - name: Fallback teardown (including cancelled or failed tests)
         if: always()
         run: python3 scripts/pangolin_compatibility.py --cleanup --project "$COMPAT_PROJECT"
