@@ -98,8 +98,11 @@ Live Pangolin compatibility checks are separate from ordinary pytest. See
 `docs/pangolin-compatibility.md` and the endpoint inventory in
 `docs/pangolin-api-contracts.md`. The Compose harness creates its own disposable
 Pangolin, organization, users, resources, and scoped credentials on an internal
-network; no production URL or credentials are accepted. Run it manually when
-validating upstream API compatibility. Synthetic identity-header tests do not
+network; no production URL or credentials are accepted. CE and EE image identity
+must be verified; EE uses no activated license and does not test licensed features.
+The source workflow runs manually or via owner-applied labels; the VPS repository
+also reuses a pinned harness commit in Pangolin update PR validation.
+Synthetic identity-header tests do not
 replace manual Traefik/Badger authentication checks.
 
 ---

@@ -22,7 +22,7 @@ services:
     image: ${COMPAT_PYTHON_IMAGE:?}
     user: ${COMPAT_UID:?}:${COMPAT_GID:?}
     working_dir: /work
-    command: [python, -B, scripts/pangolin_compatibility_probe.py, --version, "${COMPAT_VERSION:?}"]
+    command: [python, -B, scripts/pangolin_compatibility_probe.py, --version, "${COMPAT_VERSION:?}", --edition, "${COMPAT_EDITION:?}"]
     environment:
       PYTHONPATH: /work:/work/tests/compatibility
       PYTHONUNBUFFERED: "1"

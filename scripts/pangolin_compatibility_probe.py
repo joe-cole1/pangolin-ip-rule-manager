@@ -71,7 +71,7 @@ class Client:
         return payload["data"]
 
 
-def bootstrap(version: str, credentials):
+def bootstrap(version: str, credentials, edition: str = "ce"):
     admin = Client(ADMIN)
     deadline = time.monotonic() + 45
     while True:
@@ -96,8 +96,19 @@ def bootstrap(version: str, credentials):
         {**identity, "setupToken": credentials["setup_token"]},
     )
     admin.call("POST", "/auth/login", identity)
-    if admin.call("GET", "/server-info")["version"] != version:
+    info = admin.call("GET", "/server-info")
+    if info["version"] != version:
         raise RuntimeError("Running Pangolin version does not match requested release")
+    expected_build = {"ce": "oss", "ee": "enterprise"}[edition]
+    if info.get("build") != expected_build:
+        raise RuntimeError("Running Pangolin build does not match requested edition")
+    if edition == "ee":
+        if not isinstance(info.get("enterpriseLicenseValid"), bool):
+            raise RuntimeError("Enterprise license status is missing or malformed")
+        license_state = "active" if info["enterpriseLicenseValid"] else "inactive"
+        print(f"PASS Edition identity: EE enterprise build; license {license_state}")
+    else:
+        print("PASS Edition identity: CE oss build")
     admin.call(
         "PUT",
         "/org",
@@ -142,7 +153,10 @@ def bootstrap(version: str, credentials):
     ):
         raise RuntimeError("Authenticated resource listing omitted the test resource")
     print("PASS Bootstrap: admin, organization, local site, resource, scoped token")
-    print(f"PASS API authentication and resource discovery against Pangolin {version}")
+    print(
+        f"PASS API authentication and resource discovery against Pangolin {version} "
+        f"({edition.upper()})"
+    )
     return admin, api, rid
 
 
@@ -150,10 +164,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     # The host validates the tag; bootstrap verifies the actual server version.
     parser.add_argument("--version", required=True)
+    parser.add_argument("--edition", choices=("ce", "ee"), default="ce")
     parser.add_argument("--fail-after-bootstrap", action="store_true")
     args = parser.parse_args()
     try:
-        admin, api, rid = bootstrap(args.version, json.load(sys.stdin))
+        admin, api, rid = bootstrap(args.version, json.load(sys.stdin), args.edition)
         if args.fail_after_bootstrap:
             raise RuntimeError(
                 "Intentional failure after bootstrap: teardown rehearsal"

@@ -413,6 +413,9 @@ The HTML page uses inline styles and scripts for its layout, copy-IP button, and
 For a repeatable real-API check, run the [disposable compatibility suite](docs/pangolin-compatibility.md).
 It provisions its own Pangolin installation and credentials and checks the application's API,
 authorization, rule lifecycle, and ownership behavior. It is separate from ordinary unit/image CI.
+The workflow can test CE, EE or both with separate results and verifies the running
+server's edition. EE uses the actual Enterprise image without license activation;
+licensed Enterprise features remain outside these core API checks.
 The manual proxy checks below still cover Badger/Traefik behavior outside that suite's scope.
 
 Unit tests use a mocked Pangolin API; the separate compatibility suite uses real disposable Pangolin instances. Neither replaces checking the deployed proxy configuration. For the manual checks below, use a separate test container, a throwaway Pangolin resource, and test credentials. Keep CrowdSec disabled for this check so it cannot modify a live allowlist.

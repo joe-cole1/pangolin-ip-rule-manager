@@ -51,11 +51,13 @@ def docker(args, *, env, timeout=60, input=None):
     ).stdout.strip()
 
 
-def resolve_image(version: str, env) -> str:
+def resolve_image(version: str, env, edition: str = "ce") -> str:
     version = release_version(version)
-    if version == BASELINE_VERSION:
+    if edition not in ("ce", "ee"):
+        raise ValueError("Expected the ce or ee edition")
+    if version == BASELINE_VERSION and edition == "ce":
         return BASELINE_IMAGE
-    tag = f"{IMAGE_REPOSITORY}:{version}"
+    tag = f"{IMAGE_REPOSITORY}:{'ee-' if edition == 'ee' else ''}{version}"
     docker(["pull", "--quiet", tag], env=env, timeout=240)
     try:
         digests = json.loads(
@@ -98,6 +100,7 @@ def clean(project: str, env) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", type=release_version, default=BASELINE_VERSION)
+    parser.add_argument("--edition", choices=("ce", "ee"), default="ce")
     parser.add_argument("--project", default="pangolin-compat-" + secrets.token_hex(8))
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--cleanup", action="store_true")
@@ -179,6 +182,7 @@ def main() -> int:
                 "COMPAT_UID": str(os.getuid()),
                 "COMPAT_GID": str(os.getgid()),
                 "COMPAT_VERSION": args.version,
+                "COMPAT_EDITION": args.edition,
                 "COMPAT_REPO": str(REPO),
                 "COMPAT_SETUP_TOKEN": setup_token,
                 "COMPAT_SERVER_SECRET": server_secret,
@@ -202,7 +206,7 @@ def main() -> int:
 
         try:
             stage = "image resolution"
-            image = resolve_image(args.version, env)
+            image = resolve_image(args.version, env, args.edition)
             env["COMPAT_PANGOLIN_IMAGE"] = image
             results.append(f"Image: `{image}`")
             print(f"[compat] Resolved image: {image}", flush=True)
@@ -244,6 +248,8 @@ def main() -> int:
                         "scripts/pangolin_compatibility_probe.py",
                         "--version",
                         args.version,
+                        "--edition",
+                        args.edition,
                         "--fail-after-bootstrap",
                     ]
                 )
@@ -294,7 +300,7 @@ def main() -> int:
                 failed = True
                 results.append("Cleanup: FAIL; use the workflow fallback teardown")
     summary = (
-        f"### Pangolin {args.version}\n\n"
+        f"### Pangolin {args.version} ({args.edition.upper()})\n\n"
         + "\n".join(f"- {item}" for item in results)
         + "\n"
     )

@@ -90,6 +90,47 @@ def test_baseline_keeps_its_known_digest(monkeypatch):
     assert harness.resolve_image("1.24.0", {}) == harness.BASELINE_IMAGE
 
 
+@pytest.mark.parametrize("version", ["1.24.0", "1.26.0"])
+def test_ee_resolution_pulls_the_enterprise_image_and_pins_its_digest(
+    monkeypatch, version
+):
+    calls = []
+    tag = f"ghcr.io/fosrl/pangolin:ee-{version}"
+    digest = "sha256:" + "a" * 64
+
+    def fake_docker(args, **_):
+        calls.append(args)
+        return (
+            ""
+            if args[0] == "pull"
+            else json.dumps([f"ghcr.io/fosrl/pangolin@{digest}"])
+        )
+
+    monkeypatch.setattr(harness, "docker", fake_docker)
+    assert harness.resolve_image(version, {}, "ee") == f"{tag}@{digest}"
+    assert calls[0] == ["pull", "--quiet", tag]
+    assert calls[1][2] == tag
+
+
+def test_missing_ee_image_cannot_fall_back_to_community(monkeypatch):
+    calls = []
+
+    def missing(args, **_):
+        calls.append(args)
+        raise subprocess.CalledProcessError(1, ["docker", *args])
+
+    monkeypatch.setattr(harness, "docker", missing)
+    with pytest.raises(subprocess.CalledProcessError):
+        harness.resolve_image("1.26.0", {}, "ee")
+    assert calls == [["pull", "--quiet", "ghcr.io/fosrl/pangolin:ee-1.26.0"]]
+
+
+def test_unknown_edition_is_rejected_before_docker(monkeypatch):
+    monkeypatch.setattr(harness, "docker", lambda *_, **__: pytest.fail("Docker used"))
+    with pytest.raises(ValueError, match="edition"):
+        harness.resolve_image("1.26.0", {}, "both")
+
+
 @pytest.mark.parametrize("digests", [None, [], ["other/image@sha256:" + "a" * 64]])
 def test_image_resolution_requires_an_official_digest(monkeypatch, digests):
     def fake_docker(args, **_):
@@ -139,6 +180,28 @@ def test_bootstrap_rejects_a_different_running_version(monkeypatch):
     assert "/org" not in calls
 
 
+@pytest.mark.parametrize(("edition", "build"), [("ee", "oss"), ("ce", "enterprise")])
+def test_bootstrap_rejects_the_wrong_running_edition(monkeypatch, edition, build):
+    calls = []
+
+    class WrongEdition:
+        def __init__(self, *_):
+            pass
+
+        def call(self, method, path, body=None):
+            calls.append(path)
+            if path.endswith("initial-setup-complete"):
+                return {"complete": False}
+            return {"version": "1.26.0", "build": build}
+
+    monkeypatch.setattr(probe, "Client", WrongEdition)
+    with pytest.raises(RuntimeError, match="does not match requested edition"):
+        probe.bootstrap(
+            "1.26.0", {"setup_token": "fixture", "password": "fixture"}, edition
+        )
+    assert "/org" not in calls
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -183,12 +246,23 @@ def test_compatibility_client_does_not_follow_redirects(monkeypatch):
         thread.join(timeout=5)
 
 
+@pytest.mark.parametrize("edition", ["ce", "ee"])
 def test_failed_compatibility_run_redacts_secrets_and_removes_only_its_project(
-    monkeypatch, capsys
+    monkeypatch, capsys, edition
 ):
     project = "pangolin-compat-unit-fixture"
     monkeypatch.setattr(
-        sys, "argv", ["compat", "--project", project, "--version", "v9.8.7-rc.2"]
+        sys,
+        "argv",
+        [
+            "compat",
+            "--project",
+            project,
+            "--version",
+            "v9.8.7-rc.2",
+            "--edition",
+            edition,
+        ],
     )
     monkeypatch.setattr(harness.shutil, "which", lambda _: "/test/docker")
     monkeypatch.setenv("PANGOLIN_URL", "https://production.invalid")
@@ -197,7 +271,7 @@ def test_failed_compatibility_run_redacts_secrets_and_removes_only_its_project(
     remaining = {"container": [], "volume": [], "network": []}
     generated = {}
     removed = []
-    tag = "ghcr.io/fosrl/pangolin:9.8.7-rc.2"
+    tag = f"ghcr.io/fosrl/pangolin:{'ee-' if edition == 'ee' else ''}9.8.7-rc.2"
     digest = "sha256:" + "a" * 64
 
     def fake_docker(args, *, env, timeout=60, input=None):
@@ -213,6 +287,7 @@ def test_failed_compatibility_run_redacts_secrets_and_removes_only_its_project(
         if args[0] == "compose":
             assert env["COMPAT_PANGOLIN_IMAGE"] == f"{tag}@{digest}"
             assert env["COMPAT_VERSION"] == "9.8.7-rc.2"
+            assert env["COMPAT_EDITION"] == edition
             directory = Path(env["COMPAT_DIR"])
             generated["directory"] = directory
             assert {p.name for p in directory.iterdir()} == {"config.yml"}
