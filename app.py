@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from crowdsec_connector import (
     CROWDSEC_ALLOWLIST_NAME,
@@ -186,7 +186,49 @@ def save_state():
                     os.remove(tmp_file)
 
 
+_MAX_HTTP_RESPONSE_BYTES = 4 * 1024 * 1024
+_MAX_HTTP_ERROR_BYTES = 4096
+# Internal test/compatibility-harness opt-in only; never configurable via env vars.
+_ALLOW_INSECURE_HTTP = False
+
+
+class _NoRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_HTTP_OPENER = build_opener(ProxyHandler({}), _NoRedirects())
+
+
+def _sanitize_http_error_body(raw: bytes) -> str:
+    """Decode and strip control/newline characters from an upstream error excerpt."""
+    text = raw.decode("utf-8", errors="replace")
+    return "".join(
+        " " if (ord(ch) < 32 or ord(ch) == 127 or ch in ("\u2028", "\u2029")) else ch
+        for ch in text
+    ).strip()
+
+
 def http_json(method: str, url: str, body: dict | None = None) -> dict:
+    """Perform an outbound JSON request to the configured Pangolin origin."""
+    parsed = urlparse(url)
+    allowed_schemes = ("https", "http") if _ALLOW_INSECURE_HTTP else ("https",)
+    if parsed.scheme.lower() not in allowed_schemes or not parsed.netloc:
+        raise RuntimeError(
+            f"Blocked outbound request with disallowed URL scheme or missing host: {parsed.scheme!r}"
+        )
+    if parsed.username is not None or parsed.password is not None:
+        raise RuntimeError("Blocked outbound request containing URL credentials")
+
+    base = urlparse(PANGOLIN_URL)
+    if not base.scheme or not base.netloc:
+        raise RuntimeError("PANGOLIN_URL is not configured with a valid origin")
+    if (
+        parsed.scheme.lower() != base.scheme.lower()
+        or parsed.netloc.lower() != base.netloc.lower()
+    ):
+        raise RuntimeError("Blocked outbound request to unexpected Pangolin origin")
+
     headers = {
         "Authorization": f"Bearer {PANGOLIN_TOKEN}",
         "Content-Type": "application/json",
@@ -197,21 +239,37 @@ def http_json(method: str, url: str, body: dict | None = None) -> dict:
         data = json.dumps(body).encode("utf-8")
     req = Request(url, data=data, headers=headers, method=method)
     try:
-        with urlopen(req, timeout=20) as resp:
+        with _HTTP_OPENER.open(req, timeout=20) as resp:
             charset = resp.headers.get_content_charset() or "utf-8"
-            text = resp.read().decode(charset, errors="replace")
+            raw = resp.read(_MAX_HTTP_RESPONSE_BYTES + 1)
+            if len(raw) > _MAX_HTTP_RESPONSE_BYTES:
+                raise RuntimeError(
+                    f"Upstream response exceeded {_MAX_HTTP_RESPONSE_BYTES} byte limit"
+                )
+            try:
+                text = raw.decode(charset, errors="replace")
+            except LookupError:
+                text = raw.decode("utf-8", errors="replace")
             try:
                 return json.loads(text)
             except json.JSONDecodeError:
                 return {"raw": text}
     except HTTPError as e:
         try:
-            err = e.read().decode("utf-8", errors="replace")
-        except (OSError, UnicodeDecodeError):
-            err = str(e)
-        raise RuntimeError(f"HTTP {e.code} {e.reason}: {err}")
+            raw_err = e.read(_MAX_HTTP_ERROR_BYTES)
+            err_snippet = _sanitize_http_error_body(raw_err)
+        except (OSError, AttributeError, ValueError):
+            err_snippet = ""
+        finally:
+            with contextlib.suppress(Exception):
+                e.close()
+        if err_snippet:
+            print(f"[http_json] HTTP {e.code} {e.reason}: {err_snippet}")
+        else:
+            print(f"[http_json] HTTP {e.code} {e.reason}")
+        raise RuntimeError(f"HTTP {e.code} {e.reason}") from None
     except URLError as e:
-        raise RuntimeError(f"Network error: {e}")
+        raise RuntimeError(f"Network error: {e.reason}") from None
 
 
 # Targets common interface. All targets share one add_ip signature so the caller can
