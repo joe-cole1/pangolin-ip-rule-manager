@@ -138,7 +138,6 @@ Create a Pangolin API token with the following permissions:
 - **List Resource Users** — read users directly assigned to a resource
 - **Create Resource Rule** — create IP bypass rules
 - **Delete Resource Rule** — remove expired rules during cleanup
-- **Update Resource Rule** — manage existing rules
 
 ---
 
