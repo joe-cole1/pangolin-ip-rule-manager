@@ -3343,18 +3343,18 @@ def test_dashboard_url_derivation(monkeypatch):
     import app as _app
 
     # Test 1: Both PANGOLIN_URL and ORG_ID set, no trailing slash/v1
-    monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.thecolefam.com")
-    monkeypatch.setenv("ORG_ID", "the-cole-fam")
+    monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.example.com")
+    monkeypatch.setenv("ORG_ID", "example-org")
     monkeypatch.setenv("PANGOLIN_DASHBOARD_URL", "")
     app = importlib.reload(_app)
-    assert app.PANGOLIN_DASHBOARD_URL == "https://pangolin.thecolefam.com/the-cole-fam"
+    assert app.PANGOLIN_DASHBOARD_URL == "https://pangolin.example.com/example-org"
 
     # Test 2: PANGOLIN_URL has /v1, ORG_ID set
-    monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.thecolefam.com/v1")
-    monkeypatch.setenv("ORG_ID", "the-cole-fam")
+    monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.example.com/v1")
+    monkeypatch.setenv("ORG_ID", "example-org")
     monkeypatch.setenv("PANGOLIN_DASHBOARD_URL", "")
     app = importlib.reload(_app)
-    assert app.PANGOLIN_DASHBOARD_URL == "https://pangolin.thecolefam.com/the-cole-fam"
+    assert app.PANGOLIN_DASHBOARD_URL == "https://pangolin.example.com/example-org"
 
     # Test 3: PANGOLIN_URL has trailing slash and /api
     monkeypatch.setenv("PANGOLIN_URL", "https://api.yourdomain.com/api/")
@@ -3364,8 +3364,8 @@ def test_dashboard_url_derivation(monkeypatch):
     assert app.PANGOLIN_DASHBOARD_URL == "https://api.yourdomain.com/myorg"
 
     # Test 4: Explicit PANGOLIN_DASHBOARD_URL override
-    monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.thecolefam.com/v1")
-    monkeypatch.setenv("ORG_ID", "the-cole-fam")
+    monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.example.com/v1")
+    monkeypatch.setenv("ORG_ID", "example-org")
     monkeypatch.setenv("PANGOLIN_DASHBOARD_URL", "https://custom-dashboard.com/subpath")
     app = importlib.reload(_app)
     assert app.PANGOLIN_DASHBOARD_URL == "https://custom-dashboard.com/subpath"
@@ -3381,8 +3381,8 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
     # Scenario 1: REDIRECT_TO_LAUNCHER = False (default), check-in succeeds.
     # Should return 200 OK and HTML containing the Resource Launcher button and resource links.
     monkeypatch.setenv("PANGOLIN_TOKEN", "fake-token")
-    monkeypatch.setenv("ORG_ID", "the-cole-fam")
-    monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.thecolefam.com")
+    monkeypatch.setenv("ORG_ID", "example-org")
+    monkeypatch.setenv("PANGOLIN_URL", "https://pangolin.example.com")
     monkeypatch.setenv("REDIRECT_TO_LAUNCHER", "false")
     monkeypatch.setenv("REDIRECT_DELAY_SECONDS", "3")
     monkeypatch.setenv("LISTEN_PORT", "0")
@@ -3431,7 +3431,7 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
         data = resp.read().decode("utf-8")
         assert resp.status == 200
         assert "Open Resource Launcher" not in data
-        assert "https://pangolin.thecolefam.com/the-cole-fam" not in data
+        assert "https://pangolin.example.com/example-org" not in data
         assert "Open Jellyfin" in data
 
     # Scenario 2a: REDIRECT_TO_LAUNCHER = True, REDIRECT_DELAY_SECONDS = 0, check-in succeeds.
@@ -3455,9 +3455,7 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
         resp = conn.getresponse()
         _ = resp.read()
         assert resp.status == 302
-        assert (
-            resp.getheader("Location") == "https://pangolin.thecolefam.com/the-cole-fam"
-        )
+        assert resp.getheader("Location") == "https://pangolin.example.com/example-org"
 
     # Scenario 2b: REDIRECT_TO_LAUNCHER = True, REDIRECT_DELAY_SECONDS = 3, check-in succeeds.
     # Should return 200 OK with redirection notice, countdown script, launcher button,
@@ -3545,14 +3543,7 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
             "Accept": "text/html",
         }
         proxy_request(conn, "GET", "/check.png", headers=headers)
-        resp = conn.getcall = (
-            conn.getcall
-            if hasattr(conn, "getcall")
-            else conn.getcall
-            if hasattr(conn, "getcall")
-            else conn.getresponse
-        )
-        resp = resp()
+        resp = conn.getresponse()
         data = resp.read().decode("utf-8")
         assert resp.status == 200
         assert "crowdsec command failed" in data
