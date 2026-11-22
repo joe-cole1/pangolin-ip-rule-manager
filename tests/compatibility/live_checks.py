@@ -233,8 +233,12 @@ def run_checks(admin, api, role_resource: int, org: str, actions):
                 and created[0]["enabled"] is True,
                 "IP creation action, value, priority or enabled contract changed",
             )
+            resource_state = app.state[ip]["resources"]
             require(
-                app.state[ip]["resources"] == {str(rid): {"created_by_us": True}},
+                set(resource_state.keys()) == {str(rid)}
+                and resource_state[str(rid)].get("created_by_us") is True
+                and resource_state[str(rid)].get("rule_id")
+                in (None, created[0]["ruleId"]),
                 "Application ownership was not recorded",
             )
             saved = json.loads(Path(app.STATE_FILE).read_text())

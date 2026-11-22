@@ -51,15 +51,120 @@ class PangolinContext:
     http_json: Callable[[str, str, dict[str, Any] | None], dict[str, Any]]
 
 
-def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> set[str]:
-    """Return a set of IPs that currently have a rule for the resource.
-    Uses a TTL cache to avoid frequent GET calls.
-    """
-    now = time.time()
+def _canonicalize_ip(value: object) -> str | None:
+    """Return canonical IPv4/IPv6 string for a valid IP literal, or None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None
+
+
+def _require_api_success(resp: object, label: str) -> dict[str, Any]:
+    """Validate that a Pangolin API response is a dict with success=True."""
+    if not isinstance(resp, dict) or resp.get("success") is not True:
+        raise RuntimeError(
+            f"{label}: Pangolin API reported failure or unexpected response shape"
+        )
+    return resp
+
+
+def _unexpected_api_error(label: str, detail: str) -> RuntimeError:
+    return RuntimeError(f"{label}: {detail}")
+
+
+def _extract_api_data(resp: object, label: str) -> dict[str, Any]:
+    """Validate success=True and return the dict payload under resp['data']."""
+    ok_resp = _require_api_success(resp, label)
+    data = ok_resp.get("data")
+    if not isinstance(data, dict):
+        raise _unexpected_api_error(label, "Pangolin API response missing dict data")
+    return data
+
+
+def _extract_dict_list(
+    data: dict[str, Any], key: str, label: str
+) -> list[dict[str, Any]]:
+    """Extract and validate a list of dicts from `data[key]`."""
+    items = data.get(key)
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise _unexpected_api_error(
+            label, f"unexpected {key} list in Pangolin API response"
+        )
+    return items
+
+
+def _extract_created_rule_id(resp: dict[str, Any]) -> int | None:
+    """Extract an optional integer ruleId from a PUT /rule response."""
+    data = resp.get("data")
+    if not isinstance(data, dict):
+        return None
+    candidate = data.get("ruleId")
+    if candidate is None and isinstance(data.get("rule"), dict):
+        candidate = data["rule"].get("ruleId")
+    if isinstance(candidate, int) and not isinstance(candidate, bool):
+        return candidate
+    return None
+
+
+def _extract_rules_list(resp: object, label: str) -> list[dict[str, Any]]:
+    """Validate a GET /rules response and return its list of rule dicts."""
+    data = _extract_api_data(resp, label)
+    return _extract_dict_list(data, "rules", label)
+
+
+def _evict_ip_from_rules_cache(ctx: PangolinContext, rid: int, *ips: str) -> None:
+    """Remove IP entries from the in-memory resource existence cache."""
     with ctx.state_lock:
         entry = ctx.rules_cache.get(rid)
-        if entry and (now - entry.get("ts", 0) < ctx.rules_cache_ttl_seconds):
-            return set(entry.get("ip_set", set()))
+        if entry:
+            cached_ips = entry.get("ip_set", set())
+            for addr in ips:
+                cached_ips.discard(addr)
+
+
+def _lookup_target_rule_id(
+    ctx: PangolinContext,
+    ip: str,
+    canonical_ip: str,
+    rid: int,
+    explicit_rule_id: int | None,
+) -> int | None:
+    """Resolve explicit or persisted rule_id for (ip, rid), if valid."""
+    if isinstance(explicit_rule_id, int) and not isinstance(explicit_rule_id, bool):
+        return explicit_rule_id
+    with ctx.state_lock:
+        rec = ctx.state.get(ip)
+        if not isinstance(rec, dict) and canonical_ip != ip:
+            rec = ctx.state.get(canonical_ip)
+        if not isinstance(rec, dict):
+            return None
+        res_meta = rec.get("resources", {}).get(str(rid), {})
+        if not isinstance(res_meta, dict):
+            return None
+        stored_rule_id = res_meta.get("rule_id")
+        if isinstance(stored_rule_id, int) and not isinstance(stored_rule_id, bool):
+            return stored_rule_id
+        return None
+
+
+def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> set[str]:
+    """Return a set of canonical IPs that currently have an active ACCEPT rule
+    for the resource. Uses a monotonic TTL cache to avoid frequent GET calls.
+    """
+    now = time.monotonic()
+    with ctx.state_lock:
+        entry = ctx.rules_cache.get(rid)
+        if entry:
+            ts = entry.get("ts")
+            if (
+                isinstance(ts, (int, float))
+                and not isinstance(ts, bool)
+                and ts > 0
+                and (now - ts < ctx.rules_cache_ttl_seconds)
+            ):
+                return set(entry.get("ip_set", set()))
 
     # Refresh from Pangolin
     print(f"[pangolin] refreshing rules for resource {rid}")
@@ -67,21 +172,23 @@ def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> set[str]:
         lambda: ctx.http_json("GET", f"{ctx.url}/v1/resource/{rid}/rules?limit=10000"),
         label=f"GET rules resource={rid}",
     )
-    rules = rules_resp.get("data", {}).get("rules", [])
+    rules = _extract_rules_list(rules_resp, f"GET rules resource={rid}")
     ip_set: set[str] = set()
     for r in rules:
-        if r.get("match") == "IP":
+        if (
+            r.get("match") == "IP"
+            and r.get("action") == "ACCEPT"
+            and r.get("enabled") is True
+        ):
             v = r.get("value")
-            if isinstance(v, str):
-                try:
-                    ipaddress.ip_address(v)
-                    ip_set.add(v)
-                except ValueError:
-                    print(
-                        f"[pangolin] ignoring invalid IP value in rules response: {v!r}"
-                    )
+            canonical = _canonicalize_ip(v)
+            if canonical is not None:
+                ip_set.add(canonical)
+            elif isinstance(v, str):
+                print(f"[pangolin] ignoring invalid IP value in rules response: {v!r}")
+    refreshed_at = time.monotonic()
     with ctx.state_lock:
-        ctx.rules_cache[rid] = {"ts": now, "ip_set": ip_set}
+        ctx.rules_cache[rid] = {"ts": refreshed_at, "ip_set": ip_set}
     return ip_set
 
 
@@ -90,13 +197,16 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
         raise RuntimeError(
             "PANGOLIN_TOKEN is not set — Pangolin API calls are disabled. Check your environment configuration."
         )
+    canonical_ip = _canonicalize_ip(ip) or ip
     failures: list[str] = []
     for rid in ctx.resource_ids:
         try:
             # 1) check cached existence
             ip_set = get_ip_set_for_resource_cached(ctx, rid)
-            if ip in ip_set:
-                print(f"[pangolin] rule already exists for IP {ip} on resource {rid}")
+            if canonical_ip in ip_set:
+                print(
+                    f"[pangolin] rule already exists for IP {canonical_ip} on resource {rid}"
+                )
                 # Track presence but not created_by_us
                 with ctx.state_lock:
                     rec = ctx.state.setdefault(
@@ -110,34 +220,44 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
             payload = {
                 "action": "ACCEPT",
                 "match": "IP",
-                "value": ip,
+                "value": canonical_ip,
                 "priority": ctx.rule_priority,
                 "enabled": True,
             }
-            _ = _retry(
+            put_resp = _retry(
                 lambda r=rid, p=payload: ctx.http_json(
                     "PUT", f"{ctx.url}/v1/resource/{r}/rule", p
                 ),
-                label=f"PUT rule ip={ip} resource={rid}",
+                label=f"PUT rule ip={canonical_ip} resource={rid}",
             )
-            print(f"[pangolin] created rule for IP {ip} on resource {rid}")
+            _require_api_success(put_resp, f"PUT rule ip={canonical_ip} resource={rid}")
+            created_rule_id = _extract_created_rule_id(put_resp)
+            print(f"[pangolin] created rule for IP {canonical_ip} on resource {rid}")
             # Update cache to include newly created rule
             with ctx.state_lock:
                 entry = ctx.rules_cache.get(rid)
                 if entry:
-                    entry.setdefault("ip_set", set()).add(ip)  # type: ignore[arg-type]
+                    entry.setdefault("ip_set", set()).add(canonical_ip)  # type: ignore[arg-type]
                 else:
-                    ctx.rules_cache[rid] = {"ts": time.time(), "ip_set": {ip}}
+                    ctx.rules_cache[rid] = {
+                        "ts": time.monotonic(),
+                        "ip_set": {canonical_ip},
+                    }
             # Update persistent state
+            resource_entry: dict[str, Any] = {"created_by_us": True}
+            if created_rule_id is not None:
+                resource_entry["rule_id"] = created_rule_id
             with ctx.state_lock:
                 rec = ctx.state.setdefault(
                     ip, {"last_seen": ctx.now_utc_iso(), "resources": {}}
                 )
                 rec["last_seen"] = ctx.now_utc_iso()
-                rec["resources"][str(rid)] = {"created_by_us": True}
+                rec["resources"][str(rid)] = resource_entry
             ctx.save_state()
         except Exception as e:  # noqa: BLE001
-            print(f"[pangolin] ensure rule failed for resource {rid}, ip {ip}: {e}")
+            print(
+                f"[pangolin] ensure rule failed for resource {rid}, ip {canonical_ip}: {e}"
+            )
             failures.append(f"resource {rid}: {e}")
     if failures:
         raise RuntimeError(
@@ -145,11 +265,16 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
         )
 
 
-def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> bool:
-    """Return True if the rule is definitively gone — either we deleted it, or it was
-    already absent (manually removed or expired externally). Return False only when a
-    failure occurred and we cannot confirm the rule has been removed; the caller should
-    retain the IP in state and retry on the next cleanup cycle."""
+def delete_ip_rule_if_created_by_us(
+    ctx: PangolinContext, ip: str, rid: int, *, rule_id: int | None = None
+) -> bool:
+    """Return True if the rule is definitively gone — either we deleted all matching
+    owned rules, or none remain (manually removed or expired externally). Return False
+    when a failure occurred or a matched rule could not be confirmed deleted; the caller
+    should retain the IP in state and retry on the next cleanup cycle."""
+    canonical_ip = _canonicalize_ip(ip) or ip
+    target_rule_id = _lookup_target_rule_id(ctx, ip, canonical_ip, rid, rule_id)
+
     try:
         rules_resp = _retry(
             lambda r=rid: ctx.http_json(
@@ -157,60 +282,98 @@ def delete_ip_rule_if_created_by_us(ctx: PangolinContext, ip: str, rid: int) -> 
             ),
             label=f"GET rules (delete phase) resource={rid}",
         )
-        rules = rules_resp.get("data", {}).get("rules", [])
-        to_delete = [
-            r for r in rules if r.get("match") == "IP" and r.get("value") == ip
-        ]
+        rules = _extract_rules_list(
+            rules_resp, f"GET rules (delete phase) resource={rid}"
+        )
+        if target_rule_id is not None:
+            to_delete = [
+                r
+                for r in rules
+                if r.get("ruleId") == target_rule_id
+                and r.get("match") == "IP"
+                and r.get("action") == "ACCEPT"
+                and _canonicalize_ip(r.get("value")) == canonical_ip
+            ]
+        else:
+            to_delete = [
+                r
+                for r in rules
+                if r.get("match") == "IP"
+                and r.get("action") == "ACCEPT"
+                and r.get("enabled") is True
+                and _canonicalize_ip(r.get("value")) == canonical_ip
+            ]
         if not to_delete:
             # Rule is already absent — safe to clear this entry from state
             print(
-                f"[pangolin] no rule found for IP {ip} on resource {rid} (already absent — clearing state)"
+                f"[pangolin] no rule found for IP {canonical_ip} on resource {rid} (already absent — clearing state)"
             )
-            with ctx.state_lock:
-                entry = ctx.rules_cache.get(rid)
-                if entry:
-                    entry.get("ip_set", set()).discard(ip)
+            _evict_ip_from_rules_cache(ctx, rid, canonical_ip, ip)
             return True
         deleted_any = False
+        all_deleted = True
         for r in to_delete:
-            rule_id = r.get("ruleId")
-            if rule_id is None:
+            matched_rule_id = r.get("ruleId")
+            if not isinstance(matched_rule_id, int) or isinstance(
+                matched_rule_id, bool
+            ):
+                print(
+                    f"[pangolin] matching rule on resource {rid} for IP {canonical_ip} "
+                    f"has invalid/missing ruleId: {matched_rule_id!r}"
+                )
+                all_deleted = False
                 continue
             try:
-                _ = _retry(
-                    lambda r=rid, r_id=rule_id: ctx.http_json(
+                del_resp = _retry(
+                    lambda r=rid, r_id=matched_rule_id: ctx.http_json(
                         "DELETE", f"{ctx.url}/v1/resource/{r}/rule/{r_id}"
                     ),
-                    label=f"DELETE rule={rule_id} ip={ip} resource={rid}",
+                    label=f"DELETE rule={matched_rule_id} ip={canonical_ip} resource={rid}",
+                )
+                _require_api_success(
+                    del_resp,
+                    f"DELETE rule={matched_rule_id} ip={canonical_ip} resource={rid}",
                 )
                 print(
-                    f"[pangolin] deleted rule {rule_id} for IP {ip} on resource {rid}"
+                    f"[pangolin] deleted rule {matched_rule_id} for IP {canonical_ip} on resource {rid}"
                 )
                 deleted_any = True
             except Exception as e:  # noqa: BLE001
-                print(f"[pangolin] delete failed for rule {rule_id} on {rid}: {e}")
+                print(
+                    f"[pangolin] delete failed for rule {matched_rule_id} on {rid}: {e}"
+                )
+                all_deleted = False
         if deleted_any:
             # Evict the IP from the existence cache so a re-check-in re-creates the
             # rule instead of trusting a stale "already exists" entry until TTL expiry.
-            with ctx.state_lock:
-                entry = ctx.rules_cache.get(rid)
-                if entry:
-                    entry.get("ip_set", set()).discard(ip)
-        return deleted_any
+            _evict_ip_from_rules_cache(ctx, rid, canonical_ip, ip)
+        return all_deleted
     except Exception as e:  # noqa: BLE001
-        print(f"[pangolin] fetch rules (delete phase) failed for {rid}, ip {ip}: {e}")
+        print(
+            f"[pangolin] fetch rules (delete phase) failed for {rid}, ip {canonical_ip}: {e}"
+        )
         return False
 
 
 def list_org_resources(ctx: PangolinContext, org_id: str) -> None:
     try:
-        url = f"{ctx.url}/v1/org/{org_id}/resources"
+        encoded_org_id = quote(org_id, safe="")
+        url = f"{ctx.url}/v1/org/{encoded_org_id}/resources"
         resp = ctx.http_json("GET", url)
-        resources = (
-            (resp.get("data", {}).get("resources") if isinstance(resp, dict) else [])
-            or resp.get("resources", [])
-            or []
-        )
+        _require_api_success(resp, f"GET org/{org_id}/resources")
+        data = resp.get("data")
+        if isinstance(data, dict) and "resources" in data:
+            resources = data["resources"]
+        elif "resources" in resp:
+            resources = resp["resources"]
+        else:
+            resources = []
+        if not isinstance(resources, list) or any(
+            not isinstance(r, dict) for r in resources
+        ):
+            raise RuntimeError(
+                f"GET org/{org_id}/resources: unexpected resources list in Pangolin API response"
+            )
         print(
             f"[pangolin] These are the resources for org '{org_id}'. Use the resourceId numbers for your configuration:"
         )
@@ -346,13 +509,20 @@ def get_resource_allowed_role_ids(ctx: PangolinContext, rid: int) -> set[int]:
     """
     if not ctx.token:
         raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up resource roles")
+    label = f"GET resource/{rid}/roles"
     url = f"{ctx.url}/v1/resource/{rid}/roles"
-    resp = _retry(
-        lambda: ctx.http_json("GET", url),
-        label=f"GET resource/{rid}/roles",
-    )
-    roles = resp.get("data", {}).get("roles", [])
-    return {r["roleId"] for r in roles if "roleId" in r}
+    resp = _retry(lambda: ctx.http_json("GET", url), label=label)
+    data = _extract_api_data(resp, label)
+    roles = _extract_dict_list(data, "roles", label)
+    role_ids: set[int] = set()
+    for r in roles:
+        role_id = r.get("roleId")
+        if not isinstance(role_id, int) or isinstance(role_id, bool):
+            raise _unexpected_api_error(
+                label, "unexpected roleId in Pangolin API response"
+            )
+        role_ids.add(role_id)
+    return role_ids
 
 
 def get_resource_allowed_user_ids(ctx: PangolinContext, rid: int) -> set[str]:
@@ -363,13 +533,20 @@ def get_resource_allowed_user_ids(ctx: PangolinContext, rid: int) -> set[str]:
     """
     if not ctx.token:
         raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up resource users")
+    label = f"GET resource/{rid}/users"
     url = f"{ctx.url}/v1/resource/{rid}/users"
-    resp = _retry(
-        lambda: ctx.http_json("GET", url),
-        label=f"GET resource/{rid}/users",
-    )
-    users = resp.get("data", {}).get("users", [])
-    return {u["userId"] for u in users if "userId" in u}
+    resp = _retry(lambda: ctx.http_json("GET", url), label=label)
+    data = _extract_api_data(resp, label)
+    users = _extract_dict_list(data, "users", label)
+    user_ids: set[str] = set()
+    for u in users:
+        uid = u.get("userId")
+        if not isinstance(uid, str) or not uid:
+            raise _unexpected_api_error(
+                label, "unexpected userId in Pangolin API response"
+            )
+        user_ids.add(uid)
+    return user_ids
 
 
 def get_resource(ctx: PangolinContext, rid: int) -> dict:
@@ -383,7 +560,7 @@ def get_resource(ctx: PangolinContext, rid: int) -> dict:
         lambda: ctx.http_json("GET", url),
         label=f"GET resource/{rid}",
     )
-    data = resp.get("data", {})
+    data = _extract_api_data(resp, f"GET resource/{rid}")
     if not data:
         raise RuntimeError(f"Resource {rid} not found or unexpected response shape")
     return {

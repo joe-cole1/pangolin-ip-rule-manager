@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 ## What this project is
 
@@ -148,14 +148,14 @@ the latest `master`.
 
 ---
 
-## Behavioral rules for Claude
+## Behavioral rules for agents
 
 These apply to every session. Do not deviate without explicit instruction.
 
 ### Before generating anything
 
 - **Read every file before suggesting changes.** Never work from memory on file
-  contents. When a zip is uploaded, extract and read the relevant files first.
+  contents.
 - **Verify before stating.** Do not assume version numbers, import names, or
   variable names — check the source.
 - **Ask rather than assume** when intent is ambiguous or scope is unclear.
@@ -164,9 +164,9 @@ These apply to every session. Do not deviate without explicit instruction.
 
 ### When making changes
 
-- **Diffs before full files.** For small changes, present a unified diff with
-  2–3 lines of context. Follow with a clean copy block. Full file artifacts are
-  appropriate only when changes are numerous or the file is small.
+- **Worktree and scope discipline.** Inspect branch and worktree state before
+  making changes, flag unexpected pre-existing changes, and do not broaden scope,
+  fix unrelated defects, or introduce unrelated formatting churn.
 - **One concern per commit.** Lint fixes, logic changes, and new features each
   get their own commit and their own PR. Do not bundle.
 - **Commit message format:** single subject line only — no body text.
@@ -186,6 +186,9 @@ These apply to every session. Do not deviate without explicit instruction.
 - **Treat "Create a pull request" in push output as a red flag.** This message
   means the branch did not previously exist on the remote — the original was
   likely deleted after merge. Stop, check master, and open a new PR.
+- **Git safety guardrails.** Never merge, enable auto-merge, force-push,
+  rewrite shared history, push directly to `master`, or delete remote branches
+  unless explicitly authorized.
 
 ### Code conventions
 
@@ -199,12 +202,6 @@ These apply to every session. Do not deviate without explicit instruction.
 - **OR logic for access.** A user is authorised for a resource if their role
   matches OR they are directly assigned. Both paths must be checked.
   This mirrors Pangolin's `isUserAllowedToAccessResource()`.
-
-### Commit and PR description format
-
-Commit title inside a code block. Description in plain text below (never inside
-a code block). Each item on its own line starting with a dash. A full blank line
-between items.
 
 ---
 
@@ -241,6 +238,12 @@ Branch protection is active on `master` (PR required, no force push, no
 deletion). A GitHub Actions workflow auto-force-resets `dev` to `master` on
 release publish. Release notes are auto-generated from PR labels per
 `.github/release.yml`.
+
+**Production mutation boundary:** Git PR or shipping approval does **not**
+authorize live production mutation, release tagging/publication, Portainer
+redeploys, container restarts/recreations, Pangolin/CrowdSec/Traefik mutation,
+or secret/config changes. Any live production action requires explicit user
+authorization for that exact action.
 
 **PR labels for release notes** — each PR must carry exactly one label so the
 auto-generated release notes are accurate. Valid labels and their categories:
@@ -291,9 +294,12 @@ OS-controlled, not caller-controlled).
 ### State and cleanup
 
 State persists to `STATE_FILE` as JSON. Each IP entry records `last_seen`
-(UTC ISO) and a `resources` dict tracking `created_by_us` per resource.
+(UTC ISO) and a `resources` dict tracking `created_by_us` (and optional
+`rule_id` when returned by Pangolin, backwards-compatibly) per resource.
 The cleanup thread runs every `CLEANUP_INTERVAL_MINUTES`. Pangolin rules are
-only deleted if `created_by_us: true`. If deletion fails, the record is
+only deleted if `created_by_us: true` — targeting the stored `rule_id` when
+present, or falling back to active `IP` / `ACCEPT` rules matching the canonical
+IP for legacy entries without `rule_id`. If deletion fails, the record is
 retained and retried next cycle. CrowdSec expiration is always attempted
 regardless of `created_by_us`.
 
@@ -304,11 +310,11 @@ in-memory state even when no new rule is created.
 
 ### Late import in `app.py`
 
-`from request_handler import create_image_request_handler` at the bottom of
-`app.py` carries `# noqa: E402`. This is intentional: importing `request_handler`
-triggers module-level code that depends on functions defined earlier in `app.py`.
-Moving the import to the top of the file would break startup. Do not move it;
-do not remove the `# noqa` suppression.
+The `from request_handler import (...)` block later in `app.py` is placed after
+app configuration, state/logging helpers, and target helpers so
+`ImageRequestHandler` wiring sees initialized module definitions. Moving the
+import block to the top of the file risks breaking startup order. Do not move it
+without checking module initialization order.
 
 ### XSS guard in `/update` error page (`request_handler.py`)
 
