@@ -13,6 +13,28 @@ _TEMPLATE_TOKEN_RE = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
 _HOST_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _PORT_RE = re.compile(r"^[1-9][0-9]{0,4}\Z")
 _BRACKETED_IPV6_RE = re.compile(r"^\[([^\]]+)\](?::([0-9]+))?\Z")
+_LOG_CONTROL_ESCAPES = {
+    "\r": "\\r",
+    "\n": "\\n",
+    "\t": "\\t",
+    "\u2028": "\\u2028",
+    "\u2029": "\\u2029",
+}
+
+
+def sanitize_for_log(value: object) -> str:
+    """Escape CR/LF, control chars (0x00-0x1f, 0x7f), and Unicode line separators."""
+    text = value if isinstance(value, str) else str(value)
+    out: list[str] = []
+    for ch in text:
+        escaped = _LOG_CONTROL_ESCAPES.get(ch)
+        if escaped is not None:
+            out.append(escaped)
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\x{ord(ch):02x}")
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _is_valid_port(port_str: str) -> bool:
@@ -118,7 +140,10 @@ def _render_resource_rows(resources: list, overall_ok: bool) -> str:
         if not domain:
             continue
         if not isinstance(domain, str) or not _is_valid_host_port(domain):
-            print(f"[warn] Skipping resource with invalid fullDomain: {domain!r}")
+            print(
+                "[warn] Skipping resource with invalid fullDomain: "
+                f"{sanitize_for_log(domain)!r}"
+            )
             continue
         protocol = "https" if ssl else "http"
         raw_url = f"{protocol}://{domain}"
@@ -226,7 +251,10 @@ def _build_checkin_html(
 
     valid_dashboard_url = dashboard_url if is_valid_dashboard_url(dashboard_url) else ""
     if dashboard_url and not valid_dashboard_url:
-        print(f"[warn] Ignoring invalid dashboard_url: {dashboard_url!r}")
+        print(
+            "[warn] Ignoring invalid dashboard_url: "
+            f"{sanitize_for_log(dashboard_url)!r}"
+        )
 
     # Only show individual allowed resources if not redirecting successfully
     show_individual_resources = not (
@@ -384,7 +412,8 @@ def create_image_request_handler(ctx: dict):
       - add_ip_to_targets: callable (ip: str) -> dict
       - banner_png: bytes
       - banner_gif: bytes
-      - redact_headers_for_log: callable (headers: dict[str, str]) -> dict[str, str]
+      - redact_headers_for_log: callable accepting a mapping or sequence of
+        (name, value) pairs and returning redacted headers for logging
       - site_name: str
       - proxy_shared_secret: str (required; X-Proxy-Secret must match)
     """
@@ -393,7 +422,13 @@ def create_image_request_handler(ctx: dict):
         server_version = "BannerServer/1.0"
 
         def log_message(self, fmt, *args):
-            print("[http]", self.address_string(), "-", fmt % args)
+            message = fmt % args if args else str(fmt)
+            print(
+                "[http]",
+                sanitize_for_log(self.address_string()),
+                "-",
+                sanitize_for_log(message),
+            )
 
         def _get_real_ip(self) -> str:
             # precedence: X-Real-IP, X-Forwarded-For (first), fallback to client addr
@@ -406,13 +441,15 @@ def create_image_request_handler(ctx: dict):
                     ip_obj = ipaddress.ip_address(raw.strip())
                     if not ip_obj.is_global:
                         print(
-                            f"[warn] Rejected non-global IP from header: {raw.strip()!r}"
+                            "[warn] Rejected non-global IP from header: "
+                            f"{sanitize_for_log(raw.strip())!r}"
                         )
                         return None
                     return str(ip_obj)
                 except ValueError:
                     print(
-                        f"[warn] Rejected unparseable IP from header: {raw.strip()!r}"
+                        "[warn] Rejected unparseable IP from header: "
+                        f"{sanitize_for_log(raw.strip())!r}"
                     )
                     return None
 
@@ -454,11 +491,13 @@ def create_image_request_handler(ctx: dict):
             values = self.headers.get_all(name, []) or []
             if len(values) != 1:
                 if values:
-                    print(f"[error] Rejected duplicate {name} headers")
+                    print(
+                        f"[error] Rejected duplicate {sanitize_for_log(name)} headers"
+                    )
                 return ""
             value = values[0]
             if not value or value != value.strip() or len(value) > 512:
-                print(f"[error] Rejected invalid {name} header")
+                print(f"[error] Rejected invalid {sanitize_for_log(name)} header")
                 return ""
             return value
 
@@ -494,6 +533,21 @@ def create_image_request_handler(ctx: dict):
             self.end_headers()
             self.wfile.write(encoded)
 
+        def _send_json(self, status: int, body: dict) -> None:
+            payload = json.dumps(body).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header(
+                "Cache-Control",
+                "no-store, no-cache, must-revalidate, max-age=0",
+            )
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            self._send_security_headers()
+            self.end_headers()
+            self.wfile.write(payload)
+
         def _try_immediate_redirect(self, success: bool) -> bool:
             redirect_enabled = ctx.get("redirect_to_launcher", False)
             redirect_delay = ctx.get("redirect_delay_seconds", 3)
@@ -508,7 +562,7 @@ def create_image_request_handler(ctx: dict):
                 if not is_valid_dashboard_url(dashboard_url):
                     print(
                         "[warn] Refusing 302 redirect to invalid dashboard_url: "
-                        f"{dashboard_url!r}"
+                        f"{sanitize_for_log(dashboard_url)!r}"
                     )
                     return False
                 self.send_response(302)
@@ -555,7 +609,8 @@ def create_image_request_handler(ctx: dict):
                 self.end_headers()
                 self.wfile.write(b"Forbidden")
                 print(
-                    f"[error] Rejected request with missing/invalid X-Proxy-Secret: {self.path}"
+                    "[error] Rejected request with missing/invalid X-Proxy-Secret: "
+                    f"{sanitize_for_log(self.path)}"
                 )
                 return
 
@@ -564,14 +619,16 @@ def create_image_request_handler(ctx: dict):
             remote_user = self._get_identity_header("Remote-User")
 
             print(
-                f"New request from {ip}  user_id: {remote_user_id} "
-                f"user: {remote_user}  path: {path}"
+                f"New request from {sanitize_for_log(ip)}  "
+                f"user_id: {sanitize_for_log(remote_user_id)} "
+                f"user: {sanitize_for_log(remote_user)}  "
+                f"path: {sanitize_for_log(path)}"
             )
 
             if ctx.get("debug_log_headers"):
                 redact = ctx.get("redact_headers_for_log")
                 if redact:
-                    print("[http] headers:", redact(dict(self.headers)))
+                    print("[http] headers:", redact(self.headers.items()))
 
             lower_path = path.lower()
 
@@ -582,50 +639,80 @@ def create_image_request_handler(ctx: dict):
                     self.send_response(404)
                     self.end_headers()
                     self.wfile.write(b"Not found")
-                    print(f"[error] Update endpoint disabled: {self.path}")
+                    print(
+                        f"[error] Update endpoint disabled: {sanitize_for_log(self.path)}"
+                    )
                     return
 
                 qs = parse_qs(parsed_path.query or "")
                 raw_ip = (qs.get("ip", [""])[0] or "").strip()
                 if not raw_ip:
-                    print(f"[error] Missing 'ip' query parameter: {self.path}")
-                    self._send_html(
-                        400,
-                        _build_error_html(
-                            "Bad request",
-                            "Missing required <code>ip</code> query parameter. "
-                            "Expected format: /update?ip=1.2.3.4",
-                            site_name=ctx.get("site_name", ""),
-                        ),
+                    print(
+                        "[error] Missing 'ip' query parameter: "
+                        f"{sanitize_for_log(self.path)}"
                     )
+                    if self._wants_html():
+                        self._send_html(
+                            400,
+                            _build_error_html(
+                                "Bad request",
+                                "Missing required <code>ip</code> query parameter. "
+                                "Expected format: /update?ip=1.2.3.4",
+                                site_name=ctx.get("site_name", ""),
+                            ),
+                        )
+                    else:
+                        self._send_json(
+                            400,
+                            {
+                                "ok": False,
+                                "error": "Missing required 'ip' query parameter.",
+                            },
+                        )
                     return
 
                 try:
                     normalized_ip = str(ipaddress.ip_address(raw_ip))
                 except ValueError:
-                    print(f"[error] Invalid IP address: {raw_ip}")
-                    self._send_html(
-                        400,
-                        _build_error_html(
-                            "Bad request",
-                            f"&#39;{html.escape(raw_ip)}&#39; is not a valid IP address.",
-                            site_name=ctx.get("site_name", ""),
-                        ),
-                    )
+                    print(f"[error] Invalid IP address: {sanitize_for_log(raw_ip)}")
+                    if self._wants_html():
+                        self._send_html(
+                            400,
+                            _build_error_html(
+                                "Bad request",
+                                f"&#39;{html.escape(raw_ip)}&#39; is not a valid IP address.",
+                                site_name=ctx.get("site_name", ""),
+                            ),
+                        )
+                    else:
+                        self._send_json(
+                            400,
+                            {"ok": False, "error": "Invalid IP address."},
+                        )
                     return
 
                 if not ipaddress.ip_address(normalized_ip).is_global:
                     print(
-                        f"[error] Rejected non-global IP in /update: {normalized_ip!r}"
+                        "[error] Rejected non-global IP in /update: "
+                        f"{sanitize_for_log(normalized_ip)!r}"
                     )
-                    self._send_html(
-                        400,
-                        _build_error_html(
-                            "Bad request",
-                            f"&#39;{normalized_ip}&#39; is a non-routable IP address and cannot be allowlisted.",
-                            site_name=ctx.get("site_name", ""),
-                        ),
-                    )
+                    if self._wants_html():
+                        self._send_html(
+                            400,
+                            _build_error_html(
+                                "Bad request",
+                                f"&#39;{normalized_ip}&#39; is a non-routable IP address and cannot be allowlisted.",
+                                site_name=ctx.get("site_name", ""),
+                            ),
+                        )
+                    else:
+                        self._send_json(
+                            400,
+                            {
+                                "ok": False,
+                                "error": "Non-routable IP address cannot be allowlisted.",
+                            },
+                        )
                     return
 
                 with ctx["state_lock"]:
@@ -644,8 +731,12 @@ def create_image_request_handler(ctx: dict):
                         remote_user=remote_user,
                     )
                 except Exception as e:  # noqa: BLE001
-                    print(f"[error] add_ip_to_targets failed for {normalized_ip}: {e}")
+                    print(
+                        "[error] add_ip_to_targets failed for "
+                        f"{sanitize_for_log(normalized_ip)}: {sanitize_for_log(e)}"
+                    )
                     update_results = {
+                        "error_kind": "upstream",
                         "pangolin": {"ok": False, "detail": str(e), "enabled": True},
                         "crowdsec": {
                             "ok": False,
@@ -682,25 +773,45 @@ def create_image_request_handler(ctx: dict):
                         ),
                     )
                 else:
-                    payload = json.dumps(
-                        {
-                            "ok": True,
-                            "ip": normalized_ip,
-                            "retention_minutes": ctx.get("retention_minutes", 0),
-                        }
-                    ).encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.send_header(
-                        "Cache-Control",
-                        "no-store, no-cache, must-revalidate, max-age=0",
-                    )
-                    self.send_header("Pragma", "no-cache")
-                    self.send_header("Expires", "0")
-                    self._send_security_headers()
-                    self.end_headers()
-                    self.wfile.write(payload)
+                    pangolin_res = update_results.get("pangolin", {})
+                    crowdsec_res = update_results.get("crowdsec", {})
+                    pangolin_ok = bool(pangolin_res.get("ok", False))
+                    if pangolin_ok:
+                        crowdsec_enabled = bool(
+                            crowdsec_res.get(
+                                "enabled", ctx.get("crowdsec_enabled", False)
+                            )
+                        )
+                        crowdsec_ok = bool(crowdsec_res.get("ok", False))
+                        self._send_json(
+                            200,
+                            {
+                                "ok": True,
+                                "ip": normalized_ip,
+                                "retention_minutes": ctx.get("retention_minutes", 0),
+                                "pangolin": {"ok": True},
+                                "crowdsec": {
+                                    "ok": crowdsec_ok,
+                                    "enabled": crowdsec_enabled,
+                                },
+                            },
+                        )
+                    else:
+                        error_kind = update_results.get("error_kind")
+                        if error_kind == "auth":
+                            status = 403
+                            error_msg = "Access denied"
+                        else:
+                            status = 502
+                            error_msg = "Upstream target failure"
+                        self._send_json(
+                            status,
+                            {
+                                "ok": False,
+                                "ip": normalized_ip,
+                                "error": error_msg,
+                            },
+                        )
                 return
 
             # Forbid root path
@@ -708,14 +819,17 @@ def create_image_request_handler(ctx: dict):
                 self.send_response(403)
                 self.end_headers()
                 self.wfile.write(b"Forbidden")
-                print(f"[error] Root path forbidden: {self.path}")
+                print(f"[error] Root path forbidden: {sanitize_for_log(self.path)}")
                 return
 
             # Only handle .png and .gif paths
             is_png = lower_path.endswith(".png")
             is_gif = lower_path.endswith(".gif")
             if not (is_png or is_gif):
-                print(f"[error] Invalid path (not .png/.gif): {self.path}")
+                print(
+                    "[error] Invalid path (not .png/.gif): "
+                    f"{sanitize_for_log(self.path)}"
+                )
                 if self._wants_html():
                     self._send_html(
                         404,
@@ -750,7 +864,10 @@ def create_image_request_handler(ctx: dict):
                     remote_user=remote_user,
                 )
             except Exception as e:  # noqa: BLE001
-                print(f"[error] add_ip_to_targets failed for {ip}: {e}")
+                print(
+                    f"[error] add_ip_to_targets failed for {sanitize_for_log(ip)}: "
+                    f"{sanitize_for_log(e)}"
+                )
                 results = {
                     "pangolin": {"ok": False, "detail": str(e), "enabled": True},
                     "crowdsec": {

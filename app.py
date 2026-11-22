@@ -5,6 +5,7 @@ import os
 import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
@@ -65,7 +66,7 @@ UPDATE_ENDPOINT_ENABLED = os.getenv(
 # Requests missing or mismatching the secret are rejected before any state write
 # or API call.
 PROXY_SHARED_SECRET = os.getenv("PROXY_SHARED_SECRET", "")
-# Optional: log request headers with credentials and the proxy secret redacted.
+# Optional: log request headers with credentials, tokens, cookies, and the proxy secret redacted.
 DEBUG_LOG_HEADERS = os.getenv("DEBUG_LOG_HEADERS", "false").strip().lower() in (
     "1",
     "true",
@@ -136,19 +137,67 @@ def now_utc_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
-def redact_headers_for_log(headers: dict[str, str]) -> dict[str, str]:
+_REDACTED_HEADER_NAMES = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "x-proxy-secret",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "x-auth-token",
+        "x-csrf-token",
+        "x-xsrf-token",
+    }
+)
+_REDACTED_HEADER_SUBSTRINGS = (
+    "cookie",
+    "secret",
+    "token",
+    "auth",
+    "api-key",
+    "apikey",
+    "password",
+)
+
+
+def _is_sensitive_header(name: str) -> bool:
+    kl = name.lower()
+    return kl in _REDACTED_HEADER_NAMES or any(
+        sub in kl for sub in _REDACTED_HEADER_SUBSTRINGS
+    )
+
+
+def redact_headers_for_log(headers):
     """Return a copy of headers suitable for logging.
-    - Redacts Authorization, Proxy-Authorization, and X-Proxy-Secret values.
-    Header names are matched case-insensitively.
+
+    Accepts either a Mapping (returning a dict) or a sequence/iterable of
+    (name, value) pairs such as HTTPMessage.items() (returning a list of pairs
+    to preserve duplicate headers). Redacts explicit sensitive headers and any
+    header name containing sensitive substrings (case-insensitively), and
+    sanitizes logged header names and non-redacted values against control chars.
     """
-    redacted: dict[str, str] = {}
-    for k, v in headers.items():
-        kl = k.lower()
-        if kl in ("authorization", "proxy-authorization", "x-proxy-secret"):
-            redacted[k] = "<redacted>"
+    if isinstance(headers, Mapping):
+        redacted: dict[str, str] = {}
+        for k, v in headers.items():
+            name = str(k)
+            safe_name = sanitize_for_log(name)
+            if _is_sensitive_header(name):
+                redacted[safe_name] = "<redacted>"
+            else:
+                redacted[safe_name] = sanitize_for_log(v)
+        return redacted
+
+    items = headers.items() if hasattr(headers, "items") else headers
+    redacted_pairs: list[tuple[str, str]] = []
+    for k, v in items:
+        name = str(k)
+        safe_name = sanitize_for_log(name)
+        if _is_sensitive_header(name):
+            redacted_pairs.append((safe_name, "<redacted>"))
         else:
-            redacted[k] = v
-    return redacted
+            redacted_pairs.append((safe_name, sanitize_for_log(v)))
+    return redacted_pairs
 
 
 def load_state():
@@ -263,10 +312,11 @@ def http_json(method: str, url: str, body: dict | None = None) -> dict:
         finally:
             with contextlib.suppress(Exception):
                 e.close()
+        safe_reason = sanitize_for_log(e.reason)
         if err_snippet:
-            print(f"[http_json] HTTP {e.code} {e.reason}: {err_snippet}")
+            print(f"[http_json] HTTP {e.code} {safe_reason}: {err_snippet}")
         else:
-            print(f"[http_json] HTTP {e.code} {e.reason}")
+            print(f"[http_json] HTTP {e.code} {safe_reason}")
         raise RuntimeError(f"HTTP {e.code} {e.reason}") from None
     except URLError as e:
         raise RuntimeError(f"Network error: {e.reason}") from None
@@ -346,6 +396,18 @@ if CROWDSEC_ENABLED:
 # --------------------------
 
 
+def _is_identity_denial_error(exc: Exception, org_id: str, user_id: str) -> bool:
+    """Return True when pg_filter_resources_for_user failed due to identity denial
+    (mismatch or user absent in org) rather than an upstream API or config error.
+    """
+    msg = str(exc)
+    if msg.startswith("Pangolin identity mismatch:"):
+        return True
+    if msg in ("Remote-User-Id header is empty", "Remote-User header is empty"):
+        return True
+    return msg == f"User {user_id!r} not found in org {org_id!r}"
+
+
 def add_ip_to_targets(ip: str, remote_user_id: str = "", remote_user: str = "") -> dict:
     """Add/allow this IP across configured targets (Pangolin, CrowdSec, etc.).
     Requires the Remote-User-Id and Remote-User values forwarded by Pangolin.
@@ -354,9 +416,10 @@ def add_ip_to_targets(ip: str, remote_user_id: str = "", remote_user: str = "") 
     Returns a dict of per-target results for display purposes.
     """
 
-    def _fail(detail: str) -> dict:
-        print(f"[targets] fail-closed: {detail}")
+    def _fail(detail: str, error_kind: str = "auth") -> dict:
+        print(f"[targets] fail-closed: {sanitize_for_log(detail)}")
         return {
+            "error_kind": error_kind,
             "pangolin": {"ok": False, "detail": detail, "enabled": True},
             "crowdsec": {
                 "ok": False,
@@ -368,13 +431,15 @@ def add_ip_to_targets(ip: str, remote_user_id: str = "", remote_user: str = "") 
     if not remote_user_id:
         return _fail(
             "Remote-User-Id header not present — cannot identify user. "
-            "Require Badger v1.4.1 or newer and Pangolin user authentication."
+            "Require Badger v1.4.1 or newer and Pangolin user authentication.",
+            error_kind="auth",
         )
 
     if not remote_user:
         return _fail(
             "Remote-User header not present — cannot identify user. "
-            "Ensure this resource uses Pangolin user authentication."
+            "Ensure this resource uses Pangolin user authentication.",
+            error_kind="auth",
         )
 
     # Skip API fan-out if this IP was successfully processed recently for this user
@@ -384,7 +449,8 @@ def add_ip_to_targets(ip: str, remote_user_id: str = "", remote_user: str = "") 
             entry = _api_rate_limit.get(cache_key)  # type: ignore[arg-type]
             if entry and (time.monotonic() - entry[0]) < RATE_LIMIT_SECONDS:
                 print(
-                    f"[targets] rate limited {ip} for user_id {remote_user_id!r} "
+                    f"[targets] rate limited {sanitize_for_log(ip)} "
+                    f"for user_id {sanitize_for_log(remote_user_id)!r} "
                     "— returning cached result"
                 )
                 return entry[1]
@@ -395,15 +461,22 @@ def add_ip_to_targets(ip: str, remote_user_id: str = "", remote_user: str = "") 
             ctx, ORG_ID, remote_user_id, remote_user
         )
     except Exception as e:  # noqa: BLE001
+        error_kind = (
+            "auth"
+            if _is_identity_denial_error(e, ORG_ID, remote_user_id)
+            else "upstream"
+        )
         return _fail(
-            f"User authorization failed for user_id {remote_user_id!r}, "
-            f"username {remote_user!r}: {e}"
+            f"User authorization failed for user_id {sanitize_for_log(remote_user_id)!r}, "
+            f"username {sanitize_for_log(remote_user)!r}: {sanitize_for_log(e)}",
+            error_kind=error_kind,
         )
 
     if not effective_resources:
         return _fail(
-            f"User {remote_user!r} ({remote_user_id}) is not authorised for any "
-            "configured resource."
+            f"User {sanitize_for_log(remote_user)!r} ({sanitize_for_log(remote_user_id)}) "
+            "is not authorised for any configured resource.",
+            error_kind="auth",
         )
 
     effective_ids = [r["resourceId"] for r in effective_resources]
@@ -421,7 +494,13 @@ def add_ip_to_targets(ip: str, remote_user_id: str = "", remote_user: str = "") 
         except Exception as e:  # noqa: BLE001
             results[key]["ok"] = False
             results[key]["detail"] = str(e)
-            print(f"[targets] add failed for {ip} on {t.__class__.__name__}: {e}")
+            print(
+                f"[targets] add failed for {sanitize_for_log(ip)} "
+                f"on {t.__class__.__name__}: {sanitize_for_log(e)}"
+            )
+
+    if not results["pangolin"]["ok"]:
+        results["error_kind"] = "upstream"
 
     # Only cache successful Pangolin checkins
     is_success = results.get("pangolin", {}).get("ok", False)
@@ -444,7 +523,10 @@ def expire_ip_from_targets(ip: str) -> None:
         try:
             t.expire_ip(ip)
         except Exception as e:  # noqa: BLE001
-            print(f"[targets] expire failed for {ip} on {t.__class__.__name__}: {e}")
+            print(
+                f"[targets] expire failed for {sanitize_for_log(ip)} "
+                f"on {t.__class__.__name__}: {sanitize_for_log(e)}"
+            )
 
 
 def delete_ip_rule_if_created_by_us(ip: str, rid: int) -> bool:
@@ -543,6 +625,7 @@ def cleanup_loop():
 from request_handler import (
     create_image_request_handler,
     is_valid_dashboard_url,
+    sanitize_for_log,
 )
 
 
