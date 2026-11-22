@@ -5,8 +5,36 @@ import json
 import os
 import re
 from datetime import datetime, timedelta
+from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
+
+SERVER_VERSION = "BannerServer"
+# All CSS/JS is inline and self-contained (no external fetches), so a
+# restrictive policy is possible. 'unsafe-inline' is still required for
+# the inline <style>/<script> blocks; everything else is locked down.
+SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "no-referrer"),
+    (
+        "Content-Security-Policy",
+        (
+            "default-src 'none'; "
+            "img-src 'self' data:; "
+            "style-src 'unsafe-inline'; "
+            "script-src 'unsafe-inline'; "
+            "base-uri 'none'; "
+            "form-action 'none'; "
+            "frame-ancestors 'none'"
+        ),
+    ),
+)
+NO_STORE_HEADERS: tuple[tuple[str, str], ...] = (
+    ("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0"),
+    ("Pragma", "no-cache"),
+    ("Expires", "0"),
+)
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
 _TEMPLATE_TOKEN_RE = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
@@ -398,6 +426,28 @@ def _build_error_html(title: str, message: str, site_name: str = "") -> str:
     )
 
 
+def build_plain_http_response(
+    status: int,
+    reason: str,
+    body: str,
+    extra_headers: tuple[tuple[str, str], ...] = (),
+) -> bytes:
+    """Serialize a self-contained plain-text HTTP/1.1 response."""
+    encoded = body.encode("utf-8")
+    headers = [
+        ("Server", SERVER_VERSION),
+        ("Date", formatdate(usegmt=True)),
+        ("Content-Type", "text/plain; charset=utf-8"),
+        ("Content-Length", str(len(encoded))),
+        *NO_STORE_HEADERS,
+        *SECURITY_HEADERS,
+        *extra_headers,
+    ]
+    header_lines = "".join(f"{name}: {value}\r\n" for name, value in headers)
+    head = f"HTTP/1.1 {status} {reason}\r\n{header_lines}\r\n".encode("latin-1")
+    return head + encoded
+
+
 def create_image_request_handler(ctx: dict):
     """
     Factory that returns an ImageRequestHandler class bound to the provided context.
@@ -419,7 +469,12 @@ def create_image_request_handler(ctx: dict):
     """
 
     class ImageRequestHandler(BaseHTTPRequestHandler):
-        server_version = "BannerServer/1.0"
+        server_version = SERVER_VERSION
+        sys_version = ""
+        timeout = 10
+
+        def version_string(self) -> str:
+            return f"{self.server_version} {self.sys_version}".strip()
 
         def log_message(self, fmt, *args):
             message = fmt % args if args else str(fmt)
@@ -502,22 +557,26 @@ def create_image_request_handler(ctx: dict):
             return value
 
         def _send_security_headers(self) -> None:
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("X-Frame-Options", "DENY")
-            self.send_header("Referrer-Policy", "no-referrer")
-            # All CSS/JS is inline and self-contained (no external fetches), so a
-            # restrictive policy is possible. 'unsafe-inline' is still required for
-            # the inline <style>/<script> blocks; everything else is locked down.
-            self.send_header(
-                "Content-Security-Policy",
-                "default-src 'none'; "
-                "img-src 'self' data:; "
-                "style-src 'unsafe-inline'; "
-                "script-src 'unsafe-inline'; "
-                "base-uri 'none'; "
-                "form-action 'none'; "
-                "frame-ancestors 'none'",
-            )
+            for name, value in SECURITY_HEADERS:
+                self.send_header(name, value)
+
+        def _send_plain(
+            self,
+            status: int,
+            body: str,
+            extra_headers: tuple[tuple[str, str], ...] = (),
+        ) -> None:
+            encoded = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            for name, value in NO_STORE_HEADERS:
+                self.send_header(name, value)
+            self._send_security_headers()
+            for name, value in extra_headers:
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(encoded)
 
         def _send_html(self, status: int, body: str) -> None:
             encoded = body.encode("utf-8")
@@ -589,6 +648,8 @@ def create_image_request_handler(ctx: dict):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Content-Length", "2")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
                 self.wfile.write(b"ok")
                 return
@@ -599,15 +660,15 @@ def create_image_request_handler(ctx: dict):
             # no state and makes no upstream calls.
             if path.lower() == "/favicon.ico":
                 self.send_response(204)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
                 return
 
             # Defense-in-depth: reject anything that did not transit the proxy before
             # touching state or the Pangolin/CrowdSec APIs. Bare 403, no body detail.
             if not self._proxy_secret_ok():
-                self.send_response(403)
-                self.end_headers()
-                self.wfile.write(b"Forbidden")
+                self._send_plain(403, "Forbidden")
                 print(
                     "[error] Rejected request with missing/invalid X-Proxy-Secret: "
                     f"{sanitize_for_log(self.path)}"
@@ -636,9 +697,7 @@ def create_image_request_handler(ctx: dict):
             if lower_path == "/update":
                 if not ctx.get("update_enabled"):
                     # Intentionally bare — do not reveal the endpoint exists
-                    self.send_response(404)
-                    self.end_headers()
-                    self.wfile.write(b"Not found")
+                    self._send_plain(404, "Not found")
                     print(
                         f"[error] Update endpoint disabled: {sanitize_for_log(self.path)}"
                     )
@@ -816,9 +875,7 @@ def create_image_request_handler(ctx: dict):
 
             # Forbid root path
             if path == "/":
-                self.send_response(403)
-                self.end_headers()
-                self.wfile.write(b"Forbidden")
+                self._send_plain(403, "Forbidden")
                 print(f"[error] Root path forbidden: {sanitize_for_log(self.path)}")
                 return
 
@@ -841,9 +898,7 @@ def create_image_request_handler(ctx: dict):
                         ),
                     )
                 else:
-                    self.send_response(404)
-                    self.end_headers()
-                    self.wfile.write(b"Not found")
+                    self._send_plain(404, "Not found")
                 return
 
             # Update state

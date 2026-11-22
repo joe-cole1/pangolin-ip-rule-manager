@@ -4792,3 +4792,546 @@ def test_update_bad_ip_returns_escaped_html_when_accepted(
     assert "<script>alert(1)</script>" not in body
     if "script" in path:
         assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+
+
+# ---------------------------------------------------------------------------
+# Batch 5: Bounded HTTP concurrency, response hygiene, and graceful shutdown
+# ---------------------------------------------------------------------------
+
+
+def _start_bounded_server(app, handler_cls, *, max_workers=None):
+    @contextlib.contextmanager
+    def _ctx():
+        httpd = app.BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), handler_cls, max_workers=max_workers
+        )
+        port = httpd.server_port
+        t = threading.Thread(
+            target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
+        t.start()
+        try:
+            yield (httpd, port)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            httpd.join_workers(2.0)
+            t.join(timeout=2.0)
+
+    return _ctx()
+
+
+def test_bounded_server_defaults(app_module):
+    """BoundedThreadingHTTPServer enforces the 32-worker / 32-queue cap."""
+    srv = app_module.BoundedThreadingHTTPServer
+    assert srv.max_workers == 32
+    assert srv.request_queue_size == 32
+    assert srv.daemon_threads is True
+    assert srv.block_on_close is False
+    with pytest.raises(ValueError, match="max_workers"):
+        srv(
+            ("127.0.0.1", 0),
+            app_module.ImageRequestHandler,
+            bind_and_activate=False,
+            max_workers=0,
+        )
+
+
+def test_bounded_server_returns_503_on_saturation_and_recovers(app_module):
+    """Saturating max_workers immediately returns 503 without spawning a worker."""
+    from http.server import BaseHTTPRequestHandler
+
+    lock = threading.Lock()
+    entered = 0
+    both_entered = threading.Event()
+    release = threading.Event()
+    worker_calls = 0
+
+    class _BlockingHandler(BaseHTTPRequestHandler):
+        server_version = "BannerServer"
+        sys_version = ""
+
+        def log_message(self, fmt, *args):
+            return
+
+        def do_GET(self):
+            nonlocal entered, worker_calls
+            with lock:
+                worker_calls += 1
+            if self.path == "/block":
+                with lock:
+                    entered += 1
+                    if entered == 2:
+                        both_entered.set()
+                release.wait(timeout=5)
+                body = b"done"
+            else:
+                body = b"ok"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    with _start_bounded_server(app_module, _BlockingHandler, max_workers=2) as (
+        _httpd,
+        port,
+    ):
+        results = []
+
+        def _worker_req():
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request("GET", "/block")
+            r = c.getresponse()
+            results.append((r.status, r.read()))
+            c.close()
+
+        t1 = threading.Thread(target=_worker_req, daemon=True)
+        t2 = threading.Thread(target=_worker_req, daemon=True)
+        t1.start()
+        t2.start()
+        try:
+            assert both_entered.wait(timeout=3), "Workers did not block as expected"
+
+            sat_conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            sat_conn.request("GET", "/probe")
+            sat_resp = sat_conn.getresponse()
+            sat_body = sat_resp.read()
+            sat_conn.close()
+
+            assert sat_resp.status == 503
+            assert sat_resp.reason == "Service Unavailable"
+            assert sat_body == b"Service Unavailable"
+            assert sat_resp.getheader("Retry-After") == "5"
+            assert sat_resp.getheader("Content-Type") == "text/plain; charset=utf-8"
+            assert sat_resp.getheader("Content-Length") == str(
+                len(b"Service Unavailable")
+            )
+            assert "no-store" in sat_resp.getheader("Cache-Control", "")
+            assert sat_resp.getheader("Pragma") == "no-cache"
+            assert sat_resp.getheader("Expires") == "0"
+            assert sat_resp.getheader("Connection") == "close"
+            assert sat_resp.getheader("Server") == "BannerServer"
+            assert sat_resp.getheader("X-Content-Type-Options") == "nosniff"
+            assert sat_resp.getheader("X-Frame-Options") == "DENY"
+            assert sat_resp.getheader("Referrer-Policy") == "no-referrer"
+            assert sat_resp.getheader("Content-Security-Policy")
+            assert worker_calls == 2
+        finally:
+            release.set()
+            t1.join(timeout=3)
+            t2.join(timeout=3)
+
+        assert results == [(200, b"done"), (200, b"done")]
+
+        rec_conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        rec_conn.request("GET", "/ok")
+        rec_resp = rec_conn.getresponse()
+        assert rec_resp.status == 200
+        assert rec_resp.read() == b"ok"
+        rec_conn.close()
+
+
+def test_bounded_server_releases_semaphore_on_handler_exception(app_module):
+    """Semaphore slot is always released even if a request handler raises."""
+    from http.server import BaseHTTPRequestHandler
+
+    calls = {"count": 0}
+
+    class _FlakyHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_GET(self):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("boom")
+            body = b"recovered"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    with _start_bounded_server(app_module, _FlakyHandler, max_workers=1) as (
+        httpd,
+        port,
+    ):
+        httpd.handle_error = lambda *_args: None
+        conn1 = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        with pytest.raises(http.client.HTTPException):
+            conn1.request("GET", "/first")
+            conn1.getresponse()
+        conn1.close()
+
+        conn2 = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn2.request("GET", "/second")
+        resp2 = conn2.getresponse()
+        assert resp2.status == 200
+        assert resp2.read() == b"recovered"
+        conn2.close()
+
+
+def test_bounded_server_join_workers_respects_timeout_budget(app_module):
+    """join_workers stops waiting when timeout expires and clears after exit."""
+    from http.server import BaseHTTPRequestHandler
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _HoldHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
+
+        def do_GET(self):
+            entered.set()
+            release.wait(timeout=5)
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+    with _start_bounded_server(app_module, _HoldHandler, max_workers=1) as (
+        httpd,
+        port,
+    ):
+
+        def _run_req():
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request("GET", "/hold")
+            r = c.getresponse()
+            r.read()
+            c.close()
+
+        client = threading.Thread(target=_run_req, daemon=True)
+        client.start()
+        try:
+            assert entered.wait(timeout=2)
+            start = _time_mod.monotonic()
+            httpd.join_workers(0.15)
+            elapsed = _time_mod.monotonic() - start
+            assert 0.1 <= elapsed < 1.0
+        finally:
+            release.set()
+            client.join(timeout=3)
+
+        start2 = _time_mod.monotonic()
+        httpd.join_workers(2.0)
+        assert _time_mod.monotonic() - start2 < 0.5
+        with httpd._workers_lock:
+            assert not httpd._active_workers
+
+
+def test_image_request_handler_socket_timeout_configured(app_module):
+    """ImageRequestHandler enforces a 10-second per-connection socket timeout."""
+    assert app_module.ImageRequestHandler.timeout == 10
+
+
+def test_slowloris_client_times_out_and_releases_worker(app_module):
+    """Incomplete request headers time out and free the worker slot."""
+    import socket
+
+    class _FastTimeoutHandler(app_module.ImageRequestHandler):
+        timeout = 0.2
+
+    with _start_bounded_server(app_module, _FastTimeoutHandler, max_workers=1) as (
+        _httpd,
+        port,
+    ):
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+            sock.settimeout(2.0)
+            sock.sendall(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n")
+            assert sock.recv(1024) == b""
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/healthz")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.read() == b"ok"
+        conn.close()
+
+
+def test_server_header_omits_python_and_version(app_module):
+    """Server header reports bare 'BannerServer' without Python or version."""
+    handler_cls = app_module.ImageRequestHandler
+    assert handler_cls.server_version == "BannerServer"
+    assert handler_cls.sys_version == ""
+
+    with start_server(handler_cls) as (_httpd, port):
+        checks = [
+            ("/healthz", {}),
+            ("/", {"X-Proxy-Secret": TEST_PROXY_SECRET}),
+            ("/unknown", {"X-Proxy-Secret": TEST_PROXY_SECRET}),
+            ("/banner.png", {"X-Proxy-Secret": TEST_PROXY_SECRET}),
+        ]
+        for path, hdrs in checks:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", path, headers=hdrs)
+            resp = conn.getresponse()
+            resp.read()
+            conn.close()
+            server_hdr = resp.getheader("Server", "")
+            assert server_hdr == "BannerServer"
+            assert "Python" not in server_hdr
+            assert "1.0" not in server_hdr
+
+
+@pytest.mark.parametrize(
+    ("path", "headers", "expected_status", "expected_body"),
+    [
+        ("/banner.png", {}, 403, b"Forbidden"),
+        ("/", {"X-Proxy-Secret": TEST_PROXY_SECRET}, 403, b"Forbidden"),
+        (
+            "/update?ip=1.2.3.4",
+            {"X-Proxy-Secret": TEST_PROXY_SECRET},
+            404,
+            b"Not found",
+        ),
+        ("/nope", {"X-Proxy-Secret": TEST_PROXY_SECRET}, 404, b"Not found"),
+    ],
+)
+def test_bare_403_and_404_responses_have_plain_and_security_headers(
+    monkeypatch, temp_state_file, path, headers, expected_status, expected_body
+):
+    """Bare 403 and 404 responses emit plain text, no-store, and security headers."""
+    app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=False)
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", path, headers=headers)
+        resp = conn.getresponse()
+        body = resp.read()
+        conn.close()
+
+    assert resp.status == expected_status
+    assert body == expected_body
+    assert resp.getheader("Server") == "BannerServer"
+    assert resp.getheader("Content-Type") == "text/plain; charset=utf-8"
+    assert resp.getheader("Content-Length") == str(len(expected_body))
+    assert (
+        resp.getheader("Cache-Control")
+        == "no-store, no-cache, must-revalidate, max-age=0"
+    )
+    assert resp.getheader("Pragma") == "no-cache"
+    assert resp.getheader("Expires") == "0"
+    assert resp.getheader("X-Content-Type-Options") == "nosniff"
+    assert resp.getheader("X-Frame-Options") == "DENY"
+    assert resp.getheader("Referrer-Policy") == "no-referrer"
+    assert resp.getheader("Content-Security-Policy")
+
+
+def test_send_plain_supports_503_with_extra_headers(app_module):
+    """_send_plain emits plain-text 503 with Retry-After and security headers."""
+
+    class _Plain503Handler(app_module.ImageRequestHandler):
+        def do_GET(self):
+            self._send_plain(
+                503,
+                "Service Unavailable",
+                extra_headers=(("Retry-After", "5"),),
+            )
+
+    with start_server(_Plain503Handler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        body = resp.read()
+        conn.close()
+
+    assert resp.status == 503
+    assert body == b"Service Unavailable"
+    assert resp.getheader("Retry-After") == "5"
+    assert resp.getheader("Server") == "BannerServer"
+    assert resp.getheader("Content-Type") == "text/plain; charset=utf-8"
+    assert resp.getheader("Content-Length") == str(len(b"Service Unavailable"))
+    assert (
+        resp.getheader("Cache-Control")
+        == "no-store, no-cache, must-revalidate, max-age=0"
+    )
+    assert resp.getheader("Pragma") == "no-cache"
+    assert resp.getheader("Expires") == "0"
+    assert resp.getheader("X-Content-Type-Options") == "nosniff"
+    assert resp.getheader("X-Frame-Options") == "DENY"
+    assert resp.getheader("Referrer-Policy") == "no-referrer"
+    assert resp.getheader("Content-Security-Policy")
+
+
+def test_healthz_and_favicon_headers(app_module):
+    """/healthz and /favicon.ico emit Cache-Control: no-store and nosniff."""
+    with start_server(app_module.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/healthz")
+        health_resp = conn.getresponse()
+        health_body = health_resp.read()
+
+        conn.request("GET", "/favicon.ico")
+        fav_resp = conn.getresponse()
+        fav_body = fav_resp.read()
+        conn.close()
+
+    assert health_resp.status == 200
+    assert health_body == b"ok"
+    assert health_resp.getheader("Cache-Control") == "no-store"
+    assert health_resp.getheader("X-Content-Type-Options") == "nosniff"
+    assert health_resp.getheader("Server") == "BannerServer"
+
+    assert fav_resp.status == 204
+    assert fav_body == b""
+    assert fav_resp.getheader("Cache-Control") == "no-store"
+    assert fav_resp.getheader("X-Content-Type-Options") == "nosniff"
+    assert fav_resp.getheader("Server") == "BannerServer"
+
+
+def test_cleanup_loop_exits_promptly_on_stop_event(monkeypatch, app_module):
+    """cleanup_loop exits promptly when stop_event is set despite 60m interval."""
+    monkeypatch.setattr(app_module, "CLEANUP_INTERVAL_MINUTES", 60)
+    ran_once = threading.Event()
+    monkeypatch.setattr(app_module, "cleanup_old_ips", lambda: ran_once.set())
+
+    stop_event = threading.Event()
+    t = threading.Thread(
+        target=app_module.cleanup_loop, args=(stop_event,), daemon=True
+    )
+    t.start()
+    try:
+        assert ran_once.wait(timeout=2.0)
+        stop_event.set()
+        t.join(timeout=2.0)
+        assert not t.is_alive()
+    finally:
+        stop_event.set()
+
+
+@pytest.mark.parametrize(
+    "sig", [pytest.param(15, id="SIGTERM"), pytest.param(2, id="SIGINT")]
+)
+def test_main_graceful_shutdown_on_signal(tmp_path, sig):
+    """Running app.py shuts down cleanly and exits 0 on SIGTERM or SIGINT."""
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    import app as app_mod
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PANGOLIN_URL": "https://example.invalid",
+            "PANGOLIN_TOKEN": "",
+            "ORG_ID": "",
+            "RESOURCE_IDS": "1",
+            "PROXY_SHARED_SECRET": TEST_PROXY_SECRET,
+            "LISTEN_PORT": "0",
+            "STATE_FILE": str(tmp_path / "state.json"),
+            "CROWDSEC_ENABLED": "false",
+            "PYTHONUNBUFFERED": "1",
+        }
+    )
+
+    proc = subprocess.Popen(
+        [sys.executable, app_mod.__file__],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+    )
+    watchdog = threading.Timer(10.0, proc.kill)
+    watchdog.start()
+    lines: list[str] = []
+    try:
+        assert proc.stdout is not None
+        started = False
+        for line in proc.stdout:
+            lines.append(line)
+            if "[start] Listening on" in line:
+                started = True
+                break
+        assert started, f"Server failed to start: {''.join(lines)}"
+
+        sig_obj = signal.Signals(sig)
+        start = _time_mod.monotonic()
+        proc.send_signal(sig_obj)
+        rc = proc.wait(timeout=4.0)
+        elapsed = _time_mod.monotonic() - start
+        lines.extend(proc.stdout.readlines())
+    finally:
+        watchdog.cancel()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.stdout is not None:
+            proc.stdout.close()
+
+    output = "".join(lines)
+    assert rc == 0, f"Expected exit 0, got {rc}; output:\n{output}"
+    assert elapsed < 4.0
+    assert f"[shutdown] Received {sig_obj.name}; shutting down gracefully" in output
+    assert "[shutdown] Shutdown complete" in output
+
+
+def test_main_restores_signal_handlers_and_joins_within_budget(monkeypatch, app_module):
+    """main() restores previous signal handlers and joins server + cleanup."""
+    import signal
+
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    events: list[str] = []
+    join_timeouts: list[float] = []
+
+    class _FakeThread:
+        def __init__(self, target=None, args=(), name=None, daemon=None):
+            self.target = target
+            self.args = args
+            self.name = name
+            self.daemon = daemon
+
+        def start(self):
+            events.append(f"start:{self.name}")
+
+        def join(self, timeout=None):
+            events.append(f"join:{self.name}")
+            if timeout is not None:
+                join_timeouts.append(timeout)
+
+    class _FakeServer:
+        server_address = ("0.0.0.0", 8080)
+
+        def __init__(self, addr, handler_cls):
+            self.addr = addr
+            self.handler_cls = handler_cls
+
+        def serve_forever(self):
+            events.append("serve_forever")
+            assert signal.getsignal(signal.SIGTERM) is not prev_sigterm
+            assert signal.getsignal(signal.SIGINT) is not prev_sigint
+
+        def shutdown(self):
+            events.append("httpd.shutdown")
+
+        def server_close(self):
+            events.append("httpd.server_close")
+
+        def join_workers(self, timeout):
+            events.append("httpd.join_workers")
+            join_timeouts.append(timeout)
+
+    monkeypatch.setattr(app_module, "self_check", lambda: None)
+    monkeypatch.setattr(app_module, "load_state", lambda: None)
+    monkeypatch.setattr(app_module, "print_org_resources", lambda: None)
+    monkeypatch.setattr(app_module, "TARGETS", [])
+    monkeypatch.setattr(app_module, "BoundedThreadingHTTPServer", _FakeServer)
+    monkeypatch.setattr(app_module.threading, "Thread", _FakeThread)
+
+    app_module.main()
+
+    assert signal.getsignal(signal.SIGTERM) is prev_sigterm
+    assert signal.getsignal(signal.SIGINT) is prev_sigint
+    assert app_module.shutdown_event.is_set()
+    assert events == [
+        "start:cleanup-loop",
+        "serve_forever",
+        "httpd.server_close",
+        "httpd.join_workers",
+        "join:cleanup-loop",
+    ]
+    assert len(join_timeouts) == 2
+    assert all(0.0 <= t <= app_module._SHUTDOWN_TIMEOUT_SECONDS for t in join_timeouts)
