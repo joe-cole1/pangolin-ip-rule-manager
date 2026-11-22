@@ -487,6 +487,78 @@ def test_update_endpoint_ipv6_success(monkeypatch, temp_state_file):
         assert ipv6 in app.state
 
 
+def test_update_endpoint_ipv4_mapped_ipv6_unwrapped(monkeypatch, temp_state_file):
+    app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=True)
+    with app.state_lock:
+        app.state.clear()
+    auth_headers = _configure_authorized_update_user(monkeypatch, app)
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        proxy_request(
+            conn,
+            "GET",
+            "/update?ip=%3A%3Affff%3A1.1.1.1",
+            headers=auth_headers,
+        )
+        resp = conn.getresponse()
+        data = resp.read()
+        assert resp.status == 200
+        parsed = json.loads(data)
+        assert parsed["ok"] is True
+        assert parsed["ip"] == "1.1.1.1"
+    with app.state_lock:
+        assert "1.1.1.1" in app.state
+        assert "::ffff:1.1.1.1" not in app.state
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    ["%3A%3Affff%3A10.0.0.1", "%3A%3Affff%3A127.0.0.1"],
+)
+def test_update_endpoint_private_ipv4_mapped_ipv6_rejected_400(
+    monkeypatch, temp_state_file, encoded
+):
+    app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=True)
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        proxy_request(conn, "GET", f"/update?ip={encoded}")
+        resp = conn.getresponse()
+        body = resp.read()
+        assert resp.status == 400
+        parsed = json.loads(body)
+        assert parsed["ok"] is False
+    with app.state_lock:
+        assert app.state == {}
+
+
+def test_update_endpoint_private_ipv4_mapped_ipv6_html_rejected_400(
+    monkeypatch, temp_state_file
+):
+    app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=True)
+    with app.state_lock:
+        app.state.clear()
+
+    with start_server(app.ImageRequestHandler) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        proxy_request(
+            conn,
+            "GET",
+            "/update?ip=%3A%3Affff%3A10.0.0.1",
+            headers={"Accept": "text/html"},
+        )
+        resp = conn.getresponse()
+        html_body = resp.read().decode("utf-8")
+        assert resp.status == 400
+        assert "text/html" in resp.getheader("Content-Type", "")
+        assert "10.0.0.1" in html_body
+    with app.state_lock:
+        assert app.state == {}
+
+
 def test_update_endpoint_last_seen_updates(monkeypatch, temp_state_file):
     import time as _time
 
@@ -1863,6 +1935,41 @@ def test_get_real_ip_ipv6_accepted():
     """Valid global IPv6 in X-Real-IP → returned normalised."""
     h = _make_handler_for_ip_test({"X-Real-IP": "2606:4700:4700::1111"})
     assert h._get_real_ip() == "2606:4700:4700::1111"
+
+
+@pytest.mark.parametrize("raw", ["::ffff:1.1.1.1", "::ffff:0101:0101"])
+def test_get_real_ip_ipv4_mapped_ipv6_in_x_real_ip(raw):
+    """Global IPv4-mapped IPv6 in X-Real-IP → unwrapped to canonical IPv4."""
+    h = _make_handler_for_ip_test({"X-Real-IP": raw})
+    assert h._get_real_ip() == "1.1.1.1"
+
+
+def test_get_real_ip_ipv4_mapped_ipv6_in_xff():
+    """Global IPv4-mapped IPv6 in X-Forwarded-For → unwrapped to canonical IPv4."""
+    h = _make_handler_for_ip_test({"X-Forwarded-For": "::ffff:1.1.1.1, 10.0.0.1"})
+    assert h._get_real_ip() == "1.1.1.1"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["::ffff:10.0.0.1", "::ffff:127.0.0.1", "::ffff:192.168.1.1"],
+)
+def test_get_real_ip_private_ipv4_mapped_ipv6_rejected(raw):
+    """Non-global IPv4-mapped IPv6 in X-Real-IP is rejected; falls back to XFF."""
+    h = _make_handler_for_ip_test(
+        {"X-Real-IP": raw, "X-Forwarded-For": "5.6.7.8"},
+    )
+    assert h._get_real_ip() == "5.6.7.8"
+
+
+@pytest.mark.parametrize(
+    ("socket_ip", "expected"),
+    [("::ffff:1.1.1.1", "1.1.1.1"), ("::ffff:127.0.0.1", "127.0.0.1")],
+)
+def test_get_real_ip_socket_fallback_unwraps_ipv4_mapped_ipv6(socket_ip, expected):
+    """Socket address fallback unwraps IPv4-mapped IPv6 without .is_global filter."""
+    h = _make_handler_for_ip_test({}, socket_ip=socket_ip)
+    assert h._get_real_ip() == expected
 
 
 def test_identity_header_rejects_duplicate_values():
