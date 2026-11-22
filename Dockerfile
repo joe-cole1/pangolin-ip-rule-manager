@@ -55,7 +55,7 @@ ENV RETENTION_MINUTES="1440" \
 WORKDIR /app
 # Application code is immutable at runtime and does not need write permission.
 COPY --chown=0:0 --chmod=0444 *.py /app/
-COPY --chown=0:0 --chmod=0444 templates/*.html /app/templates/
+COPY --chown=0:0 --chmod=0444 templates/*.html templates/*.css /app/templates/
 COPY --chown=0:0 --chmod=0555 docker-entrypoint.sh /usr/local/bin/
 
 USER appuser:appgroup

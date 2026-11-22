@@ -1783,23 +1783,23 @@ def _make_handler_for_ip_test(
     Uses object.__new__ to bypass BaseHTTPRequestHandler.__init__ (which requires
     a live socket).
     """
-    from request_handler import create_image_request_handler
+    from request_handler import RequestHandlerContext, create_image_request_handler
 
-    ctx = {
-        "update_enabled": False,
-        "retention_minutes": 1440,
-        "crowdsec_enabled": False,
-        "site_name": "",
-        "proxy_shared_secret": proxy_shared_secret,
-        "state": {},
-        "state_lock": threading.Lock(),
-        "now_utc_iso": lambda: "2025-01-01T00:00:00+00:00",
-        "save_state": lambda: None,
-        "add_ip_to_targets": (lambda ip, remote_user_id="", remote_user="": {}),
-        "banner_png": b"",
-        "banner_gif": b"",
-        "redact_headers_for_log": lambda h: h,
-    }
+    ctx = RequestHandlerContext(
+        update_enabled=False,
+        retention_minutes=1440,
+        crowdsec_enabled=False,
+        site_name="",
+        proxy_shared_secret=proxy_shared_secret,
+        state={},
+        state_lock=threading.Lock(),
+        now_utc_iso=lambda: "2025-01-01T00:00:00+00:00",
+        save_state=lambda: None,
+        add_ip_to_targets=(lambda ip, remote_user_id="", remote_user="": {}),
+        banner_png=b"",
+        banner_gif=b"",
+        redact_headers_for_log=lambda h: h,
+    )
     HandlerClass = create_image_request_handler(ctx)
     instance = object.__new__(HandlerClass)
     instance.headers = headers
@@ -5018,7 +5018,6 @@ def test_build_checkin_html_escapes_ip_tokens(monkeypatch):
 
     expected = "&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;"
     assert captured_tokens["IP"] == expected
-    assert captured_tokens["DETAILS_IP"] == expected
     assert raw_ip not in page
     assert expected in page
 
@@ -6557,3 +6556,290 @@ def test_save_state_fsync_fchmod_before_replace_and_load_state_lock_order(
         "exit:_save_lock",
     ]
     assert "1.2.3.4" in app.state
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 / Batch 10 — Deduplication, Template Caching & Config Validation
+# ---------------------------------------------------------------------------
+
+
+def test_build_checkin_html_details_label_by_status():
+    """CrowdSec-warning and Pangolin-failure states show 'What went wrong?'."""
+    from request_handler import _build_checkin_html
+
+    full_ok = _build_checkin_html(
+        ip="1.2.3.4",
+        results={
+            "pangolin": {"ok": True, "detail": "ok"},
+            "crowdsec": {"ok": True, "detail": "ok"},
+        },
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=True,
+    )
+    assert "Technical details" in full_ok
+    assert "What went wrong?" not in full_ok
+
+    crowdsec_warn = _build_checkin_html(
+        ip="1.2.3.4",
+        results={
+            "pangolin": {"ok": True, "detail": "ok"},
+            "crowdsec": {"ok": False, "detail": "cscli error"},
+        },
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=True,
+    )
+    assert "status-dot warn" in crowdsec_warn
+    assert "What went wrong?" in crowdsec_warn
+    assert "Technical details" not in crowdsec_warn
+
+    pangolin_fail = _build_checkin_html(
+        ip="1.2.3.4",
+        results={
+            "pangolin": {"ok": False, "detail": "upstream error"},
+            "crowdsec": {"ok": False, "detail": "not reached"},
+        },
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+    )
+    assert "status-dot err" in pangolin_fail
+    assert "What went wrong?" in pangolin_fail
+    assert "Technical details" not in pangolin_fail
+
+
+def test_templates_interpolate_base_css_and_cache_by_dir(tmp_path, monkeypatch):
+    """_base.css is lazily interpolated and raw template reads cache per (_TEMPLATE_DIR, name)."""
+    import builtins
+
+    import request_handler
+
+    checkin_html = request_handler._build_checkin_html(
+        ip="1.2.3.4",
+        results=_RESULTS_OK,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+    )
+    error_html = request_handler._build_error_html("Bad request", "Invalid input")
+    for page in (checkin_html, error_html):
+        assert "{{BASE_CSS}}" not in page
+        assert "--accent:" in page
+        assert "@keyframes rise" in page
+
+    dir_a = tmp_path / "a"
+    dir_b = tmp_path / "b"
+    dir_c = tmp_path / "c"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    dir_c.mkdir()
+    (dir_a / "t.html").write_text("from-a {{X}}", encoding="utf-8")
+    (dir_b / "t.html").write_text("from-b {{X}}", encoding="utf-8")
+    (dir_c / "_base.css").write_text("body { color: red; }", encoding="utf-8")
+    (dir_c / "t.html").write_text("<style>{{BASE_CSS}}</style>{{X}}", encoding="utf-8")
+
+    request_handler._read_template_file.cache_clear()
+    try:
+        opened: list[str] = []
+        orig_open = builtins.open
+
+        def spy_open(file, *args, **kwargs):
+            opened.append(str(file))
+            return orig_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", spy_open)
+
+        monkeypatch.setattr(request_handler, "_TEMPLATE_DIR", str(dir_a))
+        assert request_handler._load_template("t.html", {"X": "1"}) == "from-a 1"
+        assert request_handler._load_template("t.html", {"X": "2"}) == "from-a 2"
+        assert len(opened) == 1
+
+        monkeypatch.setattr(request_handler, "_TEMPLATE_DIR", str(dir_b))
+        assert request_handler._load_template("t.html", {"X": "3"}) == "from-b 3"
+        assert len(opened) == 2
+
+        monkeypatch.setattr(request_handler, "_TEMPLATE_DIR", str(dir_c))
+        assert (
+            request_handler._load_template("t.html", {"X": "4"})
+            == "<style>body { color: red; }</style>4"
+        )
+        assert len(opened) == 4
+    finally:
+        request_handler._read_template_file.cache_clear()
+
+
+def test_update_html_calls_now_utc_iso_once(monkeypatch, temp_state_file):
+    """/update HTML check-in stamps state and renders expiry using a single now_utc_iso() call."""
+    app = _reload_app_with_env(monkeypatch, temp_state_file, update_enabled=True)
+
+    now_calls: list[str] = []
+    fixed_iso = "2026-01-02T03:04:05+00:00"
+
+    def spy_now_utc_iso() -> str:
+        now_calls.append(fixed_iso)
+        return fixed_iso
+
+    monkeypatch.setattr(app, "now_utc_iso", spy_now_utc_iso)
+    monkeypatch.setattr(
+        app,
+        "add_ip_to_targets",
+        lambda _ip, remote_user_id="", remote_user="": {
+            "pangolin": {"ok": True, "detail": "ok"},
+            "crowdsec": {"ok": False, "detail": "disabled", "enabled": False},
+            "resources": [],
+        },
+    )
+    handler_cls = app.create_image_request_handler(app._make_image_handler_context())
+
+    with start_server(handler_cls) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        proxy_request(
+            conn,
+            "GET",
+            "/update?ip=1.2.3.4",
+            headers={
+                "Remote-User-Id": "user-alice",
+                "Remote-User": "alice@example.com",
+                "Accept": "text/html",
+            },
+        )
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8")
+
+    assert resp.status == 200
+    assert len(now_calls) == 1
+    assert app.state["1.2.3.4"]["last_seen"] == fixed_iso
+    assert fixed_iso in body
+
+
+@pytest.mark.parametrize(
+    ("env_var", "bad_val"),
+    [
+        ("RETENTION_MINUTES", "abc"),
+        ("LISTEN_PORT", "not-a-port"),
+        ("REDIRECT_DELAY_SECONDS", "soon"),
+        ("RESOURCE_IDS", "1,abc"),
+        ("CROWDSEC_CACHE_TTL_SECONDS", "invalid"),
+    ],
+)
+def test_invalid_int_env_vars_recorded_and_rejected_by_self_check(
+    monkeypatch, temp_state_file, env_var, bad_val
+):
+    """Non-integer env settings do not crash module import and fail cleanly in self_check()."""
+    monkeypatch.setenv("PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setenv("PANGOLIN_TOKEN", "tok")
+    monkeypatch.setenv("RESOURCE_IDS", "5")
+    monkeypatch.setenv("LISTEN_PORT", "0")
+    monkeypatch.setenv("STATE_FILE", temp_state_file)
+    monkeypatch.setenv(env_var, bad_val)
+
+    try:
+        app = _reload_app_and_dependencies()
+        with pytest.raises(RuntimeError, match=env_var):
+            app.self_check()
+    finally:
+        monkeypatch.delenv(env_var, raising=False)
+        _reload_app_and_dependencies()
+
+
+def test_self_check_whitespace_proxy_shared_secret_raises(monkeypatch, app_module):
+    """Whitespace-only PROXY_SHARED_SECRET is rejected as missing."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PROXY_SHARED_SECRET", "   \t ")
+    with pytest.raises(RuntimeError, match="PROXY_SHARED_SECRET"):
+        app.self_check()
+
+
+def test_self_check_short_proxy_shared_secret_warns_without_printing_secret(
+    monkeypatch, app_module, capsys, tmp_path
+):
+    """Short PROXY_SHARED_SECRET (< 32 chars) warns without failing or leaking the value."""
+    app = app_module
+    short_secret = "short-secret-value"
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "tok")
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
+
+    monkeypatch.setattr(app, "PROXY_SHARED_SECRET", short_secret)
+    app.self_check()
+    out_short = capsys.readouterr().out
+    assert "PROXY_SHARED_SECRET" in out_short
+    assert "32 characters" in out_short
+    assert short_secret not in out_short
+
+    monkeypatch.setattr(app, "PROXY_SHARED_SECRET", "s" * 32)
+    app.self_check()
+    out_long = capsys.readouterr().out
+    assert "32 characters" not in out_long
+
+
+def test_self_check_pangolin_url_empty_netloc_raises(monkeypatch, app_module):
+    """PANGOLIN_URL with https:// but no host fails in self_check()."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    with pytest.raises(RuntimeError, match="PANGOLIN_URL"):
+        app.self_check()
+
+
+def test_self_check_listen_port_bounds(monkeypatch, app_module, capsys, tmp_path):
+    """LISTEN_PORT rejects <0 or >65535, warns on 0, and accepts 1..65535."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "tok")
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
+
+    for bad_port in (-1, 65536):
+        monkeypatch.setattr(app, "LISTEN_PORT", bad_port)
+        with pytest.raises(RuntimeError, match="LISTEN_PORT"):
+            app.self_check()
+
+    monkeypatch.setattr(app, "LISTEN_PORT", 0)
+    app.self_check()
+    assert "LISTEN_PORT=0" in capsys.readouterr().out
+
+    monkeypatch.setattr(app, "LISTEN_PORT", 8080)
+    app.self_check()
+    assert "LISTEN_PORT=0" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("bad_ids", [[0], [-1], [5, 0], [5, 5]])
+def test_self_check_resource_ids_non_positive_or_duplicate_raises(
+    monkeypatch, app_module, bad_ids
+):
+    """RESOURCE_IDS rejects non-positive and duplicate resource IDs."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", bad_ids)
+    with pytest.raises(RuntimeError, match="RESOURCE_IDS"):
+        app.self_check()
+
+
+@pytest.mark.parametrize(
+    "pangolin_url",
+    [
+        "https://pangolin.example.com/api/v1",
+        "https://pangolin.example.com/v1/api",
+        "https://pangolin.example.com/v2/api/",
+    ],
+)
+def test_dashboard_url_derivation_suffix_order_and_org_encoding(
+    monkeypatch, pangolin_url
+):
+    """PANGOLIN_DASHBOARD_URL strips /v1, /v2, /api in any order and percent-encodes ORG_ID."""
+    import importlib
+
+    import app as _app
+
+    monkeypatch.setenv("PANGOLIN_URL", pangolin_url)
+    monkeypatch.setenv("ORG_ID", "my org/1")
+    monkeypatch.setenv("PANGOLIN_DASHBOARD_URL", "")
+    reloaded = importlib.reload(_app)
+    assert (
+        reloaded.PANGOLIN_DASHBOARD_URL == "https://pangolin.example.com/my%20org%2F1"
+    )

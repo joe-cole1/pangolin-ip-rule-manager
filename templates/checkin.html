@@ -5,66 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Network Check-in</title>
 <style>
-  :root {
-    --bg:              #0C0C0D;
-    --surface:         #141415;
-    --inner-bg:        #171717;
-    --border:          oklch(1 0 0 / 18%);
-    --border-hi:       oklch(1 0 0 / 24%);
-    --text:            oklch(0.985 0 0);
-    --muted:           oklch(0.705 0.015 286.067);
-    --accent:          oklch(0.6717 0.1946 41.93);
-    --accent-dim:      oklch(0.22 0.06 41.93);
-    --accent-hover-bg: oklch(0.17 0.04 41.93);
-    --status-ok:       #4ade80;
-    --status-ok-dim:   #1a3d28;
-    --warn:            #fbbf24;
-    --warn-dim:        #3d2e0a;
-    --err:             oklch(0.5382 0.1949 22.216);
-    --err-dim:         oklch(0.2 0.05 22.216);
-    --radius:          0.75rem;
-    --mono:            ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
-    --sans:            'Inter', 'Space Grotesk', sans-serif;
-  }
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    font-weight: 300;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    padding: 40px 16px 48px;
-    background-image:
-      linear-gradient(var(--border) 1px, transparent 1px),
-      linear-gradient(90deg, var(--border) 1px, transparent 1px);
-    background-size: 32px 32px;
-    background-position: center center;
-  }
-  .card {
-    width: 100%;
-    max-width: 440px;
-    background: var(--surface);
-    border: 1px solid var(--border-hi);
-    border-radius: var(--radius);
-    overflow: hidden;
-    box-shadow: 0 8px 48px rgba(0,0,0,.6);
-    animation: rise .45s cubic-bezier(.22,1,.36,1) both;
-  }
-  @keyframes rise {
-    from { opacity:0; transform: translateY(18px); }
-    to   { opacity:1; transform: translateY(0); }
-  }
-  .card-header {
-    padding: 20px 24px 18px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
+{{BASE_CSS}}
   .status-dot {
     width: 10px; height: 10px;
     border-radius: 50%;
@@ -80,11 +21,6 @@
     0%,100% { box-shadow: 0 0 0 3px var(--status-ok-dim); }
     50%      { box-shadow: 0 0 0 6px var(--status-ok-dim); }
   }
-  .card-header h1 { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 15px; font-weight: 500; letter-spacing: .01em; color: var(--text); }
-  .card-header .sub { font-size: 12px; color: var(--muted); margin-top: 1px; }
-  .card-body { padding: 24px; }
-  .hero { font-size: 22px; font-weight: 300; line-height: 1.35; margin-bottom: 16px; color: var(--text); }
-  .hero strong { color: var(--accent); font-weight: 500; }
   .action-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
   .ip-row {
     display: flex; align-items: center; gap: 10px;
@@ -112,7 +48,8 @@
   .access-link-label { font-size: 13px; font-weight: 500; color: var(--accent); }
   .access-link-url { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .access-link-arrow { color: var(--accent); stroke: var(--accent); opacity: .7; flex-shrink: 0; transition: transform .15s; }
-  .access-link:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }
+  .access-link:hover .access-link-arrow,
+  .bookmark-btn:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }
   .section-divider { border: none; border-top: 1px solid var(--border); margin: 0 0 20px; }
   .bookmark-btn {
     width: 100%; background: none; border: 1px solid var(--accent-dim);
@@ -121,12 +58,6 @@
     justify-content: space-between; transition: border-color .15s, background .15s;
   }
   .bookmark-btn:hover { border-color: var(--accent); background: var(--accent-hover-bg); }
-  .bookmark-btn .access-link-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .bookmark-btn .access-link-left svg { opacity: .6; color: var(--accent); stroke: var(--accent); }
-  .bookmark-btn .access-link-label { font-size: 13px; font-weight: 500; color: var(--accent); }
-  .bookmark-btn .access-link-url { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .bookmark-btn .access-link-arrow { color: var(--accent); stroke: var(--accent); opacity: .7; flex-shrink: 0; transition: transform .15s; }
-  .bookmark-btn:hover .access-link-arrow { transform: translateX(3px); opacity: 1; }
   .details-toggle {
     width: 100%; background: none; border: 1px solid var(--border);
     border-radius: calc(var(--radius) - 2px);
@@ -157,7 +88,6 @@
   .details-mono .ok  { color: var(--status-ok); }
   .details-mono .bad { color: var(--err); }
   .details-mono .row { display: flex; gap: 8px; margin-bottom: 2px; }
-  .card-footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); text-align: center; letter-spacing: .02em; }
 </style>
 </head>
 <body>

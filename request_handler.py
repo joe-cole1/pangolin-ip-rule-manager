@@ -4,9 +4,14 @@ import ipaddress
 import json
 import os
 import re
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from email.utils import formatdate
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 SERVER_VERSION = "BannerServer"
@@ -148,12 +153,89 @@ def _format_retention(minutes: int) -> str:
     return f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
 
 
+_EXTERNAL_LINK_ICON = (
+    '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
+    '<polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>'
+)
+_HOME_ICON = (
+    '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'
+    '<polyline points="9 22 9 12 15 12 15 22"/>'
+)
+_BOOKMARK_ICON = '<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>'
+_ARROW_SVG_INNER = (
+    '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>'
+)
+
+
+@lru_cache(maxsize=16)
+def _read_template_file(template_dir: str, name: str) -> str:
+    """Read and cache raw template or CSS fragments keyed by (template_dir, name)."""
+    with open(os.path.join(template_dir, name), encoding="utf-8") as f:
+        return f.read()
+
+
 def _load_template(name: str, tokens: dict[str, str]) -> str:
-    with open(os.path.join(_TEMPLATE_DIR, name), encoding="utf-8") as f:
-        content = f.read()
+    content = _read_template_file(_TEMPLATE_DIR, name)
+    if "{{BASE_CSS}}" in content and "BASE_CSS" not in tokens:
+        render_tokens = {
+            **tokens,
+            "BASE_CSS": _read_template_file(_TEMPLATE_DIR, "_base.css"),
+        }
+    else:
+        render_tokens = tokens
     return _TEMPLATE_TOKEN_RE.sub(
-        lambda m: tokens.get(m.group(1), m.group(0)),
+        lambda m: render_tokens.get(m.group(1), m.group(0)),
         content,
+    )
+
+
+def _render_action_row(
+    *,
+    tag: str,
+    css_class: str,
+    icon_paths: str,
+    label: str,
+    subtitle: str,
+    href: str | None = None,
+    onclick: str | None = None,
+    style: str = "",
+    accent_icon: bool = False,
+    label_style: str = "",
+    subtitle_style: str = "",
+    indent: str = "      ",
+) -> str:
+    """Render an access-link anchor or action button with consistent markup."""
+    attrs = [f'class="{html.escape(css_class, quote=True)}"']
+    if href is not None:
+        attrs.append(f'href="{html.escape(href, quote=True)}"')
+        attrs.append('target="_blank" rel="noopener noreferrer"')
+    if onclick is not None:
+        attrs.append(f'onclick="{html.escape(onclick, quote=True)}"')
+    if style:
+        attrs.append(f'style="{html.escape(style, quote=True)}"')
+
+    icon_style = (
+        "flex-shrink:0; color: var(--accent);" if accent_icon else "flex-shrink:0;"
+    )
+    arrow_style = ' style="color: var(--accent);"' if accent_icon else ""
+    label_attr = f' style="{label_style}"' if label_style else ""
+    subtitle_attr = f' style="{subtitle_style}"' if subtitle_style else ""
+
+    return (
+        f"{indent}<{tag} {' '.join(attrs)}>\n"
+        f'{indent}  <span class="access-link-left">\n'
+        f'{indent}    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" '
+        f'stroke="currentColor" stroke-width="2" style="{icon_style}">'
+        f"{icon_paths}</svg>\n"
+        f'{indent}    <span class="access-link-text">\n'
+        f'{indent}      <span class="access-link-label"{label_attr}>{html.escape(label)}</span>\n'
+        f'{indent}      <span class="access-link-url"{subtitle_attr}>{html.escape(subtitle)}</span>\n'
+        f"{indent}    </span>\n"
+        f"{indent}  </span>\n"
+        f'{indent}  <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" '
+        f'fill="none" stroke="currentColor" stroke-width="2"{arrow_style}>'
+        f"{_ARROW_SVG_INNER}</svg>\n"
+        f"{indent}</{tag}>"
     )
 
 
@@ -175,27 +257,15 @@ def _render_resource_rows(resources: list, overall_ok: bool) -> str:
             continue
         protocol = "https" if ssl else "http"
         raw_url = f"{protocol}://{domain}"
-        safe_url = html.escape(raw_url, quote=True)
-        safe_name = html.escape(str(name))
         rows.append(
-            '      <a class="access-link" href="'
-            + safe_url
-            + '" target="_blank" rel="noopener noreferrer">\n'
-            '        <span class="access-link-left">\n'
-            '          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;">'
-            '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
-            '<polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>'
-            "</svg>\n"
-            '          <span class="access-link-text">\n'
-            f'            <span class="access-link-label">Open {safe_name}</span>\n'
-            f'            <span class="access-link-url">{safe_url}</span>\n'
-            "          </span>\n"
-            "        </span>\n"
-            '        <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
-            '<line x1="5" y1="12" x2="19" y2="12"/>'
-            '<polyline points="12 5 19 12 12 19"/>'
-            "</svg>\n"
-            "      </a>"
+            _render_action_row(
+                tag="a",
+                css_class="access-link",
+                href=raw_url,
+                icon_paths=_EXTERNAL_LINK_ICON,
+                label=f"Open {name}",
+                subtitle=raw_url,
+            )
         )
     return "\n".join(rows)
 
@@ -275,8 +345,6 @@ def _build_checkin_html(
         crowdsec_detail_class = "val"
         crowdsec_detail_display = "disabled"
 
-    details_label = "Technical details" if overall_ok else "What went wrong?"
-
     valid_dashboard_url = dashboard_url if is_valid_dashboard_url(dashboard_url) else ""
     if dashboard_url and not valid_dashboard_url:
         print(
@@ -313,24 +381,17 @@ def _build_checkin_html(
     # Build the central launcher button if valid_dashboard_url is set, redirection is enabled, and overall_ok is True
     launcher_row = ""
     if overall_ok and valid_dashboard_url and redirect_to_launcher:
-        safe_url = html.escape(valid_dashboard_url, quote=True)
-        launcher_row = (
-            f'      <a class="access-link launcher-link" href="{safe_url}" target="_blank" rel="noopener noreferrer" style="border-color: var(--accent); background: var(--accent-hover-bg); margin-bottom: 8px;">\n'
-            '        <span class="access-link-left">\n'
-            '          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0; color: var(--accent);">'
-            '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'
-            '<polyline points="9 22 9 12 15 12 15 22"/>'
-            "</svg>\n"
-            '          <span class="access-link-text">\n'
-            '            <span class="access-link-label" style="font-weight:600;">Open Resource Launcher</span>\n'
-            f'            <span class="access-link-url" style="color: var(--text); opacity: 0.85;">{safe_url}</span>\n'
-            "          </span>\n"
-            "        </span>\n"
-            '        <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent);">'
-            '<line x1="5" y1="12" x2="19" y2="12"/>'
-            '<polyline points="12 5 19 12 12 19"/>'
-            "</svg>\n"
-            "      </a>"
+        launcher_row = _render_action_row(
+            tag="a",
+            css_class="access-link launcher-link",
+            href=valid_dashboard_url,
+            style="border-color: var(--accent); background: var(--accent-hover-bg); margin-bottom: 8px;",
+            icon_paths=_HOME_ICON,
+            accent_icon=True,
+            label="Open Resource Launcher",
+            label_style="font-weight:600;",
+            subtitle=valid_dashboard_url,
+            subtitle_style="color: var(--text); opacity: 0.85;",
         )
 
     # Combine launcher row and resource rows
@@ -345,22 +406,14 @@ def _build_checkin_html(
     combined_html = "\n".join(combined_rows)
 
     bookmark_html = (
-        (
-            '  <button class="bookmark-btn" onclick="bookmarkPage()">\n'
-            '    <span class="access-link-left">\n'
-            '      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;">'
-            '<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>'
-            "</svg>\n"
-            '      <span class="access-link-text">\n'
-            '        <span class="access-link-label">Bookmark this page</span>\n'
-            '        <span class="access-link-url">Save for one-tap access next time</span>\n'
-            "      </span>\n"
-            "    </span>\n"
-            '    <svg class="access-link-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
-            '<line x1="5" y1="12" x2="19" y2="12"/>'
-            '<polyline points="12 5 19 12 12 19"/>'
-            "</svg>\n"
-            "  </button>"
+        _render_action_row(
+            tag="button",
+            css_class="bookmark-btn",
+            onclick="bookmarkPage()",
+            icon_paths=_BOOKMARK_ICON,
+            label="Bookmark this page",
+            subtitle="Save for one-tap access next time",
+            indent="  ",
         )
         if overall_ok
         else ""
@@ -397,7 +450,6 @@ def _build_checkin_html(
             "DETAILS_LABEL": details_label,
             "DETAILS_EXPANDED": details_expanded,
             "DETAILS_OPEN_CLASS": details_open_class,
-            "DETAILS_IP": safe_ip,
             "PANGOLIN_DETAIL_CLASS": pangolin_detail_class,
             "PANGOLIN_DETAIL": html.escape(str(pangolin_detail)),
             "CROWDSEC_DETAIL_CLASS": crowdsec_detail_class,
@@ -448,25 +500,31 @@ def build_plain_http_response(
     return head + encoded
 
 
-def create_image_request_handler(ctx: dict):
-    """
-    Factory that returns an ImageRequestHandler class bound to the provided context.
-    Expected ctx keys:
-      - update_enabled: bool
-      - retention_minutes: int
-      - crowdsec_enabled: bool
-      - state: dict
-      - state_lock: threading.Lock
-      - now_utc_iso: callable () -> str
-      - save_state: callable () -> None
-      - add_ip_to_targets: callable (ip: str) -> dict
-      - banner_png: bytes
-      - banner_gif: bytes
-      - redact_headers_for_log: callable accepting a mapping or sequence of
-        (name, value) pairs and returning redacted headers for logging
-      - site_name: str
-      - proxy_shared_secret: str (required; X-Proxy-Secret must match)
-    """
+@dataclass
+class RequestHandlerContext:
+    """Typed runtime dependencies injected into ImageRequestHandler."""
+
+    update_enabled: bool
+    retention_minutes: int
+    crowdsec_enabled: bool
+    site_name: str
+    proxy_shared_secret: str
+    state: dict[str, Any]
+    state_lock: threading.Lock
+    now_utc_iso: Callable[[], str]
+    save_state: Callable[[], None]
+    add_ip_to_targets: Callable[..., dict[str, Any]]
+    banner_png: bytes
+    banner_gif: bytes
+    redact_headers_for_log: Callable[[Any], Any]
+    debug_log_headers: bool = False
+    redirect_to_launcher: bool = False
+    redirect_delay_seconds: int = 3
+    pangolin_dashboard_url: str = ""
+
+
+def create_image_request_handler(ctx: RequestHandlerContext):
+    """Return an ImageRequestHandler class bound to the provided RequestHandlerContext."""
 
     class ImageRequestHandler(BaseHTTPRequestHandler):
         server_version = SERVER_VERSION
@@ -528,7 +586,7 @@ def create_image_request_handler(ctx: dict):
 
         def _proxy_secret_ok(self) -> bool:
             """Require the Pangolin-injected X-Proxy-Secret value."""
-            expected = ctx.get("proxy_shared_secret", "")
+            expected = ctx.proxy_shared_secret
             if not expected:
                 return False
             values = self.headers.get_all("X-Proxy-Secret", []) or []
@@ -560,57 +618,54 @@ def create_image_request_handler(ctx: dict):
             for name, value in SECURITY_HEADERS:
                 self.send_header(name, value)
 
+        def _send_no_store_and_security_headers(self) -> None:
+            for name, value in NO_STORE_HEADERS:
+                self.send_header(name, value)
+            self._send_security_headers()
+
+        def _send_bytes(
+            self,
+            status: int,
+            content_type: str,
+            payload: bytes,
+            extra_headers: tuple[tuple[str, str], ...] = (),
+        ) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self._send_no_store_and_security_headers()
+            for name, value in extra_headers:
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(payload)
+
         def _send_plain(
             self,
             status: int,
             body: str,
             extra_headers: tuple[tuple[str, str], ...] = (),
         ) -> None:
-            encoded = body.encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(encoded)))
-            for name, value in NO_STORE_HEADERS:
-                self.send_header(name, value)
-            self._send_security_headers()
-            for name, value in extra_headers:
-                self.send_header(name, value)
-            self.end_headers()
-            self.wfile.write(encoded)
+            self._send_bytes(
+                status,
+                "text/plain; charset=utf-8",
+                body.encode("utf-8"),
+                extra_headers=extra_headers,
+            )
 
         def _send_html(self, status: int, body: str) -> None:
-            encoded = body.encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.send_header(
-                "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0"
-            )
-            self.send_header("Pragma", "no-cache")
-            self.send_header("Expires", "0")
-            self._send_security_headers()
-            self.end_headers()
-            self.wfile.write(encoded)
+            self._send_bytes(status, "text/html; charset=utf-8", body.encode("utf-8"))
 
         def _send_json(self, status: int, body: dict) -> None:
-            payload = json.dumps(body).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(payload)))
-            self.send_header(
-                "Cache-Control",
-                "no-store, no-cache, must-revalidate, max-age=0",
+            self._send_bytes(
+                status,
+                "application/json; charset=utf-8",
+                json.dumps(body).encode("utf-8"),
             )
-            self.send_header("Pragma", "no-cache")
-            self.send_header("Expires", "0")
-            self._send_security_headers()
-            self.end_headers()
-            self.wfile.write(payload)
 
         def _try_immediate_redirect(self, success: bool) -> bool:
-            redirect_enabled = ctx.get("redirect_to_launcher", False)
-            redirect_delay = ctx.get("redirect_delay_seconds", 3)
-            dashboard_url = ctx.get("pangolin_dashboard_url", "")
+            redirect_enabled = ctx.redirect_to_launcher
+            redirect_delay = ctx.redirect_delay_seconds
+            dashboard_url = ctx.pangolin_dashboard_url
             if (
                 redirect_enabled
                 and success
@@ -626,16 +681,77 @@ def create_image_request_handler(ctx: dict):
                     return False
                 self.send_response(302)
                 self.send_header("Location", dashboard_url)
-                self.send_header(
-                    "Cache-Control",
-                    "no-store, no-cache, must-revalidate, max-age=0",
-                )
-                self.send_header("Pragma", "no-cache")
-                self.send_header("Expires", "0")
-                self._send_security_headers()
+                self._send_no_store_and_security_headers()
                 self.end_headers()
                 return True
             return False
+
+        def _perform_checkin(
+            self,
+            target_ip: str,
+            remote_user_id: str,
+            remote_user: str,
+        ) -> tuple[str, dict[str, Any]]:
+            # Record last_seen before auth/targets so rejected requests stay audited
+            # with an empty resources mapping.
+            now_iso = ctx.now_utc_iso()
+            with ctx.state_lock:
+                rec = ctx.state.setdefault(
+                    target_ip, {"last_seen": now_iso, "resources": {}}
+                )
+                rec["last_seen"] = now_iso
+            ctx.save_state()
+
+            try:
+                results = ctx.add_ip_to_targets(
+                    target_ip,
+                    remote_user_id=remote_user_id,
+                    remote_user=remote_user,
+                )
+            except Exception as e:  # noqa: BLE001
+                print(
+                    "[error] add_ip_to_targets failed for "
+                    f"{sanitize_for_log(target_ip)}: {sanitize_for_log(e)}"
+                )
+                results = {
+                    "error_kind": "upstream",
+                    "pangolin": {"ok": False, "detail": str(e), "enabled": True},
+                    "crowdsec": {
+                        "ok": False,
+                        "detail": "not reached",
+                        "enabled": ctx.crowdsec_enabled,
+                    },
+                }
+            return now_iso, results
+
+        def _send_checkin_html_or_redirect(
+            self,
+            target_ip: str,
+            now_iso: str,
+            results: dict[str, Any],
+        ) -> None:
+            pangolin_ok = results.get("pangolin", {}).get("ok", False)
+            crowdsec_ok = results.get("crowdsec", {}).get("ok", False)
+            success = pangolin_ok and (not ctx.crowdsec_enabled or crowdsec_ok)
+
+            if self._try_immediate_redirect(success):
+                return
+
+            self._send_html(
+                200,
+                _build_checkin_html(
+                    ip=target_ip,
+                    results=results,
+                    retention_minutes=ctx.retention_minutes,
+                    last_seen=now_iso,
+                    crowdsec_enabled=ctx.crowdsec_enabled,
+                    resources=results.get("resources", []),
+                    site_name=ctx.site_name,
+                    dashboard_url=ctx.pangolin_dashboard_url,
+                    redirect_to_launcher=ctx.redirect_to_launcher,
+                    redirect_delay_seconds=ctx.redirect_delay_seconds,
+                ),
+            )
 
         def do_GET(self):
             parsed_path = urlparse(self.path)
@@ -686,16 +802,16 @@ def create_image_request_handler(ctx: dict):
                 f"path: {sanitize_for_log(path)}"
             )
 
-            if ctx.get("debug_log_headers"):
-                redact = ctx.get("redact_headers_for_log")
-                if redact:
-                    print("[http] headers:", redact(self.headers.items()))
+            if ctx.debug_log_headers and ctx.redact_headers_for_log:
+                print(
+                    "[http] headers:", ctx.redact_headers_for_log(self.headers.items())
+                )
 
             lower_path = path.lower()
 
             # /update?ip=1.2.3.4 endpoint (guarded by UPDATE_ENDPOINT_ENABLED)
             if lower_path == "/update":
-                if not ctx.get("update_enabled"):
+                if not ctx.update_enabled:
                     # Intentionally bare — do not reveal the endpoint exists
                     self._send_plain(404, "Not found")
                     print(
@@ -717,7 +833,7 @@ def create_image_request_handler(ctx: dict):
                                 "Bad request",
                                 "Missing required <code>ip</code> query parameter. "
                                 "Expected format: /update?ip=1.2.3.4",
-                                site_name=ctx.get("site_name", ""),
+                                site_name=ctx.site_name,
                             ),
                         )
                     else:
@@ -740,7 +856,7 @@ def create_image_request_handler(ctx: dict):
                             _build_error_html(
                                 "Bad request",
                                 f"&#39;{html.escape(raw_ip)}&#39; is not a valid IP address.",
-                                site_name=ctx.get("site_name", ""),
+                                site_name=ctx.site_name,
                             ),
                         )
                     else:
@@ -760,8 +876,8 @@ def create_image_request_handler(ctx: dict):
                             400,
                             _build_error_html(
                                 "Bad request",
-                                f"&#39;{normalized_ip}&#39; is a non-routable IP address and cannot be allowlisted.",
-                                site_name=ctx.get("site_name", ""),
+                                f"&#39;{html.escape(normalized_ip)}&#39; is a non-routable IP address and cannot be allowlisted.",
+                                site_name=ctx.site_name,
                             ),
                         )
                     else:
@@ -774,62 +890,13 @@ def create_image_request_handler(ctx: dict):
                         )
                     return
 
-                with ctx["state_lock"]:
-                    rec = ctx["state"].setdefault(
-                        normalized_ip,
-                        {"last_seen": ctx["now_utc_iso"](), "resources": {}},
-                    )
-                    rec["last_seen"] = ctx["now_utc_iso"]()
-                ctx["save_state"]()
-
-                update_results = {}
-                try:
-                    update_results = ctx["add_ip_to_targets"](
-                        normalized_ip,
-                        remote_user_id=remote_user_id,
-                        remote_user=remote_user,
-                    )
-                except Exception as e:  # noqa: BLE001
-                    print(
-                        "[error] add_ip_to_targets failed for "
-                        f"{sanitize_for_log(normalized_ip)}: {sanitize_for_log(e)}"
-                    )
-                    update_results = {
-                        "error_kind": "upstream",
-                        "pangolin": {"ok": False, "detail": str(e), "enabled": True},
-                        "crowdsec": {
-                            "ok": False,
-                            "detail": "not reached",
-                            "enabled": ctx.get("crowdsec_enabled", False),
-                        },
-                    }
+                now_iso, update_results = self._perform_checkin(
+                    normalized_ip, remote_user_id, remote_user
+                )
 
                 if self._wants_html():
-                    pangolin_ok = update_results.get("pangolin", {}).get("ok", False)
-                    crowdsec_ok = update_results.get("crowdsec", {}).get("ok", False)
-                    crowdsec_enabled = ctx.get("crowdsec_enabled", False)
-                    success = pangolin_ok and (not crowdsec_enabled or crowdsec_ok)
-
-                    redirect_enabled = ctx.get("redirect_to_launcher", False)
-                    redirect_delay = ctx.get("redirect_delay_seconds", 3)
-
-                    if self._try_immediate_redirect(success):
-                        return
-
-                    self._send_html(
-                        200,
-                        _build_checkin_html(
-                            ip=normalized_ip,
-                            results=update_results,
-                            retention_minutes=ctx.get("retention_minutes", 0),
-                            last_seen=ctx["now_utc_iso"](),
-                            crowdsec_enabled=ctx.get("crowdsec_enabled", False),
-                            resources=update_results.get("resources", []),
-                            site_name=ctx.get("site_name", ""),
-                            dashboard_url=ctx.get("pangolin_dashboard_url", ""),
-                            redirect_to_launcher=redirect_enabled,
-                            redirect_delay_seconds=redirect_delay,
-                        ),
+                    self._send_checkin_html_or_redirect(
+                        normalized_ip, now_iso, update_results
                     )
                 else:
                     pangolin_res = update_results.get("pangolin", {})
@@ -837,9 +904,7 @@ def create_image_request_handler(ctx: dict):
                     pangolin_ok = bool(pangolin_res.get("ok", False))
                     if pangolin_ok:
                         crowdsec_enabled = bool(
-                            crowdsec_res.get(
-                                "enabled", ctx.get("crowdsec_enabled", False)
-                            )
+                            crowdsec_res.get("enabled", ctx.crowdsec_enabled)
                         )
                         crowdsec_ok = bool(crowdsec_res.get("ok", False))
                         self._send_json(
@@ -847,7 +912,7 @@ def create_image_request_handler(ctx: dict):
                             {
                                 "ok": True,
                                 "ip": normalized_ip,
-                                "retention_minutes": ctx.get("retention_minutes", 0),
+                                "retention_minutes": ctx.retention_minutes,
                                 "pangolin": {"ok": True},
                                 "crowdsec": {
                                     "ok": crowdsec_ok,
@@ -894,85 +959,21 @@ def create_image_request_handler(ctx: dict):
                             "Page not found",
                             "This URL isn&#39;t a valid check-in path. "
                             "Make sure you&#39;re using the correct link ending in .png or .gif.",
-                            site_name=ctx.get("site_name", ""),
+                            site_name=ctx.site_name,
                         ),
                     )
                 else:
                     self._send_plain(404, "Not found")
                 return
 
-            # Update state
-            now_iso = ctx["now_utc_iso"]()
-            with ctx["state_lock"]:
-                rec = ctx["state"].setdefault(
-                    ip, {"last_seen": now_iso, "resources": {}}
-                )
-                rec["last_seen"] = now_iso
-            ctx["save_state"]()
-
-            # Run checkin against all targets
-            results = {}
-            try:
-                results = ctx["add_ip_to_targets"](
-                    ip,
-                    remote_user_id=remote_user_id,
-                    remote_user=remote_user,
-                )
-            except Exception as e:  # noqa: BLE001
-                print(
-                    f"[error] add_ip_to_targets failed for {sanitize_for_log(ip)}: "
-                    f"{sanitize_for_log(e)}"
-                )
-                results = {
-                    "pangolin": {"ok": False, "detail": str(e), "enabled": True},
-                    "crowdsec": {
-                        "ok": False,
-                        "detail": "not reached",
-                        "enabled": ctx.get("crowdsec_enabled", False),
-                    },
-                }
+            now_iso, results = self._perform_checkin(ip, remote_user_id, remote_user)
 
             # Browser gets the HTML page; everything else gets the transparent image
             if self._wants_html():
-                pangolin_ok = results.get("pangolin", {}).get("ok", False)
-                crowdsec_ok = results.get("crowdsec", {}).get("ok", False)
-                crowdsec_enabled = ctx.get("crowdsec_enabled", False)
-                success = pangolin_ok and (not crowdsec_enabled or crowdsec_ok)
-
-                redirect_enabled = ctx.get("redirect_to_launcher", False)
-                redirect_delay = ctx.get("redirect_delay_seconds", 3)
-
-                if self._try_immediate_redirect(success):
-                    return
-
-                self._send_html(
-                    200,
-                    _build_checkin_html(
-                        ip=ip,
-                        results=results,
-                        retention_minutes=ctx.get("retention_minutes", 0),
-                        last_seen=now_iso,
-                        crowdsec_enabled=ctx.get("crowdsec_enabled", False),
-                        resources=results.get("resources", []),
-                        site_name=ctx.get("site_name", ""),
-                        dashboard_url=ctx.get("pangolin_dashboard_url", ""),
-                        redirect_to_launcher=redirect_enabled,
-                        redirect_delay_seconds=redirect_delay,
-                    ),
-                )
+                self._send_checkin_html_or_redirect(ip, now_iso, results)
             else:
-                body = ctx["banner_gif"] if is_gif else ctx["banner_png"]
+                body = ctx.banner_gif if is_gif else ctx.banner_png
                 ctype = "image/gif" if is_gif else "image/png"
-                self.send_response(200)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header(
-                    "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0"
-                )
-                self.send_header("Pragma", "no-cache")
-                self.send_header("Expires", "0")
-                self._send_security_headers()
-                self.end_headers()
-                self.wfile.write(body)
+                self._send_bytes(200, ctype, body)
 
     return ImageRequestHandler

@@ -114,6 +114,32 @@ def _extract_rules_list(resp: object, label: str) -> list[dict[str, Any]]:
     return _extract_dict_list(data, "rules", label)
 
 
+def _require_token(ctx: PangolinContext, message: str) -> None:
+    """Raise RuntimeError with `message` if the Pangolin API token is unset."""
+    if not ctx.token:
+        raise RuntimeError(message)
+
+
+def _record_resource_state(
+    ctx: PangolinContext,
+    ip: str,
+    rid: int,
+    entry: dict[str, Any],
+    *,
+    overwrite: bool,
+) -> None:
+    """Stamp last_seen, record per-resource metadata under state_lock, and persist."""
+    now_iso = ctx.now_utc_iso()
+    with ctx.state_lock:
+        rec = ctx.state.setdefault(ip, {"last_seen": now_iso, "resources": {}})
+        rec["last_seen"] = now_iso
+        if overwrite:
+            rec["resources"][str(rid)] = entry
+        else:
+            rec["resources"].setdefault(str(rid), entry)
+    ctx.save_state()
+
+
 def _evict_ip_from_rules_cache(ctx: PangolinContext, rid: int, *ips: str) -> None:
     """Remove IP entries from the in-memory resource existence cache."""
     with ctx.state_lock:
@@ -193,10 +219,10 @@ def get_ip_set_for_resource_cached(ctx: PangolinContext, rid: int) -> set[str]:
 
 
 def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
-    if not ctx.token:
-        raise RuntimeError(
-            "PANGOLIN_TOKEN is not set — Pangolin API calls are disabled. Check your environment configuration."
-        )
+    _require_token(
+        ctx,
+        "PANGOLIN_TOKEN is not set — Pangolin API calls are disabled. Check your environment configuration.",
+    )
     canonical_ip = _canonicalize_ip(ip) or ip
     failures: list[str] = []
     for rid in ctx.resource_ids:
@@ -208,13 +234,9 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
                     f"[pangolin] rule already exists for IP {canonical_ip} on resource {rid}"
                 )
                 # Track presence but not created_by_us
-                with ctx.state_lock:
-                    rec = ctx.state.setdefault(
-                        ip, {"last_seen": ctx.now_utc_iso(), "resources": {}}
-                    )
-                    rec["last_seen"] = ctx.now_utc_iso()
-                    rec["resources"].setdefault(str(rid), {"created_by_us": False})
-                ctx.save_state()
+                _record_resource_state(
+                    ctx, ip, rid, {"created_by_us": False}, overwrite=False
+                )
                 continue
             # 2) create rule
             payload = {
@@ -247,13 +269,7 @@ def ensure_ip_rule(ctx: PangolinContext, ip: str) -> None:
             resource_entry: dict[str, Any] = {"created_by_us": True}
             if created_rule_id is not None:
                 resource_entry["rule_id"] = created_rule_id
-            with ctx.state_lock:
-                rec = ctx.state.setdefault(
-                    ip, {"last_seen": ctx.now_utc_iso(), "resources": {}}
-                )
-                rec["last_seen"] = ctx.now_utc_iso()
-                rec["resources"][str(rid)] = resource_entry
-            ctx.save_state()
+            _record_resource_state(ctx, ip, rid, resource_entry, overwrite=True)
         except Exception as e:  # noqa: BLE001
             print(
                 f"[pangolin] ensure rule failed for resource {rid}, ip {canonical_ip}: {e}"
@@ -399,8 +415,7 @@ def get_user_info(
     only when its exact username and stable ID match Remote-User and
     Remote-User-Id, respectively.
     """
-    if not ctx.token:
-        raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up user")
+    _require_token(ctx, "PANGOLIN_TOKEN is not set — cannot look up user")
     if not user_id:
         raise RuntimeError("Remote-User-Id header is empty")
     if not username:
@@ -507,8 +522,7 @@ def get_resource_allowed_role_ids(ctx: PangolinContext, rid: int) -> set[int]:
     """Return the set of roleIds authorised for the given resource.
     Raises RuntimeError on any failure.
     """
-    if not ctx.token:
-        raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up resource roles")
+    _require_token(ctx, "PANGOLIN_TOKEN is not set — cannot look up resource roles")
     label = f"GET resource/{rid}/roles"
     url = f"{ctx.url}/v1/resource/{rid}/roles"
     resp = _retry(lambda: ctx.http_json("GET", url), label=label)
@@ -531,8 +545,7 @@ def get_resource_allowed_user_ids(ctx: PangolinContext, rid: int) -> set[str]:
     role-based access. Both paths grant access in Pangolin's SSO check; we mirror that here.
     Raises RuntimeError on any failure.
     """
-    if not ctx.token:
-        raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up resource users")
+    _require_token(ctx, "PANGOLIN_TOKEN is not set — cannot look up resource users")
     label = f"GET resource/{rid}/users"
     url = f"{ctx.url}/v1/resource/{rid}/users"
     resp = _retry(lambda: ctx.http_json("GET", url), label=label)
@@ -553,8 +566,7 @@ def get_resource(ctx: PangolinContext, rid: int) -> dict:
     """Return display metadata for a resource: resourceId, name, fullDomain, ssl.
     Raises RuntimeError on any failure.
     """
-    if not ctx.token:
-        raise RuntimeError("PANGOLIN_TOKEN is not set — cannot look up resource")
+    _require_token(ctx, "PANGOLIN_TOKEN is not set — cannot look up resource")
     url = f"{ctx.url}/v1/resource/{rid}"
     resp = _retry(
         lambda: ctx.http_json("GET", url),
