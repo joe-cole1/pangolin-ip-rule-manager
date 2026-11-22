@@ -500,6 +500,15 @@ def build_plain_http_response(
     return head + encoded
 
 
+def _unwrap_ipv4_mapped(
+    ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Unwrap IPv4-mapped IPv6 addresses (e.g. ::ffff:1.1.1.1 -> 1.1.1.1)."""
+    if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped is not None:
+        return ip_obj.ipv4_mapped
+    return ip_obj
+
+
 @dataclass
 class RequestHandlerContext:
     """Typed runtime dependencies injected into ImageRequestHandler."""
@@ -551,7 +560,7 @@ def create_image_request_handler(ctx: RequestHandlerContext):
             # (not validated, as it is controlled by the OS/kernel, not the caller).
             def _parse_global_ip(raw: str) -> str | None:
                 try:
-                    ip_obj = ipaddress.ip_address(raw.strip())
+                    ip_obj = _unwrap_ipv4_mapped(ipaddress.ip_address(raw.strip()))
                     if not ip_obj.is_global:
                         print(
                             "[warn] Rejected non-global IP from header: "
@@ -578,7 +587,11 @@ def create_image_request_handler(ctx: RequestHandlerContext):
                 if parsed:
                     return parsed
 
-            return self.client_address[0]
+            sock_ip = self.client_address[0]
+            try:
+                return str(_unwrap_ipv4_mapped(ipaddress.ip_address(sock_ip)))
+            except ValueError:
+                return sock_ip
 
         def _wants_html(self) -> bool:
             accept = self.headers.get("Accept", "")
@@ -847,7 +860,7 @@ def create_image_request_handler(ctx: RequestHandlerContext):
                     return
 
                 try:
-                    normalized_ip = str(ipaddress.ip_address(raw_ip))
+                    ip_obj = _unwrap_ipv4_mapped(ipaddress.ip_address(raw_ip))
                 except ValueError:
                     print(f"[error] Invalid IP address: {sanitize_for_log(raw_ip)}")
                     if self._wants_html():
@@ -866,7 +879,8 @@ def create_image_request_handler(ctx: RequestHandlerContext):
                         )
                     return
 
-                if not ipaddress.ip_address(normalized_ip).is_global:
+                normalized_ip = str(ip_obj)
+                if not ip_obj.is_global:
                     print(
                         "[error] Rejected non-global IP in /update: "
                         f"{sanitize_for_log(normalized_ip)!r}"
