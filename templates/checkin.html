@@ -231,6 +231,25 @@
       });
     }
   }
+  (function() {
+    const banner = document.querySelector('.redirect-banner[data-redirect-url][data-redirect-delay]');
+    if (!banner) return;
+    const url = banner.dataset.redirectUrl || "";
+    const rawDelay = banner.dataset.redirectDelay || "";
+    if (!url.startsWith("https://")) return;
+    if (!/^[1-9]\d*$/.test(rawDelay)) return;
+    let delay = Number.parseInt(rawDelay, 10);
+    if (!Number.isSafeInteger(delay) || delay <= 0) return;
+    const countdownEl = document.getElementById("countdown");
+    const interval = setInterval(function() {
+      delay--;
+      if (countdownEl) countdownEl.textContent = String(delay);
+      if (delay <= 0) {
+        clearInterval(interval);
+        window.location.href = url;
+      }
+    }, 1000);
+  })();
 </script>
 </body>
 </html>

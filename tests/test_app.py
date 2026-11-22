@@ -3847,3 +3847,327 @@ def test_dashboard_redirection_and_button(temp_state_file, monkeypatch):
         assert resp.status == 200
         assert "crowdsec command failed" in data
         assert "Redirecting to Resource Launcher" not in data
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 / Batch 3 — HTML/JS/Template & Redirect Hardening
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "http://dash.example.com/org",
+        "HTTPS://dash.example.com/org",
+        "javascript:alert(1)",
+        "https://dash.example.com/org\r\nX-Injected: 1",
+        "https://dash.example.com/org\n",
+        "https://dash.example.com/org with space",
+        "https://user@dash.example.com/org",
+        "https://user:pass@dash.example.com/org",
+        "https:///org",
+        "https://",
+        "https://:8443/org",
+        "https://dash.example.com:99999/org",
+    ],
+)
+def test_self_check_invalid_dashboard_url_raises(
+    monkeypatch, app_module, tmp_path, bad_url
+):
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "tok")
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(app, "PANGOLIN_DASHBOARD_URL", bad_url)
+    with pytest.raises(RuntimeError, match="PANGOLIN_DASHBOARD_URL"):
+        app.self_check()
+
+
+@pytest.mark.parametrize(
+    "good_url",
+    [
+        "",
+        "https://dash.example.com:8443/org/launcher?tab=apps&view=grid",
+        "https://192.0.2.1:8443/org?a=1&b=2",
+        "https://[2001:db8::1]:8443/org?a=1",
+    ],
+)
+def test_self_check_valid_dashboard_url_allowed(
+    monkeypatch, app_module, tmp_path, good_url
+):
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "tok")
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(app, "PANGOLIN_DASHBOARD_URL", good_url)
+    app.self_check()
+
+
+def test_self_check_negative_redirect_delay_raises(monkeypatch, app_module, tmp_path):
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "tok")
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(app, "REDIRECT_DELAY_SECONDS", -1)
+    with pytest.raises(RuntimeError, match="REDIRECT_DELAY_SECONDS"):
+        app.self_check()
+
+
+def test_self_check_zero_redirect_delay_allowed(monkeypatch, app_module, tmp_path):
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "tok")
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(app, "REDIRECT_DELAY_SECONDS", 0)
+    app.self_check()
+
+
+def test_load_template_single_pass_blocks_second_order_expansion(tmp_path, monkeypatch):
+    import request_handler
+
+    (tmp_path / "t.html").write_text("{{A}} | {{B}} | {{UNKNOWN}}", encoding="utf-8")
+    monkeypatch.setattr(request_handler, "_TEMPLATE_DIR", str(tmp_path))
+
+    rendered = request_handler._load_template(
+        "t.html",
+        {"A": "{{B}} \\1 literal", "B": "expanded"},
+    )
+    assert rendered == "{{B}} \\1 literal | expanded | {{UNKNOWN}}"
+
+
+def test_build_checkin_html_blocks_second_order_token_expansion():
+    from request_handler import _build_checkin_html
+
+    results = {
+        "pangolin": {"ok": False, "detail": "prefix {{IP}} {{LAST_SEEN}}"},
+        "crowdsec": {"ok": False, "detail": "disabled"},
+    }
+    page = _build_checkin_html(
+        ip="203.0.113.10",
+        results=results,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+        site_name="Site {{IP}}",
+    )
+    assert '<div class="sub">Site {{IP}}</div>' in page
+    assert "prefix {{IP}} {{LAST_SEEN}}" in page
+
+
+@pytest.mark.parametrize(
+    "valid_domain",
+    [
+        "jellyfin.example.com",
+        "jellyfin.example.com:8443",
+        "192.0.2.1",
+        "192.0.2.1:8080",
+        "[2001:db8::1]",
+        "[2001:db8::1]:8443",
+        "localhost",
+    ],
+)
+def test_render_resource_rows_accepts_valid_domains(valid_domain):
+    from request_handler import _render_resource_rows
+
+    rendered = _render_resource_rows(
+        [{"name": "App", "fullDomain": valid_domain, "ssl": True}],
+        overall_ok=True,
+    )
+    assert f'href="https://{valid_domain}"' in rendered
+
+
+@pytest.mark.parametrize(
+    "invalid_domain",
+    [
+        "https://evil.com",
+        "evil.com/path",
+        "evil.com?q=1",
+        "evil.com#frag",
+        "user@evil.com",
+        "evil.com foo",
+        "evil.com\r\n",
+        'evil.com"><script>',
+        "evil.com:0",
+        "evil.com:65536",
+        "evil.com:abc",
+        "2001:db8::1",
+        "[fe80::1%eth0]",
+        "999.999.999.999",
+    ],
+)
+def test_render_resource_rows_skips_invalid_domains_with_warning(
+    capsys, invalid_domain
+):
+    from request_handler import _render_resource_rows
+
+    rendered = _render_resource_rows(
+        [{"name": "EvilApp", "fullDomain": invalid_domain, "ssl": True}],
+        overall_ok=True,
+    )
+    assert rendered == ""
+    out = capsys.readouterr().out
+    assert "Skipping resource with invalid fullDomain" in out
+
+
+def test_checkin_html_static_redirect_attributes_preserve_query_and_backslashes():
+    from html.parser import HTMLParser
+
+    from request_handler import _build_checkin_html
+
+    target_url = "https://dashboard.example.com:8443/org?a=1&b=c\\d"
+    page = _build_checkin_html(
+        ip="1.2.3.4",
+        results=_RESULTS_OK,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+        dashboard_url=target_url,
+        redirect_to_launcher=True,
+        redirect_delay_seconds=5,
+    )
+
+    assert page.count("<script>") == 1
+    assert "var url =" not in page
+    assert 'url.startsWith("https://")' in page
+    assert "countdownEl.textContent" in page
+
+    captured = {}
+
+    class _BannerParser(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            attr_map = dict(attrs)
+            if tag == "div" and "redirect-banner" in attr_map.get("class", ""):
+                captured.update(attr_map)
+
+    _BannerParser().feed(page)
+    assert captured.get("data-redirect-url") == target_url
+    assert captured.get("data-redirect-delay") == "5"
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "javascript:alert(1)",
+        "http://evil.example.com/org",
+        "https://evil.example.com/a\r\nX-Injected: 1",
+    ],
+)
+def test_checkin_html_suppresses_invalid_dashboard_url(capsys, bad_url):
+    from request_handler import _build_checkin_html
+
+    page = _build_checkin_html(
+        ip="1.2.3.4",
+        results=_RESULTS_OK,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+        resources=[
+            {"name": "Jellyfin", "fullDomain": "jellyfin.example.com", "ssl": True}
+        ],
+        dashboard_url=bad_url,
+        redirect_to_launcher=True,
+        redirect_delay_seconds=5,
+    )
+    assert 'class="redirect-banner"' not in page
+    assert "data-redirect-url=" not in page
+    assert "Redirecting to Resource Launcher" not in page
+    assert "launcher-link" not in page
+    assert "Open Resource Launcher" not in page
+    assert 'href="https://jellyfin.example.com"' in page
+    out = capsys.readouterr().out
+    assert "Ignoring invalid dashboard_url" in out
+
+
+@pytest.mark.parametrize("request_path", ["/check.png", "/update?ip=1.2.3.4"])
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "javascript:alert(1)",
+        "http://evil.example.com/org",
+        "https://evil.example.com/a\r\nX-Injected: 1",
+    ],
+)
+def test_handler_refuses_302_redirect_for_invalid_dashboard_url(
+    monkeypatch, app_module, capsys, request_path, bad_url
+):
+    app = app_module
+
+    monkeypatch.setattr(app, "UPDATE_ENDPOINT_ENABLED", True)
+    monkeypatch.setattr(app, "REDIRECT_TO_LAUNCHER", True)
+    monkeypatch.setattr(app, "REDIRECT_DELAY_SECONDS", 0)
+    monkeypatch.setattr(app, "PANGOLIN_DASHBOARD_URL", bad_url)
+    monkeypatch.setattr(
+        app,
+        "add_ip_to_targets",
+        lambda ip, remote_user_id="", remote_user="": {
+            "pangolin": {"ok": True, "detail": "ok", "enabled": True},
+            "crowdsec": {"ok": False, "detail": "disabled", "enabled": False},
+            "resources": [
+                {
+                    "resourceId": 5,
+                    "name": "Jellyfin",
+                    "fullDomain": "jellyfin.example.com",
+                    "ssl": True,
+                }
+            ],
+        },
+    )
+
+    handler_cls = app.create_image_request_handler(app._make_image_handler_context())
+    with start_server(handler_cls) as (_httpd, port):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        proxy_request(
+            conn,
+            "GET",
+            request_path,
+            headers={
+                "X-Real-IP": "1.2.3.4",
+                "Remote-User-Id": "user-alice",
+                "Remote-User": "alice",
+                "Accept": "text/html",
+            },
+        )
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8")
+
+    assert resp.status == 200
+    assert resp.getheader("Location") is None
+    assert 'class="redirect-banner"' not in body
+    assert "data-redirect-url=" not in body
+    assert "Redirecting to Resource Launcher" not in body
+    assert "Open Resource Launcher" not in body
+    assert 'href="https://jellyfin.example.com"' in body
+    out = capsys.readouterr().out
+    assert "Refusing 302 redirect to invalid dashboard_url" in out
+
+
+def test_build_checkin_html_escapes_ip_tokens(monkeypatch):
+    import request_handler
+
+    captured_tokens = {}
+    orig_load = request_handler._load_template
+
+    def spy_load(name, tokens):
+        captured_tokens.update(tokens)
+        return orig_load(name, tokens)
+
+    monkeypatch.setattr(request_handler, "_load_template", spy_load)
+
+    raw_ip = '<script>alert("xss")</script>'
+    page = request_handler._build_checkin_html(
+        ip=raw_ip,
+        results=_RESULTS_OK,
+        retention_minutes=1440,
+        last_seen=_LAST_SEEN_ISO,
+        crowdsec_enabled=False,
+    )
+
+    expected = "&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;"
+    assert captured_tokens["IP"] == expected
+    assert captured_tokens["DETAILS_IP"] == expected
+    assert raw_ip not in page
+    assert expected in page
