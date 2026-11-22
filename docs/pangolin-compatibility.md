@@ -1,6 +1,6 @@
 # Pangolin compatibility testing
 
-Validated on GitHub-hosted Ubuntu against Pangolin 1.24.0 and 1.25.0-rc.0.
+Validated on GitHub-hosted Ubuntu against Pangolin 1.24.0 and 1.26.0 (CE and EE).
 This replaces PR #141's external-instance probe. No production endpoints,
 credentials, CrowdSec, or deployment files are used.
 
@@ -190,36 +190,35 @@ cleanup failure is not itself evidence of an upstream API regression.
 
 ## Validation evidence
 
-The [successful live matrix](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/runs/39375565861)
-ran the same checks in independent runner jobs on 2026-10-20:
+The [successful CE and EE live matrix](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/runs/45075014166)
+passed all four independent runner jobs (`1.24.0` CE, `1.24.0` EE, `1.26.0` CE,
+and `1.26.0` EE) on 2026-11-22 (UTC) across every test category:
 
-| Test category | 1.24.0 | 1.25.0-rc.0 |
-|---|---|---|
-| Bootstrap | Pass | Pass |
-| API authentication | Pass | Pass |
-| Resource discovery | Pass | Pass |
-| User and role lookup | Pass | Pass |
-| IP rule creation | Pass | Pass |
-| Duplicate prevention | Pass | Pass |
-| Rule ownership | Pass | Pass |
-| Rule deletion | Pass | Pass |
-| Authorization (API and synthetic HTTP boundary) | Pass | Pass |
-| Cleanup (application state and Docker resources) | Pass | Pass |
+| Test category | 1.24.0 CE | 1.24.0 EE | 1.26.0 CE | 1.26.0 EE |
+|---|---|---|---|---|
+| Bootstrap | Pass | Pass | Pass | Pass |
+| API authentication | Pass | Pass | Pass | Pass |
+| Resource discovery | Pass | Pass | Pass | Pass |
+| User and role lookup | Pass | Pass | Pass | Pass |
+| IP rule creation | Pass | Pass | Pass | Pass |
+| Duplicate prevention | Pass | Pass | Pass | Pass |
+| Rule ownership | Pass | Pass | Pass | Pass |
+| Rule deletion | Pass | Pass | Pass | Pass |
+| Authorization (API and synthetic HTTP boundary) | Pass | Pass | Pass | Pass |
+| Cleanup (application state and Docker resources) | Pass | Pass | Pass | Pass |
 
-The [deliberate failure rehearsal](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/runs/39375585096)
-failed after successful bootstrap on both versions, as intended. Both summaries
-showed the intentional failure and successful removal of containers, volumes,
-and networks; the logged setup token was redacted. The normal-run flag defaults
-to false. No failure was converted into a successful workflow conclusion.
+Earlier baseline evidence on 2026-10-20:
+- [Initial live matrix](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/runs/39375565861)
+  passed all 10 categories above on `1.24.0` and `1.25.0-rc.0`.
+- [Deliberate failure rehearsal](https://github.com/joe-cole1/pangolin-ip-rule-manager/actions/runs/39375585096)
+  failed after successful bootstrap on both versions, as intended. Both summaries
+  showed the intentional failure and successful removal of containers, volumes,
+  and networks; the logged setup token was redacted. The normal-run flag defaults
+  to false. No failure was converted into a successful workflow conclusion.
 
-Local validation: 259 pytest tests passed on Python 3.12; repository-wide
-Ruff 0.17.1 linting and formatting pass, and actionlint
-1.7.12 validates this workflow. Compose configuration was validated by the
-actual hosted runs. This workspace has no Docker Engine, so live execution was
-performed on GitHub rather than claimed as a local test. CodeQL and both native
-application image smoke jobs passed on the validated implementation.
-
-The three `UP017` findings that blocked ordinary Python CI are resolved by using
-the standard library's `UTC` alias in `app.py` and `crowdsec_connector.py`. This
-alias is the same timezone object as `timezone.utc`; timestamp formatting,
-expiration behavior and the canonical lint gate are unchanged.
+Local validation: 478 pytest tests passed on Python 3.14 (`Dockerfile` uses
+3.14.10); repository-wide Ruff 0.17.5 linting and formatting pass. Compose
+configuration was validated by the hosted compatibility runs. This workspace has
+no Docker Engine, so live execution was performed on GitHub rather than claimed
+as a local test. CodeQL and both native (`amd64` and `arm64`) application image
+smoke jobs passed on [PR #185](https://github.com/joe-cole1/pangolin-ip-rule-manager/pull/185).

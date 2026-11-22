@@ -6,15 +6,46 @@ lists published versions and their release notes.
 
 | Upgrade path | Migration required |
 |---|---|
-| v3.0.0 or v3.0.1 → v3.0.2 | None. Follow the deployment and verification steps below. |
+| v3.0.0 or v3.0.1 → v3.1.0 | No breaking schema or API permission changes for valid v3.0.x configs. Review the pre-flight checks, deployment, and verification steps below. |
 | v2.x or earlier → v3.x | Complete the v3.0.0 breaking changes below before replacing the container. |
 
-## v3.0.2: upgrading from v3.0.x
+## v3.1.0: upgrading from v3.0.x
 
-This patch release fixes state persistence after restart and updates the Python
-3.14 runtime. It introduces no new environment variables, API permissions,
-Compose requirements, or state-file format changes. Python is included in the
-image; the Docker host does not need a Python upgrade.
+This release adds security and transport hardening, fail-closed `/update` JSON
+status codes, stricter startup validation, bounded HTTP worker concurrency with
+graceful `SIGTERM` shutdown, state persistence and cleanup concurrency fixes,
+IPv4-mapped IPv6 unwrapping, CrowdSec CIDR/socket-proxy hardening, and the
+Python 3.14.10 runtime. Valid `v3.0.x` configurations require no new environment
+variables, API permissions, Compose settings, or state-file format changes.
+Python is included in the image; the Docker host does not need a Python
+upgrade.
+
+### Pre-flight checks
+
+Confirm existing `v3.0.x` deployments satisfy these tightened checks before
+upgrading:
+
+- **Startup configuration validation (`self_check()`):** Startup now rejects
+  non-integer numeric env vars, non-positive or duplicate `RESOURCE_IDS`,
+  whitespace-only `PROXY_SHARED_SECRET`, non-`https://` `PANGOLIN_URL`, invalid
+  `PANGOLIN_DASHBOARD_URL`, out-of-range `LISTEN_PORT` (`0–65535`), values below
+  minimums (`RETENTION_MINUTES < 1`, `CLEANUP_INTERVAL_MINUTES < 1`,
+  `RULES_CACHE_TTL_SECONDS < 1`, `CROWDSEC_CACHE_TTL_SECONDS < 1`,
+  `RATE_LIMIT_SECONDS < 0`, `REDIRECT_DELAY_SECONDS < 0`), and invalid
+  `CROWDSEC_ALLOWLIST_NAME` values when CrowdSec is enabled. Secrets shorter
+  than 32 characters emit a prominent startup warning.
+- **`/update` JSON status codes:** Automated callers querying `/update?ip=...`
+  without `Accept: text/html` now receive HTTP `403` on authorization denial
+  and HTTP `502` on Pangolin upstream failure (instead of `200`). CrowdSec
+  status remains additive inside HTTP `200` responses when Pangolin succeeds.
+- **Outbound HTTP transport:** Pangolin API requests strictly enforce
+  `https://` matching `PANGOLIN_URL`, ignore ambient `HTTP_PROXY`/`HTTPS_PROXY`
+  environment variables, disable HTTP redirects, and cap responses at 4 MiB.
+- **CrowdSec & optional `socket-proxy`:** Host-CIDR removal (`ip/32` /
+  `ip/128`) works cleanly without touching broader CIDRs, startup tolerates
+  Docker `/version` `403 Forbidden` responses from least-privilege proxies, and
+  the reference `socket-proxy` in `docker-compose.yml` now enables `PING: 1`,
+  `read_only: true`, `cap_drop: [ALL]`, and resource limits.
 
 ### Deploy
 
@@ -22,7 +53,7 @@ image; the Docker host does not need a Python upgrade.
    back up its persistent `/data` volume and deployment configuration using your
    normal backup process. Preserve the existing volume throughout the upgrade.
 2. After the release image is published, set the app's image to
-   `ghcr.io/joe-cole1/pangolin-ip-rule-manager:3.0.2`. Explicit version tags make
+   `ghcr.io/joe-cole1/pangolin-ip-rule-manager:3.1.0`. Explicit version tags make
    deployment and rollback easier to track than `latest`.
 3. Pull the image and recreate only the app service. From the directory
    containing your existing Compose configuration:
@@ -65,7 +96,7 @@ deleted by the manager.
 
 Select the previously recorded image tag or digest and repeat the pull/recreate
 steps with the same configuration and persistent volume. No state-format
-conversion is needed between v3.0.x versions. Restore the backup only if the
+conversion is needed between v3.0.x and v3.1.0 versions. Restore the backup only if the
 state itself needs recovery, with the app stopped; restoring it discards
 registrations made after that backup. Rolling back also restores that version's
 known bugs, including the restart persistence issue in v3.0.1.
@@ -73,7 +104,7 @@ known bugs, including the restart persistence issue in v3.0.1.
 ## v3.0.0 breaking changes: upgrading from v2.x
 
 These requirements were introduced in **v3.0.0**. They also apply when skipping
-directly from v2.x or an older release to v3.0.2. Existing v3 installations that
+directly from v2.x or an older release to v3.1.0. Existing v3 installations that
 already completed the migration do not need new credentials or permissions.
 
 1. **Upgrade Badger to v1.4.1 or newer.** It must forward both `Remote-User-Id`
