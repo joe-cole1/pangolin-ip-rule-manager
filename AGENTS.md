@@ -20,17 +20,31 @@ Every change is high-stakes.
 ```
 pangolin-ip-rule-manager/
 ├── app.py                   # Entry point: config, state, cleanup loop, target coordination
+├── config_utils.py          # Shared env parsing and UTC ISO timestamp helpers
 ├── request_handler.py       # HTTP handler (factory pattern): IP extraction, routing, HTML pages
 ├── pangolin_connector.py    # All Pangolin API interaction: PangolinContext dataclass, retry logic
 ├── crowdsec_connector.py    # CrowdSec integration via cscli subprocess
+├── templates/
+│   ├── _base.css            # Shared base CSS inlined into HTML templates
+│   ├── checkin.html         # HTML check-in status page template
+│   └── error.html           # HTML error page template
+├── scripts/                 # CI/image smoke and Pangolin compatibility probe scripts
+├── docs/                    # Architecture contracts, compatibility guide, upgrade & release notes
 ├── requirements.txt         # Dev dependencies (pytest, ruff) — not used in the runtime image
+├── pyproject.toml           # Ruff linter and formatter configuration
 ├── Dockerfile               # Trimmed Python 3.14 Alpine runtime; docker-cli included for CrowdSec via docker exec
+├── docker-entrypoint.sh     # Non-root /data volume initialization and permission tightening
 ├── docker-compose.yml       # Reference compose file — actual deployment uses Portainer
 ├── config.env.sample        # Every environment variable with inline documentation
 └── tests/
-    ├── conftest.py          # sys.path setup for pytest
-    ├── test_app.py          # App-level unit + integration tests
-    └── test_crowdsec.py     # CrowdSec connector unit tests
+    ├── conftest.py                 # sys.path setup and shared pytest fixtures
+    ├── helpers.py                  # Shared test helpers (app reload, fake HTTP mocks, test servers)
+    ├── test_app.py                 # App-level unit + integration tests
+    ├── test_request_handler.py     # HTTP handler, IP extraction, /update, HTML, and log sanitization tests
+    ├── test_pangolin_connector.py  # Pangolin connector unit tests
+    ├── test_crowdsec.py            # CrowdSec connector unit tests
+    ├── test_compatibility_harness.py # Tests for the Pangolin compatibility and image smoke scripts
+    └── compatibility/              # Disposable Docker Compose Pangolin compatibility harness
 ```
 
 There is no `Makefile`. `pyproject.toml` configures development tooling. The
@@ -67,9 +81,14 @@ All configuration is injected at runtime via environment variables.
 | `CLEANUP_INTERVAL_MINUTES` | `60` | How often the cleanup loop runs |
 | `RULE_PRIORITY` | `0` | Pangolin rule priority |
 | `RULES_CACHE_TTL_SECONDS` | `3600` | Cache TTL for Pangolin rule existence checks |
+| `RATE_LIMIT_SECONDS` | `300` | Minimum seconds between Pangolin API fan-out calls per `(IP, user_id, user)` (`0` disables) |
 | `STATE_FILE` | `/data/state.json` | Persistent state path — must be on a mounted volume |
 | `SITE_NAME` | _(empty)_ | Optional label shown in the HTML check-in and error pages |
 | `UPDATE_ENDPOINT_ENABLED` | `false` | Enables `/update?ip=...` endpoint (disabled by default) |
+| `DEBUG_LOG_HEADERS` | `false` | Logs request headers with sensitive names redacted and control characters sanitized |
+| `REDIRECT_TO_LAUNCHER` | `false` | Redirects browsers to Pangolin Resource Launcher after successful check-in |
+| `REDIRECT_DELAY_SECONDS` | `3` | Seconds to display success page before redirecting (`0` = immediate HTTP 302) |
+| `PANGOLIN_DASHBOARD_URL` | _(empty)_ | Override launcher URL (auto-derived from `PANGOLIN_URL` and `ORG_ID` when empty) |
 
 ### CrowdSec (all optional, disabled by default)
 
@@ -89,10 +108,14 @@ All configuration is injected at runtime via environment variables.
 pytest
 ```
 
-Tests live in `tests/test_app.py` (app-level) and `tests/test_crowdsec.py` (CrowdSec
-connector). `conftest.py` handles `sys.path`. All tests use `monkeypatch` to avoid
-real subprocess or network calls — no live instance or credentials are needed to run
-the suite.
+Tests live in `tests/test_app.py` (app-level), `tests/test_request_handler.py`
+(HTTP handler, IP extraction, `/update`, templates, and sanitization),
+`tests/test_pangolin_connector.py` (Pangolin connector),
+`tests/test_crowdsec.py` (CrowdSec connector), and
+`tests/test_compatibility_harness.py` (harness scripts). Shared fixtures live in
+`tests/conftest.py` (which also sets up `sys.path`) and shared helpers live in
+`tests/helpers.py`. All unit tests use `monkeypatch` to avoid real subprocess or
+network calls — no live instance or credentials are needed to run the suite.
 
 Live Pangolin compatibility checks are separate from ordinary pytest. See
 `docs/pangolin-compatibility.md` and the endpoint inventory in

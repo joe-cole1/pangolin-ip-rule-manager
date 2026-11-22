@@ -264,7 +264,7 @@ def load_state():
         if not os.path.exists(STATE_FILE):
             return
         try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
+            with open(STATE_FILE, encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict):
                 # The HTTP handler already holds this mapping; preserve its identity.
@@ -349,7 +349,8 @@ def http_json(method: str, url: str, body: dict | None = None) -> dict:
     data = None
     if body is not None:
         data = json.dumps(body).encode("utf-8")
-    req = Request(url, data=data, headers=headers, method=method)
+    # Scheme, host, and Pangolin origin are strictly validated above.
+    req = Request(url, data=data, headers=headers, method=method)  # noqa: S310
     try:
         with _HTTP_OPENER.open(req, timeout=20) as resp:
             charset = resp.headers.get_content_charset() or "utf-8"
@@ -799,7 +800,7 @@ def cleanup_loop(stop_event: threading.Event | None = None):
             break
 
 
-from request_handler import (
+from request_handler import (  # noqa: E402
     RequestHandlerContext,
     build_plain_http_response,
     create_image_request_handler,
@@ -1095,7 +1096,8 @@ def main():
     )
     cleanup_thread.start()
 
-    addr = ("0.0.0.0", LISTEN_PORT)
+    # Container HTTP server intentionally binds all interfaces inside the container.
+    addr = ("0.0.0.0", LISTEN_PORT)  # noqa: S104
     httpd = BoundedThreadingHTTPServer(addr, ImageRequestHandler)
 
     shutdown_triggered = False

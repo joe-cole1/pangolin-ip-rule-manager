@@ -3,9 +3,6 @@ Unit tests for crowdsec_connector.py.
 
 All tests use monkeypatch to avoid real subprocess calls. No live CrowdSec
 instance or network access is required to run this suite.
-
-Note: _build_cscli_cmd() and _parse_crowdsec_entries_from_json() are already
-covered in tests/test_app.py and are not duplicated here.
 """
 
 import subprocess
@@ -1504,3 +1501,172 @@ def test_allowlist_exists_legacy_plural_json_fallback(monkeypatch):
         ["allowlist", "list", "-o", "json"],
         ["allowlists", "list", "-o", "json"],
     ]
+
+
+# ---------------------------------------------------------------------------
+# _build_cscli_cmd and _parse_crowdsec_entries_from_json
+# ---------------------------------------------------------------------------
+
+
+def test_build_cscli_cmd_no_prefix(monkeypatch):
+    """Without a CMD_PREFIX, result must be [bin] + args."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CMD_PREFIX", "")
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CSCLI_BIN", "cscli")
+    result = crowdsec_connector._build_cscli_cmd(["allowlist", "list"])
+    assert result == ["cscli", "allowlist", "list"]
+
+
+def test_build_cscli_cmd_with_single_word_prefix(monkeypatch):
+    """Single-word CMD_PREFIX must be prepended as one element."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CMD_PREFIX", "sudo")
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CSCLI_BIN", "cscli")
+    result = crowdsec_connector._build_cscli_cmd(["allowlist", "list"])
+    assert result == ["sudo", "cscli", "allowlist", "list"]
+
+
+def test_build_cscli_cmd_with_multi_word_prefix(monkeypatch):
+    """Multi-word CMD_PREFIX must be shell-split into separate elements."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec crowdsec"
+    )
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CSCLI_BIN", "cscli")
+    result = crowdsec_connector._build_cscli_cmd(
+        ["allowlist", "add", "my-list", "1.2.3.4"]
+    )
+    assert result == [
+        "docker",
+        "exec",
+        "crowdsec",
+        "cscli",
+        "allowlist",
+        "add",
+        "my-list",
+        "1.2.3.4",
+    ]
+
+
+def test_build_cscli_cmd_custom_bin(monkeypatch):
+    """Custom CROWDSEC_CSCLI_BIN path must appear in the command."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CMD_PREFIX", "")
+    monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CSCLI_BIN", "/usr/local/bin/cscli"
+    )
+    result = crowdsec_connector._build_cscli_cmd(["allowlist", "list"])
+    assert result == ["/usr/local/bin/cscli", "allowlist", "list"]
+
+
+def test_build_cscli_cmd_malformed_prefix_warns_and_falls_back(monkeypatch, capsys):
+    """Malformed prefix (unterminated quote) logs a WARNING and falls back to single token."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec 'crowdsec"
+    )
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CSCLI_BIN", "cscli")
+    result = crowdsec_connector._build_cscli_cmd(["allowlist", "list"])
+    assert result[0] == "docker exec 'crowdsec"
+    assert result[-2:] == ["allowlist", "list"]
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+
+
+def test_parse_crowdsec_list_of_strings():
+    """Plain list of IP strings must be parsed correctly."""
+    import crowdsec_connector
+
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '["1.2.3.4", "5.6.7.8"]'
+    )
+    assert result == {"1.2.3.4", "5.6.7.8"}
+
+
+def test_parse_crowdsec_list_of_dicts_ip_key():
+    """List of dicts with 'ip' key must extract IP values."""
+    import crowdsec_connector
+
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '[{"ip": "1.2.3.4"}, {"ip": "5.6.7.8"}]'
+    )
+    assert result == {"1.2.3.4", "5.6.7.8"}
+
+
+def test_parse_crowdsec_list_of_dicts_value_key():
+    """List of dicts with 'value' key must extract IP values."""
+    import crowdsec_connector
+
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '[{"value": "9.9.9.9"}]'
+    )
+    assert result == {"9.9.9.9"}
+
+
+def test_parse_crowdsec_dict_with_entries_key():
+    """Dict with 'entries' key containing IP list must be parsed."""
+    import crowdsec_connector
+
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '{"entries": ["1.1.1.1", "2.2.2.2"]}'
+    )
+    assert result == {"1.1.1.1", "2.2.2.2"}
+
+
+def test_parse_crowdsec_dict_with_ips_key():
+    """Dict with 'ips' key must be parsed."""
+    import crowdsec_connector
+
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '{"ips": ["3.3.3.3"]}'
+    )
+    assert result == {"3.3.3.3"}
+
+
+def test_parse_crowdsec_cidr_normalised_to_network_address():
+    """CIDR notation must be accepted and normalised to the canonical CIDR block."""
+    import crowdsec_connector
+
+    result = crowdsec_connector._parse_crowdsec_entries_from_json('["10.0.0.5/24"]')
+    assert result == {"10.0.0.0/24"}
+
+
+def test_parse_crowdsec_invalid_json_returns_empty():
+    """Malformed JSON must return an empty set without raising."""
+    import crowdsec_connector
+
+    result = crowdsec_connector._parse_crowdsec_entries_from_json("not json at all")
+    assert result == set()
+
+
+def test_parse_crowdsec_invalid_ip_skipped():
+    """Invalid IP strings in the list must be silently skipped."""
+    import crowdsec_connector
+
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '["1.2.3.4", "not-an-ip", "5.6.7.8"]'
+    )
+    assert result == {"1.2.3.4", "5.6.7.8"}
+
+
+def test_parse_crowdsec_empty_list():
+    """Empty list must return empty set."""
+    import crowdsec_connector
+
+    result = crowdsec_connector._parse_crowdsec_entries_from_json("[]")
+    assert result == set()
+
+
+def test_parse_crowdsec_unknown_structure_returns_empty():
+    """Dict with no recognised key must return empty set."""
+    import crowdsec_connector
+
+    result = crowdsec_connector._parse_crowdsec_entries_from_json(
+        '{"unknown_key": ["1.2.3.4"]}'
+    )
+    assert result == set()
