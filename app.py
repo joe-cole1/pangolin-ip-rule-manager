@@ -21,6 +21,7 @@ from crowdsec_connector import (
     CROWDSEC_CMD_PREFIX,
     CROWDSEC_CSCLI_BIN,
     CROWDSEC_ENABLED,
+    _validate_allowlist_name,
     crowdsec_add_ip,
     crowdsec_ensure_allowlist,
     crowdsec_remove_ip,
@@ -949,6 +950,12 @@ def self_check():
     ]:
         if _val < _min:
             raise RuntimeError(f"{_name}={_val} is below minimum allowed value {_min}")
+
+    if CROWDSEC_ENABLED:
+        try:
+            _validate_allowlist_name(CROWDSEC_ALLOWLIST_NAME)
+        except ValueError as e:
+            raise RuntimeError(str(e)) from None
 
     if not PANGOLIN_TOKEN:
         print()

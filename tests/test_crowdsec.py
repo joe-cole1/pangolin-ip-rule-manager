@@ -18,21 +18,25 @@ import pytest
 def reset_crowdsec_module_state():
     """Reset mutable module-level globals before and after each test.
 
-    crowdsec_connector carries two mutable globals — _crowdsec_allowlist_ready
-    and _crowdsec_cache — that are mutated in place by the functions under test.
-    Resetting them here keeps tests fully isolated without requiring a module
-    reload between every case.
+    crowdsec_connector carries mutable globals — _crowdsec_allowlist_ready,
+    _crowdsec_allowlist_last_failed_ts, and _crowdsec_cache — that are mutated
+    in place by the functions under test. Resetting them here keeps tests fully
+    isolated without requiring a module reload between every case.
     """
     import crowdsec_connector
 
-    crowdsec_connector._crowdsec_allowlist_ready = False
     with crowdsec_connector._cache_lock:
+        crowdsec_connector._crowdsec_allowlist_ready = False
+        crowdsec_connector._crowdsec_allowlist_last_failed_ts = 0.0
         crowdsec_connector._crowdsec_cache["ts"] = 0.0
+        crowdsec_connector._crowdsec_cache["failed_ts"] = 0.0
         crowdsec_connector._crowdsec_cache["ip_set"] = set()
     yield
-    crowdsec_connector._crowdsec_allowlist_ready = False
     with crowdsec_connector._cache_lock:
+        crowdsec_connector._crowdsec_allowlist_ready = False
+        crowdsec_connector._crowdsec_allowlist_last_failed_ts = 0.0
         crowdsec_connector._crowdsec_cache["ts"] = 0.0
+        crowdsec_connector._crowdsec_cache["failed_ts"] = 0.0
         crowdsec_connector._crowdsec_cache["ip_set"] = set()
 
 
@@ -279,7 +283,7 @@ def test_ensure_allowlist_creates_when_missing(monkeypatch):
 
 
 def test_ensure_allowlist_create_fails_warns_continues(monkeypatch, capsys):
-    """Create fails — WARNING printed, _ready still set True (warn and continue)."""
+    """Create fails — WARNING printed, _ready remains False, failed timestamp recorded."""
     import crowdsec_connector
 
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
@@ -294,9 +298,65 @@ def test_ensure_allowlist_create_fails_warns_continues(monkeypatch, capsys):
         crowdsec_connector, "crowdsec_create_allowlist", lambda name: False
     )
     crowdsec_connector.crowdsec_ensure_allowlist()
-    assert crowdsec_connector._crowdsec_allowlist_ready
+    with crowdsec_connector._cache_lock:
+        assert crowdsec_connector._crowdsec_allowlist_ready is False
+        assert crowdsec_connector._crowdsec_allowlist_last_failed_ts > 0.0
     out = capsys.readouterr().out
     assert "WARNING" in out or "warning" in out.lower()
+
+
+def test_ensure_allowlist_retries_after_cooldown_and_latches(monkeypatch):
+    """Failed create enters 60s monotonic cooldown, then retries and latches ready."""
+    import crowdsec_connector
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(_time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
+
+    connectivity_calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "_crowdsec_check_connectivity",
+        lambda: connectivity_calls.append(1),
+    )
+    monkeypatch.setattr(
+        crowdsec_connector, "crowdsec_allowlist_exists", lambda name: False
+    )
+    create_state = {"ok": False, "calls": 0}
+
+    def fake_create(name):
+        create_state["calls"] += 1
+        return create_state["ok"]
+
+    monkeypatch.setattr(crowdsec_connector, "crowdsec_create_allowlist", fake_create)
+
+    # First attempt fails -> not ready, failed timestamp stamped
+    crowdsec_connector.crowdsec_ensure_allowlist()
+    assert create_state["calls"] == 1
+    assert len(connectivity_calls) == 1
+    assert crowdsec_connector._crowdsec_allowlist_ready is False
+
+    # Within 60s cooldown -> skipped completely
+    clock["now"] = 159.0
+    crowdsec_connector.crowdsec_ensure_allowlist()
+    assert create_state["calls"] == 1
+    assert len(connectivity_calls) == 1
+
+    # After 60s cooldown -> retries and latches ready on success
+    clock["now"] = 160.0
+    create_state["ok"] = True
+    crowdsec_connector.crowdsec_ensure_allowlist()
+    assert create_state["calls"] == 2
+    assert len(connectivity_calls) == 2
+    with crowdsec_connector._cache_lock:
+        assert crowdsec_connector._crowdsec_allowlist_ready is True
+        assert crowdsec_connector._crowdsec_allowlist_last_failed_ts == 0.0
+
+    # Once latched -> subsequent calls are no-ops
+    clock["now"] = 300.0
+    crowdsec_connector.crowdsec_ensure_allowlist()
+    assert create_state["calls"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -336,19 +396,126 @@ def test_refresh_parses_and_updates_cache(monkeypatch):
     with crowdsec_connector._cache_lock:
         assert crowdsec_connector._crowdsec_cache["ip_set"] == {"1.2.3.4", "5.6.7.8"}
         assert crowdsec_connector._crowdsec_cache["ts"] > 0
+        assert crowdsec_connector._crowdsec_cache["failed_ts"] == 0.0
 
 
-def test_refresh_cscli_fails_caches_empty_set(monkeypatch):
-    """Failed cscli inspect — cache is stamped with empty set, returns empty set."""
+def test_refresh_cscli_fails_preserves_cache_and_sets_failed_guard(monkeypatch):
+    """Failed cscli inspect preserves existing cache/ts and stamps failed_ts."""
     import crowdsec_connector
 
+    clock = {"now": 200.0}
+    monkeypatch.setattr(_time, "monotonic", lambda: clock["now"])
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
     monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
+    with crowdsec_connector._cache_lock:
+        crowdsec_connector._crowdsec_cache["ts"] = 50.0
+        crowdsec_connector._crowdsec_cache["ip_set"] = {"9.9.9.9"}
+
     monkeypatch.setattr(crowdsec_connector, "run_cscli", lambda args: (1, "", "error"))
     result = crowdsec_connector._crowdsec_refresh_allowlist_ip_set()
-    assert result == set()
+    assert result == {"9.9.9.9"}
     with crowdsec_connector._cache_lock:
-        assert crowdsec_connector._crowdsec_cache["ts"] > 0
+        assert crowdsec_connector._crowdsec_cache["ip_set"] == {"9.9.9.9"}
+        assert crowdsec_connector._crowdsec_cache["ts"] == 50.0
+        assert crowdsec_connector._crowdsec_cache["failed_ts"] == 200.0
+
+
+def test_get_crowdsec_ip_set_cached_failed_guard_and_recovery(monkeypatch):
+    """Failed inspect guards against immediate re-runs for 5s, then recovers."""
+    import crowdsec_connector
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(_time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CACHE_TTL_SECONDS", 3600)
+
+    calls = []
+    outcome = {"rc": 1, "out": ""}
+
+    def fake_cscli(args):
+        calls.append(args)
+        return outcome["rc"], outcome["out"], ""
+
+    monkeypatch.setattr(crowdsec_connector, "run_cscli", fake_cscli)
+
+    # First call attempts inspect and fails -> failed_ts stamped at 100.0
+    assert crowdsec_connector._get_crowdsec_ip_set_cached() == set()
+    assert len(calls) == 1
+
+    # Within 5s guard -> does not re-invoke cscli
+    clock["now"] = 104.9
+    assert crowdsec_connector._get_crowdsec_ip_set_cached() == set()
+    assert len(calls) == 1
+
+    # After 5s guard -> retries and caches successful result
+    clock["now"] = 105.0
+    outcome["rc"] = 0
+    outcome["out"] = '[{"ip": "1.2.3.4/32"}]'
+    assert crowdsec_connector._get_crowdsec_ip_set_cached() == {"1.2.3.4/32"}
+    assert len(calls) == 2
+    with crowdsec_connector._cache_lock:
+        assert crowdsec_connector._crowdsec_cache["ts"] == 105.0
+        assert crowdsec_connector._crowdsec_cache["failed_ts"] == 0.0
+
+
+def test_ip_known_or_refresh_skips_duplicate_refresh_within_failed_guard(monkeypatch):
+    """_crowdsec_ip_known_or_refresh obeys the 5s monotonic guard after a failed inspect."""
+    import crowdsec_connector
+
+    clock = {"now": 500.0}
+    monkeypatch.setattr(_time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
+
+    calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: calls.append(args) or (1, "", "transient"),
+    )
+
+    assert crowdsec_connector._crowdsec_ip_known_or_refresh("1.2.3.4") is False
+    # Failed inside _get_crowdsec_ip_set_cached; forced refresh must NOT re-run immediately
+    assert len(calls) == 1
+
+    # After 5s guard elapses, forced refresh runs again
+    clock["now"] = 505.0
+    assert crowdsec_connector._crowdsec_ip_known_or_refresh("1.2.3.4") is False
+    assert len(calls) == 2
+
+
+def test_crowdsec_cache_uses_monotonic_not_wall_clock(monkeypatch):
+    """All CrowdSec cache and cooldown timestamps use time.monotonic(), never time.time()."""
+    import crowdsec_connector
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(_time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        _time,
+        "time",
+        lambda: (_ for _ in ()).throw(AssertionError("wall-clock time.time() called")),
+    )
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
+    monkeypatch.setattr(
+        crowdsec_connector, "_crowdsec_check_connectivity", lambda: None
+    )
+    monkeypatch.setattr(
+        crowdsec_connector, "crowdsec_allowlist_exists", lambda name: True
+    )
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: (
+            (0, '[{"ip": "1.2.3.4/32"}]', "") if "inspect" in args else (0, "", "")
+        ),
+    )
+
+    crowdsec_connector.crowdsec_ensure_allowlist()
+    assert crowdsec_connector._crowdsec_ip_known_or_refresh("1.2.3.4") is True
+    crowdsec_connector.crowdsec_add_ip("5.6.7.8")
+    crowdsec_connector.crowdsec_remove_ip("1.2.3.4")
 
 
 # ---------------------------------------------------------------------------
@@ -998,3 +1165,243 @@ def test_check_connectivity_non_docker_prefix_failure(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "WARNING" in out
     assert "cscli check failed" in out
+
+
+def test_check_connectivity_stage1_403_proceeds_to_stages_2_and_3(monkeypatch, capsys):
+    """Stage 1 returning HTTP 403 Forbidden logs info (no WARNING) and runs Stages 2 & 3."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec crowdsec"
+    )
+    docker_calls = []
+
+    def fake_docker(args):
+        docker_calls.append(args)
+        if args[0] == "version":
+            return 1, "", "Error response from daemon: 403 Forbidden"
+        if args[0] == "inspect":
+            return 0, "true", ""
+        return 1, "", "unexpected"
+
+    monkeypatch.setattr(crowdsec_connector, "_run_docker_cmd", fake_docker)
+    cscli_calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: cscli_calls.append(args) or (0, "v1.6.3", ""),
+    )
+    crowdsec_connector._crowdsec_check_connectivity()
+    out = capsys.readouterr().out
+    assert "WARNING" not in out
+    assert "403" in out
+    assert docker_calls == [
+        ["version", "--format", "{{.Server.Version}}"],
+        ["inspect", "--format", "{{.State.Running}}", "--", "crowdsec"],
+    ]
+    assert cscli_calls == [["version"]]
+    assert "crowdsec' is running" in out
+    assert "cscli OK" in out
+
+
+def test_check_connectivity_stage2_uses_end_of_options_separator(monkeypatch):
+    """Stage 2 docker inspect passes '--' before container name."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec -- -crowdsec"
+    )
+    docker_calls = []
+
+    def fake_docker(args):
+        docker_calls.append(args)
+        if args[0] == "version":
+            return 0, "26.1.3", ""
+        return 0, "true", ""
+
+    monkeypatch.setattr(crowdsec_connector, "_run_docker_cmd", fake_docker)
+    monkeypatch.setattr(crowdsec_connector, "run_cscli", lambda args: (0, "v1.6.3", ""))
+    crowdsec_connector._crowdsec_check_connectivity()
+    assert docker_calls[1] == [
+        "inspect",
+        "--format",
+        "{{.State.Running}}",
+        "--",
+        "-crowdsec",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Canonicalization and CIDR matching regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_validate_ip_returns_canonical_forms():
+    """_validate_ip returns canonical IPv4 and compressed IPv6 strings."""
+    import crowdsec_connector
+
+    assert crowdsec_connector._validate_ip("1.2.3.4") == "1.2.3.4"
+    assert (
+        crowdsec_connector._validate_ip("2001:0db8:0000:0000:0000:0000:0000:0001")
+        == "2001:db8::1"
+    )
+
+
+def test_add_ip_canonicalizes_ipv6_for_cli_and_cache(monkeypatch):
+    """crowdsec_add_ip passes canonical IPv6 to cscli and stores canonical form in cache."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
+    monkeypatch.setattr(crowdsec_connector, "crowdsec_ensure_allowlist", lambda: None)
+    monkeypatch.setattr(
+        crowdsec_connector, "_crowdsec_ip_known_or_refresh", lambda ip: False
+    )
+    calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: calls.append(args) or (0, "", ""),
+    )
+
+    crowdsec_connector.crowdsec_add_ip("2001:0db8:0000:0000:0000:0000:0000:0001")
+    assert calls[0][:4] == ["allowlist", "add", "test-list", "2001:db8::1"]
+    with crowdsec_connector._cache_lock:
+        assert "2001:db8::1" in crowdsec_connector._crowdsec_cache["ip_set"]
+
+
+@pytest.mark.parametrize(
+    ("input_ip", "refreshed_entries"),
+    [
+        ("1.2.3.4", {"1.2.3.4/32"}),
+        ("1.2.3.4", {"1.2.3.0/24"}),
+        ("2001:0db8::0001", {"2001:db8::1"}),
+        ("2001:0db8::0001", {"2001:db8::1/128"}),
+        ("2001:0db8::0001", {"2001:db8::/64"}),
+    ],
+)
+def test_add_ip_post_retry_refresh_matches_cidr_and_canonical_ipv6(
+    monkeypatch, input_ip, refreshed_entries
+):
+    """Post-retry refresh fallback matches /32, /128, broader CIDRs, and canonical IPv6."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
+    monkeypatch.setattr(crowdsec_connector, "crowdsec_ensure_allowlist", lambda: None)
+    monkeypatch.setattr(
+        crowdsec_connector, "_crowdsec_ip_known_or_refresh", lambda ip: False
+    )
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "_crowdsec_refresh_allowlist_ip_set",
+        lambda: refreshed_entries,
+    )
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        crowdsec_connector, "run_cscli", lambda args: (1, "", "already exists")
+    )
+    crowdsec_connector.crowdsec_add_ip(input_ip)  # must not raise
+
+
+@pytest.mark.parametrize(
+    ("input_ip", "expected_cli_ip", "cached_entries"),
+    [
+        ("1.2.3.4", "1.2.3.4", {"1.2.3.4/32", "1.2.3.0/24"}),
+        ("2001:0db8::0001", "2001:db8::1", {"2001:db8::1/128", "2001:db8::/64"}),
+    ],
+)
+def test_remove_ip_matches_host_cidr_in_cache_and_preserves_broader_cidr(
+    monkeypatch, input_ip, expected_cli_ip, cached_entries
+):
+    """crowdsec_remove_ip removes /32 and /128 host CIDRs while preserving broader CIDRs."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
+    with crowdsec_connector._cache_lock:
+        crowdsec_connector._crowdsec_cache["ts"] = _time.monotonic()
+        crowdsec_connector._crowdsec_cache["ip_set"] = set(cached_entries)
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: calls.append(args) or (0, "", ""),
+    )
+
+    crowdsec_connector.crowdsec_remove_ip(input_ip)
+    assert calls == [["allowlist", "remove", "test-list", expected_cli_ip]]
+    with crowdsec_connector._cache_lock:
+        remaining = crowdsec_connector._crowdsec_cache["ip_set"]
+        assert remaining == (
+            cached_entries - {f"{expected_cli_ip}/32", f"{expected_cli_ip}/128"}
+        )
+
+
+def test_remove_ip_matches_host_cidr_in_refresh_and_evicts(monkeypatch):
+    """crowdsec_remove_ip removes /32 found only via refresh and evicts it from cache."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: (
+            (0, '[{"value": "1.2.3.4/32"}]', "") if "inspect" in args else (0, "", "")
+        ),
+    )
+
+    crowdsec_connector.crowdsec_remove_ip("1.2.3.4")
+    with crowdsec_connector._cache_lock:
+        assert crowdsec_connector._crowdsec_cache["ip_set"] == set()
+
+
+@pytest.mark.parametrize(
+    ("input_ip", "broader_entries"),
+    [
+        ("1.2.3.4", {"1.2.3.0/24"}),
+        ("2001:db8::1", {"2001:db8::/64"}),
+    ],
+)
+def test_remove_ip_skips_broader_admin_cidrs(monkeypatch, input_ip, broader_entries):
+    """crowdsec_remove_ip never matches broader admin CIDRs (/24, /64) for removal."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "test-list")
+    monkeypatch.setattr(
+        crowdsec_connector, "_get_crowdsec_ip_set_cached", lambda: set(broader_entries)
+    )
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "_crowdsec_refresh_allowlist_ip_set",
+        lambda: set(broader_entries),
+    )
+    calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: calls.append(args) or (0, "", ""),
+    )
+
+    crowdsec_connector.crowdsec_remove_ip(input_ip)
+    assert calls == []
+
+
+def test_remove_ip_invalid_allowlist_name_raises_before_subprocess(monkeypatch):
+    """crowdsec_remove_ip validates CROWDSEC_ALLOWLIST_NAME before running cscli."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_ALLOWLIST_NAME", "bad name!")
+    calls = []
+    monkeypatch.setattr(
+        crowdsec_connector,
+        "run_cscli",
+        lambda args: calls.append(args) or (0, "", ""),
+    )
+    with pytest.raises(ValueError, match="invalid CrowdSec allowlist name"):
+        crowdsec_connector.crowdsec_remove_ip("1.2.3.4")
+    assert calls == []
