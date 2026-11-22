@@ -3,11 +3,89 @@ import html
 import ipaddress
 import json
 import os
+import re
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
+_TEMPLATE_TOKEN_RE = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
+_HOST_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
+_PORT_RE = re.compile(r"^[1-9][0-9]{0,4}\Z")
+_BRACKETED_IPV6_RE = re.compile(r"^\[([^\]]+)\](?::([0-9]+))?\Z")
+
+
+def _is_valid_port(port_str: str) -> bool:
+    return bool(_PORT_RE.match(port_str)) and 1 <= int(port_str) <= 65535
+
+
+def _is_valid_host_port(value: str) -> bool:
+    """Validate an RFC 1123 hostname, IPv4 literal, or bracketed IPv6 literal with optional :port."""
+    if not isinstance(value, str) or not value:
+        return False
+    if not value.isascii() or any(
+        ord(ch) < 32 or ord(ch) == 127 or ch.isspace() for ch in value
+    ):
+        return False
+
+    if value.startswith("["):
+        match = _BRACKETED_IPV6_RE.match(value)
+        if not match:
+            return False
+        ipv6_str, port_str = match.groups()
+        if "%" in ipv6_str:
+            return False
+        try:
+            ipaddress.IPv6Address(ipv6_str)
+        except ValueError:
+            return False
+        return port_str is None or _is_valid_port(port_str)
+
+    if value.count(":") > 1:
+        return False
+    if ":" in value:
+        host, port_str = value.split(":", 1)
+        if not _is_valid_port(port_str):
+            return False
+    else:
+        host = value
+
+    if not host or len(host) > 253:
+        return False
+
+    try:
+        ipaddress.IPv4Address(host)
+        return True
+    except ValueError:
+        pass
+
+    labels = host.split(".")
+    if any(not _HOST_LABEL_RE.match(label) for label in labels):
+        return False
+    return not labels[-1].isdigit()
+
+
+def is_valid_dashboard_url(url: str) -> bool:
+    """Return True if url is a safe https:// URL without userinfo, whitespace, or control chars."""
+    if not isinstance(url, str) or not url:
+        return False
+    if any(ord(ch) < 32 or ord(ch) == 127 or ch.isspace() for ch in url):
+        return False
+    if not url.startswith("https://"):
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme != "https" or not parsed.netloc:
+        return False
+    if (
+        "@" in parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return False
+    return _is_valid_host_port(parsed.netloc)
 
 
 def _format_retention(minutes: int) -> str:
@@ -23,9 +101,10 @@ def _format_retention(minutes: int) -> str:
 def _load_template(name: str, tokens: dict[str, str]) -> str:
     with open(os.path.join(_TEMPLATE_DIR, name), encoding="utf-8") as f:
         content = f.read()
-    for key, value in tokens.items():
-        content = content.replace("{{" + key + "}}", value)
-    return content
+    return _TEMPLATE_TOKEN_RE.sub(
+        lambda m: tokens.get(m.group(1), m.group(0)),
+        content,
+    )
 
 
 def _render_resource_rows(resources: list, overall_ok: bool) -> str:
@@ -38,10 +117,13 @@ def _render_resource_rows(resources: list, overall_ok: bool) -> str:
         ssl = r.get("ssl", True)
         if not domain:
             continue
+        if not isinstance(domain, str) or not _is_valid_host_port(domain):
+            print(f"[warn] Skipping resource with invalid fullDomain: {domain!r}")
+            continue
         protocol = "https" if ssl else "http"
         raw_url = f"{protocol}://{domain}"
         safe_url = html.escape(raw_url, quote=True)
-        safe_name = html.escape(name)
+        safe_name = html.escape(str(name))
         rows.append(
             '      <a class="access-link" href="'
             + safe_url
@@ -142,46 +224,40 @@ def _build_checkin_html(
 
     details_label = "Technical details" if overall_ok else "What went wrong?"
 
+    valid_dashboard_url = dashboard_url if is_valid_dashboard_url(dashboard_url) else ""
+    if dashboard_url and not valid_dashboard_url:
+        print(f"[warn] Ignoring invalid dashboard_url: {dashboard_url!r}")
+
     # Only show individual allowed resources if not redirecting successfully
-    show_individual_resources = not (redirect_to_launcher and success)
+    show_individual_resources = not (
+        redirect_to_launcher and success and bool(valid_dashboard_url)
+    )
     resource_rows = ""
     if show_individual_resources:
         resource_rows = _render_resource_rows(resources or [], overall_ok)
 
-    # Build the redirection banner and inline script if redirecting on success
+    # Build the redirection banner if redirecting on success
     redirect_banner_html = ""
     if (
         success
         and redirect_to_launcher
-        and dashboard_url
+        and valid_dashboard_url
+        and isinstance(redirect_delay_seconds, int)
+        and not isinstance(redirect_delay_seconds, bool)
         and redirect_delay_seconds > 0
     ):
-        safe_url = html.escape(dashboard_url, quote=True)
+        safe_url = html.escape(valid_dashboard_url, quote=True)
+        safe_delay = html.escape(str(redirect_delay_seconds), quote=True)
         redirect_banner_html = (
-            f'      <div class="redirect-banner" style="background: var(--accent-hover-bg); border: 1px solid var(--accent); padding: 12px 16px; border-radius: calc(var(--radius) - 2px); margin-bottom: 12px; font-size: 13px; text-align: center; color: var(--text);">\n'
-            f'        Redirecting to Resource Launcher in <strong id="countdown">{redirect_delay_seconds}</strong> seconds...\n'
-            "      </div>\n"
-            "      <script>\n"
-            "        (function() {\n"
-            f"          var delay = {redirect_delay_seconds};\n"
-            f'          var url = "{safe_url}";\n'
-            "          var interval = setInterval(function() {\n"
-            "            delay--;\n"
-            '            var el = document.getElementById("countdown");\n'
-            "            if (el) el.innerText = delay;\n"
-            "            if (delay <= 0) {\n"
-            "              clearInterval(interval);\n"
-            "              window.location.href = url;\n"
-            "            }\n"
-            "          }, 1000);\n"
-            "        })();\n"
-            "      </script>"
+            f'      <div class="redirect-banner" data-redirect-url="{safe_url}" data-redirect-delay="{safe_delay}" style="background: var(--accent-hover-bg); border: 1px solid var(--accent); padding: 12px 16px; border-radius: calc(var(--radius) - 2px); margin-bottom: 12px; font-size: 13px; text-align: center; color: var(--text);">\n'
+            f'        Redirecting to Resource Launcher in <strong id="countdown">{safe_delay}</strong> seconds...\n'
+            "      </div>"
         )
 
-    # Build the central launcher button if dashboard_url is set, redirection is enabled, and overall_ok is True
+    # Build the central launcher button if valid_dashboard_url is set, redirection is enabled, and overall_ok is True
     launcher_row = ""
-    if overall_ok and dashboard_url and redirect_to_launcher:
-        safe_url = html.escape(dashboard_url, quote=True)
+    if overall_ok and valid_dashboard_url and redirect_to_launcher:
+        safe_url = html.escape(valid_dashboard_url, quote=True)
         launcher_row = (
             f'      <a class="access-link launcher-link" href="{safe_url}" target="_blank" rel="noopener noreferrer" style="border-color: var(--accent); background: var(--accent-hover-bg); margin-bottom: 8px;">\n'
             '        <span class="access-link-left">\n'
@@ -246,13 +322,15 @@ def _build_checkin_html(
         f'      <div class="sub">{html.escape(site_name)}</div>\n' if site_name else ""
     )
 
+    safe_ip = html.escape(str(ip))
+
     return _load_template(
         "checkin.html",
         {
             "DOT_CLASS": dot_class,
             "SITE_NAME_SUB": site_name_sub,
             "HERO": hero,
-            "IP": ip,
+            "IP": safe_ip,
             "PANGOLIN_BADGE": pangolin_badge,
             "CROWDSEC_BADGE": crowdsec_badge,
             "ACTIONS_SECTION": actions_section,
@@ -263,7 +341,7 @@ def _build_checkin_html(
             "DETAILS_LABEL": details_label,
             "DETAILS_EXPANDED": details_expanded,
             "DETAILS_OPEN_CLASS": details_open_class,
-            "DETAILS_IP": ip,
+            "DETAILS_IP": safe_ip,
             "PANGOLIN_DETAIL_CLASS": pangolin_detail_class,
             "PANGOLIN_DETAIL": html.escape(str(pangolin_detail)),
             "CROWDSEC_DETAIL_CLASS": crowdsec_detail_class,
@@ -416,6 +494,36 @@ def create_image_request_handler(ctx: dict):
             self.end_headers()
             self.wfile.write(encoded)
 
+        def _try_immediate_redirect(self, success: bool) -> bool:
+            redirect_enabled = ctx.get("redirect_to_launcher", False)
+            redirect_delay = ctx.get("redirect_delay_seconds", 3)
+            dashboard_url = ctx.get("pangolin_dashboard_url", "")
+            if (
+                redirect_enabled
+                and success
+                and dashboard_url
+                and not isinstance(redirect_delay, bool)
+                and redirect_delay == 0
+            ):
+                if not is_valid_dashboard_url(dashboard_url):
+                    print(
+                        "[warn] Refusing 302 redirect to invalid dashboard_url: "
+                        f"{dashboard_url!r}"
+                    )
+                    return False
+                self.send_response(302)
+                self.send_header("Location", dashboard_url)
+                self.send_header(
+                    "Cache-Control",
+                    "no-store, no-cache, must-revalidate, max-age=0",
+                )
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Expires", "0")
+                self._send_security_headers()
+                self.end_headers()
+                return True
+            return False
+
         def do_GET(self):
             parsed_path = urlparse(self.path)
             path = parsed_path.path or "/"
@@ -555,22 +663,7 @@ def create_image_request_handler(ctx: dict):
                     redirect_enabled = ctx.get("redirect_to_launcher", False)
                     redirect_delay = ctx.get("redirect_delay_seconds", 3)
 
-                    if (
-                        redirect_enabled
-                        and success
-                        and ctx.get("pangolin_dashboard_url")
-                        and redirect_delay == 0
-                    ):
-                        self.send_response(302)
-                        self.send_header("Location", ctx["pangolin_dashboard_url"])
-                        self.send_header(
-                            "Cache-Control",
-                            "no-store, no-cache, must-revalidate, max-age=0",
-                        )
-                        self.send_header("Pragma", "no-cache")
-                        self.send_header("Expires", "0")
-                        self._send_security_headers()
-                        self.end_headers()
+                    if self._try_immediate_redirect(success):
                         return
 
                     self._send_html(
@@ -677,22 +770,7 @@ def create_image_request_handler(ctx: dict):
                 redirect_enabled = ctx.get("redirect_to_launcher", False)
                 redirect_delay = ctx.get("redirect_delay_seconds", 3)
 
-                if (
-                    redirect_enabled
-                    and success
-                    and ctx.get("pangolin_dashboard_url")
-                    and redirect_delay == 0
-                ):
-                    self.send_response(302)
-                    self.send_header("Location", ctx["pangolin_dashboard_url"])
-                    self.send_header(
-                        "Cache-Control",
-                        "no-store, no-cache, must-revalidate, max-age=0",
-                    )
-                    self.send_header("Pragma", "no-cache")
-                    self.send_header("Expires", "0")
-                    self._send_security_headers()
-                    self.end_headers()
+                if self._try_immediate_redirect(success):
                     return
 
                 self._send_html(

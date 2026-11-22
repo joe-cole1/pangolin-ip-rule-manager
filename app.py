@@ -540,7 +540,10 @@ def cleanup_loop():
         time.sleep(CLEANUP_INTERVAL_MINUTES * 60)
 
 
-from request_handler import create_image_request_handler
+from request_handler import (
+    create_image_request_handler,
+    is_valid_dashboard_url,
+)
 
 
 def _make_image_handler_context() -> dict:
@@ -594,10 +597,17 @@ def self_check():
                 f"PANGOLIN_URL must use https:// scheme; got {parsed_url.scheme!r}"
             )
 
+    if PANGOLIN_DASHBOARD_URL and not is_valid_dashboard_url(PANGOLIN_DASHBOARD_URL):
+        raise RuntimeError(
+            "PANGOLIN_DASHBOARD_URL must be a valid https:// URL without userinfo, "
+            f"whitespace, or control characters; got {PANGOLIN_DASHBOARD_URL!r}"
+        )
+
     for _name, _val, _min in [
         ("CLEANUP_INTERVAL_MINUTES", CLEANUP_INTERVAL_MINUTES, 1),
         ("RETENTION_MINUTES", RETENTION_MINUTES, 1),
         ("RATE_LIMIT_SECONDS", RATE_LIMIT_SECONDS, 0),
+        ("REDIRECT_DELAY_SECONDS", REDIRECT_DELAY_SECONDS, 0),
         ("RULES_CACHE_TTL_SECONDS", RULES_CACHE_TTL_SECONDS, 1),
         ("CROWDSEC_CACHE_TTL_SECONDS", CROWDSEC_CACHE_TTL_SECONDS, 1),
     ]:
