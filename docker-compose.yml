@@ -125,7 +125,7 @@ services:
   # Uncomment this entire block and the networks section below to enable.
   #
   # socket-proxy:
-  #   image: tecnativa/docker-socket-proxy:v0.4.2
+  #   image: tecnativa/docker-socket-proxy:3.4@sha256:027f9fa5ee70be5836eeaa10ce889d7a83f34a8db16a7f412818b92997e0beab
   #   container_name: socket-proxy
   #   environment:
   #     CONTAINERS: 1
@@ -136,6 +136,22 @@ services:
   #     - /var/run/docker.sock:/var/run/docker.sock:ro
   #   networks:
   #     - socket-proxy
+  #   # HAProxy needs writable /run (pidfile) and /tmp (rendered haproxy.cfg).
+  #   security_opt:
+  #     - no-new-privileges:true
+  #   cap_drop:
+  #     - ALL
+  #   read_only: true
+  #   tmpfs:
+  #     - /run:rw,noexec,nosuid,nodev,size=4m
+  #     - /tmp:rw,noexec,nosuid,nodev,size=4m
+  #   pids_limit: 64
+  #   mem_limit: "64M"
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: "64M"
+  #         pids: 64
   #   healthcheck:
   #     test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2375/_ping"]
   #     interval: 30s

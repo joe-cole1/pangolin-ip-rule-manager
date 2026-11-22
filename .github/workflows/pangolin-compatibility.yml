@@ -42,7 +42,7 @@ jobs:
       versions: ${{ steps.versions.outputs.versions }}
       editions: ${{ steps.versions.outputs.editions }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Validate release tag and select versions
@@ -81,7 +81,7 @@ jobs:
       COMPAT_EDITION: ${{ matrix.edition }}
       COMPAT_EXERCISE_FAILURE: ${{ inputs.exercise_failure || github.event.label.name == 'pangolin-compatibility-failure' }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Run live compatibility checks (${{ matrix.version }}, ${{ matrix.edition }})

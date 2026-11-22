@@ -12,6 +12,7 @@ import string
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -23,6 +24,21 @@ BASELINE_IMAGE = (
     IMAGE_REPOSITORY
     + ":1.24.0@sha256:17774ddbb4bf13f4a2b9e813cc2dfc3ca8ded1c5745823624af632bab0376488"
 )
+_BEARER_RE = re.compile(r"(?i)(\bBearer[ \t]+)[^\s\"'`,;)}\]]+")
+_PROXY_SECRET_RE = re.compile(
+    r"""(?i)(["']?X-Proxy-Secret["']?[ \t]*[:=][ \t]*)"""
+    r"""(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;)}\]]+)"""
+)
+
+
+def sanitize_output(value: str, secrets_to_redact: Iterable[str] = ()) -> str:
+    """Redact known secrets and auth/proxy headers, then prefix every line."""
+    for secret in sorted((s for s in secrets_to_redact if s), key=len, reverse=True):
+        value = value.replace(secret, "[REDACTED]")
+    value = _BEARER_RE.sub(r"\1[REDACTED]", value)
+    value = _PROXY_SECRET_RE.sub(r"\1[REDACTED]", value)
+    # Prefix every line so container output cannot execute workflow commands.
+    return "\n".join("[compat] " + line for line in value.splitlines())
 
 
 def release_version(value: str) -> str:
@@ -199,10 +215,7 @@ def main() -> int:
         ]
 
         def sanitized(value):
-            for secret in (setup_token, server_secret, password):
-                value = value.replace(secret, "[REDACTED]")
-            # Prefix every line so container output cannot execute workflow commands.
-            return "\n".join("[compat] " + line for line in value.splitlines())
+            return sanitize_output(value, (setup_token, server_secret, password))
 
         try:
             stage = "image resolution"
