@@ -162,6 +162,10 @@ def run_checks(admin, api, role_resource: int, org: str, actions):
         # boundary test, not the production HTTPS startup/Traefik deployment.
         import app
 
+        # Permit the internal http://pangolin:3003 service on this disposable Compose
+        # network without exposing an insecure-HTTP env var in production.
+        app._ALLOW_INSECURE_HTTP = True
+
         require(
             not app.CROWDSEC_ENABLED and len(app.TARGETS) == 1,
             "CrowdSec must be unreachable",

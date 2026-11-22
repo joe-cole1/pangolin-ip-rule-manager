@@ -2666,14 +2666,15 @@ def test_cleanup_multi_resource_full_delete(monkeypatch, app_module):
 # ---------------------------------------------------------------------------
 
 
-def test_http_json_http_error_raises(monkeypatch, app_module):
-    """HTTPError from urlopen → RuntimeError with status code and body in message."""
+def test_http_json_http_error_raises(monkeypatch, app_module, capsys):
+    """HTTPError from _HTTP_OPENER -> RuntimeError with status only; sanitized body logged."""
     from io import BytesIO
     from urllib.error import HTTPError as _HTTPError
 
     app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
 
-    def fake_urlopen(req, timeout=None):
+    def fake_open(req, timeout=None):
         raise _HTTPError(
             url="https://pg.test/foo",
             code=500,
@@ -2682,22 +2683,25 @@ def test_http_json_http_error_raises(monkeypatch, app_module):
             fp=BytesIO(b"something went wrong"),
         )
 
-    monkeypatch.setattr(app, "urlopen", fake_urlopen)
+    monkeypatch.setattr(app._HTTP_OPENER, "open", fake_open)
     with pytest.raises(RuntimeError) as exc_info:
         app.http_json("GET", "https://pg.test/foo")
     assert "HTTP 500" in str(exc_info.value)
-    assert "something went wrong" in str(exc_info.value)
+    assert "something went wrong" not in str(exc_info.value)
+    captured = capsys.readouterr()
+    assert "something went wrong" in captured.out
 
 
 def test_http_json_url_error_raises(monkeypatch, app_module):
-    """URLError from urlopen → RuntimeError with 'Network error' in message."""
+    """URLError from _HTTP_OPENER -> RuntimeError with 'Network error' in message."""
     from urllib.error import URLError as _URLError
 
     app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
 
     monkeypatch.setattr(
-        app,
-        "urlopen",
+        app._HTTP_OPENER,
+        "open",
         lambda req, timeout=None: (_ for _ in ()).throw(
             _URLError("connection refused")
         ),
@@ -2707,8 +2711,9 @@ def test_http_json_url_error_raises(monkeypatch, app_module):
 
 
 def test_http_json_non_json_response_returns_raw(monkeypatch, app_module):
-    """Non-JSON response body → returns {'raw': text} without raising."""
+    """Non-JSON response body -> returns {'raw': text} without raising."""
     app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
 
     class _FakeResp:
         class headers:
@@ -2716,8 +2721,9 @@ def test_http_json_non_json_response_returns_raw(monkeypatch, app_module):
             def get_content_charset():
                 return "utf-8"
 
-        def read(self):
-            return b"not json at all"
+        def read(self, amt=-1):
+            data = b"not json at all"
+            return data if amt < 0 else data[:amt]
 
         def __enter__(self):
             return self
@@ -2725,9 +2731,302 @@ def test_http_json_non_json_response_returns_raw(monkeypatch, app_module):
         def __exit__(self, *a):
             pass
 
-    monkeypatch.setattr(app, "urlopen", lambda req, timeout=None: _FakeResp())
+    monkeypatch.setattr(app._HTTP_OPENER, "open", lambda req, timeout=None: _FakeResp())
     result = app.http_json("GET", "https://pg.test/foo")
     assert result == {"raw": "not json at all"}
+
+
+def test_http_json_rejects_non_https_schemes(monkeypatch, app_module):
+    """http_json rejects http://, file://, ftp://, and relative URLs by default."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(
+        app._HTTP_OPENER,
+        "open",
+        lambda *_a, **_kw: pytest.fail("_HTTP_OPENER.open must not be called"),
+    )
+
+    for bad_url in (
+        "http://pg.test/v1/test",
+        "file:///etc/passwd",
+        "ftp://pg.test/v1/test",
+        "/v1/test",
+    ):
+        with pytest.raises(RuntimeError, match="disallowed URL scheme"):
+            app.http_json("GET", bad_url)
+
+
+def test_http_json_rejects_cross_origin(monkeypatch, app_module):
+    """http_json rejects URLs whose origin differs from PANGOLIN_URL or carries userinfo."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(
+        app._HTTP_OPENER,
+        "open",
+        lambda *_a, **_kw: pytest.fail("_HTTP_OPENER.open must not be called"),
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected Pangolin origin"):
+        app.http_json("GET", "https://other.example/v1/resource/1")
+
+    with pytest.raises(RuntimeError, match="unexpected Pangolin origin"):
+        app.http_json("GET", "https://pg.test:8443/v1/resource/1")
+
+    with pytest.raises(RuntimeError, match="URL credentials"):
+        app.http_json("GET", "https://user:pass@pg.test/v1/resource/1")
+
+
+def test_http_json_allows_same_origin_http_only_with_internal_flag(
+    monkeypatch, app_module
+):
+    """_ALLOW_INSECURE_HTTP=True allows same-origin http:// while blocking others."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "http://pangolin:3003")
+    monkeypatch.setattr(app, "_ALLOW_INSECURE_HTTP", True)
+
+    class _FakeResp:
+        class headers:
+            @staticmethod
+            def get_content_charset():
+                return "utf-8"
+
+        def read(self, amt=-1):
+            data = b'{"ok": true}'
+            return data if amt < 0 else data[:amt]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    monkeypatch.setattr(app._HTTP_OPENER, "open", lambda req, timeout=None: _FakeResp())
+    assert app.http_json("GET", "http://pangolin:3003/v1/test") == {"ok": True}
+
+    with pytest.raises(RuntimeError, match="disallowed URL scheme"):
+        app.http_json("GET", "file:///etc/passwd")
+
+    with pytest.raises(RuntimeError, match="unexpected Pangolin origin"):
+        app.http_json("GET", "http://evil.example/v1/test")
+
+
+def test_http_json_does_not_follow_redirects(monkeypatch, app_module):
+    """302 redirects must not be followed or leak Authorization to redirect targets."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    app = app_module
+    secondary_requests = []
+
+    class _SecondaryHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            secondary_requests.append((self.path, self.headers.get("Authorization")))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *_args):
+            pass
+
+    secondary = HTTPServer(("127.0.0.1", 0), _SecondaryHandler)
+    sec_port = secondary.server_port
+
+    class _PrimaryHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{sec_port}/steal")
+            self.end_headers()
+            self.wfile.write(b"redirecting")
+
+        def log_message(self, *_args):
+            pass
+
+    primary = HTTPServer(("127.0.0.1", 0), _PrimaryHandler)
+    pri_port = primary.server_port
+
+    t_sec = threading.Thread(
+        target=secondary.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
+    t_pri = threading.Thread(
+        target=primary.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
+    t_sec.start()
+    t_pri.start()
+    try:
+        monkeypatch.setattr(app, "PANGOLIN_URL", f"http://127.0.0.1:{pri_port}")
+        monkeypatch.setattr(app, "PANGOLIN_TOKEN", "super-secret-token")
+        monkeypatch.setattr(app, "_ALLOW_INSECURE_HTTP", True)
+
+        with pytest.raises(RuntimeError, match="HTTP 302"):
+            app.http_json("GET", f"http://127.0.0.1:{pri_port}/v1/test")
+        assert secondary_requests == []
+    finally:
+        primary.shutdown()
+        primary.server_close()
+        secondary.shutdown()
+        secondary.server_close()
+        t_pri.join(timeout=5)
+        t_sec.join(timeout=5)
+
+
+def test_http_json_ignores_proxy_env_vars(monkeypatch, app_module):
+    """_HTTP_OPENER bypasses ambient HTTP_PROXY/HTTPS_PROXY environment variables."""
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    app = app_module
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b'{"direct": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    t = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
+    t.start()
+    try:
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+        monkeypatch.setenv("https_proxy", "http://127.0.0.1:1")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.setattr(
+            app, "PANGOLIN_URL", f"http://127.0.0.1:{server.server_port}"
+        )
+        monkeypatch.setattr(app, "_ALLOW_INSECURE_HTTP", True)
+
+        assert app.http_json(
+            "GET", f"http://127.0.0.1:{server.server_port}/v1/test"
+        ) == {"direct": True}
+    finally:
+        server.shutdown()
+        server.server_close()
+        t.join(timeout=5)
+
+
+def test_http_json_enforces_response_size_cap(monkeypatch, app_module):
+    """Responses exceeding _MAX_HTTP_RESPONSE_BYTES raise RuntimeError."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "_MAX_HTTP_RESPONSE_BYTES", 64)
+
+    class _SizedResp:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+
+        class headers:
+            @staticmethod
+            def get_content_charset():
+                return "utf-8"
+
+        def read(self, amt=-1):
+            return self._payload if amt < 0 else self._payload[:amt]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    exact_payload = b'{"k":"' + (b"a" * 56) + b'"}'
+    assert len(exact_payload) == 64
+    monkeypatch.setattr(
+        app._HTTP_OPENER, "open", lambda req, timeout=None: _SizedResp(exact_payload)
+    )
+    assert app.http_json("GET", "https://pg.test/ok") == {"k": "a" * 56}
+
+    oversized_payload = b'{"k":"' + (b"a" * 60) + b'"}'
+    monkeypatch.setattr(
+        app._HTTP_OPENER,
+        "open",
+        lambda req, timeout=None: _SizedResp(oversized_payload),
+    )
+    with pytest.raises(RuntimeError, match="byte limit"):
+        app.http_json("GET", "https://pg.test/too-big")
+
+
+def test_http_json_caps_and_sanitizes_error_body(monkeypatch, app_module, capsys):
+    """Error bodies are capped, CRLF-sanitized in stdout, and omitted from RuntimeError."""
+    from io import BytesIO
+    from urllib.error import HTTPError as _HTTPError
+
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "_MAX_HTTP_ERROR_BYTES", 64)
+
+    body = b"upstream\r\nFAKE LOG LINE " + (b"x" * 200) + b"SECRET_TAIL"
+
+    def fake_open(req, timeout=None):
+        raise _HTTPError(
+            url="https://pg.test/foo",
+            code=502,
+            msg="Bad Gateway",
+            hdrs={},
+            fp=BytesIO(body),
+        )
+
+    monkeypatch.setattr(app._HTTP_OPENER, "open", fake_open)
+    with pytest.raises(RuntimeError) as exc_info:
+        app.http_json("GET", "https://pg.test/foo")
+
+    err_msg = str(exc_info.value)
+    assert err_msg == "HTTP 502 Bad Gateway"
+    assert "FAKE LOG LINE" not in err_msg
+    assert "SECRET_TAIL" not in err_msg
+
+    out = capsys.readouterr().out
+    assert "\r" not in out
+    assert out.count("\n") == 1
+    assert "upstream  FAKE LOG LINE" in out
+    assert "SECRET_TAIL" not in out
+
+
+def test_checkin_html_omits_raw_upstream_error_body(monkeypatch, app_module):
+    """Raw upstream HTTPError body never reaches {{PANGOLIN_DETAIL}} on check-in HTML."""
+    from io import BytesIO
+    from urllib.error import HTTPError as _HTTPError
+
+    from request_handler import _build_checkin_html
+
+    app = app_module
+    monkeypatch.setattr(_time_mod, "sleep", lambda _: None)
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+
+    def fake_open(req, timeout=None):
+        raise _HTTPError(
+            url="https://pg.test/v1/org/test-org/users",
+            code=500,
+            msg="Internal Server Error",
+            hdrs={},
+            fp=BytesIO(b'{"secret":"db-password-leak"}'),
+        )
+
+    monkeypatch.setattr(app._HTTP_OPENER, "open", fake_open)
+    results = app.add_ip_to_targets(
+        "1.2.3.4", remote_user_id="user-1", remote_user="alice"
+    )
+    assert results["pangolin"]["ok"] is False
+
+    rendered = _build_checkin_html(
+        ip="1.2.3.4",
+        results=results,
+        retention_minutes=60,
+        last_seen="2026-01-01T00:00:00+00:00",
+        crowdsec_enabled=False,
+    )
+    assert "HTTP 500" in rendered
+    assert "db-password-leak" not in rendered
+    assert '"secret"' not in rendered
 
 
 # ---------------------------------------------------------------------------
