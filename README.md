@@ -13,10 +13,10 @@ A lightweight Python service that automatically manages Pangolin IP bypass rules
 
 | Upgrade path | Required action |
 |---|---|
-| v3.0.0 or v3.0.1 → v3.0.2 | No new configuration, API permissions, Compose settings, or state-file migration. Keep the existing persistent volume and replace the container with the new image. |
+| v3.0.0 or v3.0.1 → v3.1.0 | No new env vars, API permissions, or state-file migration for valid `v3.0.x` configs. Review the [pre-flight checks](docs/upgrading.md#pre-flight-checks) (stricter startup validation, fail-closed `/update` JSON status codes, outbound transport & optional `socket-proxy` updates), keep the persistent volume, and replace the container with the new image once published. |
 | v2.x or earlier → v3.x | Complete the [v3.0.0 migration](docs/upgrading.md#v300-breaking-changes-upgrading-from-v2x): Badger v1.4.1 or newer, **List Users** permission, and the shared proxy secret. |
 
-See the [v3.0.2 release notes](docs/releases/v3.0.2.md) and
+See the [v3.1.0 release notes](docs/releases/v3.1.0.md) and
 [upgrade guide](docs/upgrading.md) for deployment, verification, and rollback.
 Published versions are listed in [GitHub Releases](https://github.com/joe-cole1/pangolin-ip-rule-manager/releases).
 
