@@ -3957,6 +3957,36 @@ def test_self_check_rate_limit_zero_allowed(monkeypatch, app_module, tmp_path):
     app.self_check()  # must not raise
 
 
+@pytest.mark.parametrize("bad_name", ["", "bad name!", "--flag"])
+def test_self_check_invalid_crowdsec_allowlist_name_raises(
+    monkeypatch, app_module, tmp_path, bad_name
+):
+    """Invalid CROWDSEC_ALLOWLIST_NAME with CROWDSEC_ENABLED=True raises RuntimeError."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "tok")
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(app, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(app, "CROWDSEC_ALLOWLIST_NAME", bad_name)
+    with pytest.raises(RuntimeError, match="invalid CrowdSec allowlist name"):
+        app.self_check()
+
+
+def test_self_check_invalid_crowdsec_allowlist_name_ignored_when_disabled(
+    monkeypatch, app_module, tmp_path
+):
+    """Invalid CROWDSEC_ALLOWLIST_NAME does not raise when CROWDSEC_ENABLED=False."""
+    app = app_module
+    monkeypatch.setattr(app, "PANGOLIN_URL", "https://pg.test")
+    monkeypatch.setattr(app, "RESOURCE_IDS", [5])
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "tok")
+    monkeypatch.setattr(app, "STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(app, "CROWDSEC_ENABLED", False)
+    monkeypatch.setattr(app, "CROWDSEC_ALLOWLIST_NAME", "bad name!")
+    app.self_check()  # must not raise
+
+
 # ---------------------------------------------------------------------------
 # /update — non-global IP rejection
 # ---------------------------------------------------------------------------
