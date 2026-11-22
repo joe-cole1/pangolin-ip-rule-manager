@@ -2,6 +2,7 @@ import base64
 import contextlib
 import json
 import os
+import signal
 import tempfile
 import threading
 import time
@@ -131,6 +132,8 @@ rules_cache = {
 # Per-(IP, stable Pangolin user ID) rate limit cache.
 _api_rate_limit: dict[tuple[str, str], tuple[float, dict]] = {}
 _api_rate_limit_lock = threading.Lock()
+shutdown_event = threading.Event()
+_SHUTDOWN_TIMEOUT_SECONDS = 4.0
 
 
 def now_utc_iso() -> str:
@@ -613,16 +616,19 @@ def cleanup_old_ips():
     print("[cleanup] done")
 
 
-def cleanup_loop():
-    while True:
+def cleanup_loop(stop_event: threading.Event | None = None):
+    event = shutdown_event if stop_event is None else stop_event
+    while not event.is_set():
         try:
             cleanup_old_ips()
         except Exception as e:  # noqa: BLE001
             print(f"[cleanup] unexpected error: {e}")
-        time.sleep(CLEANUP_INTERVAL_MINUTES * 60)
+        if event.wait(CLEANUP_INTERVAL_MINUTES * 60):
+            break
 
 
 from request_handler import (
+    build_plain_http_response,
     create_image_request_handler,
     is_valid_dashboard_url,
     sanitize_for_log,
@@ -653,6 +659,98 @@ def _make_image_handler_context() -> dict:
 
 # Expose the HTTP handler class
 ImageRequestHandler = create_image_request_handler(_make_image_handler_context())
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with bounded worker threads and fast-fail 503."""
+
+    max_workers = 32
+    request_queue_size = 32
+    daemon_threads = True
+    block_on_close = False
+
+    def __init__(
+        self,
+        server_address,
+        RequestHandlerClass,
+        bind_and_activate: bool = True,
+        *,
+        max_workers: int | None = None,
+    ):
+        if max_workers is not None:
+            if max_workers < 1:
+                raise ValueError("max_workers must be >= 1")
+            self.max_workers = max_workers
+        self._worker_semaphore = threading.BoundedSemaphore(self.max_workers)
+        self._workers_lock = threading.Lock()
+        self._active_workers: set[threading.Thread] = set()
+        super().__init__(
+            server_address, RequestHandlerClass, bind_and_activate=bind_and_activate
+        )
+
+    def _send_503_and_close(self, request) -> None:
+        response = build_plain_http_response(
+            503,
+            "Service Unavailable",
+            "Service Unavailable",
+            extra_headers=(("Retry-After", "5"), ("Connection", "close")),
+        )
+        try:
+            with contextlib.suppress(OSError):
+                request.settimeout(0.0)
+                request.recv(4096)
+            try:
+                request.settimeout(1.0)
+                request.sendall(response)
+            except OSError:
+                pass
+            with contextlib.suppress(OSError):
+                request.settimeout(0.0)
+                request.recv(4096)
+        finally:
+            self.shutdown_request(request)
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._workers_lock:
+                self._active_workers.discard(threading.current_thread())
+            self._worker_semaphore.release()
+
+    def process_request(self, request, client_address) -> None:
+        if not self._worker_semaphore.acquire(blocking=False):
+            print("[http] worker pool saturated; returning 503")
+            self._send_503_and_close(request)
+            return
+        t = threading.Thread(
+            target=self.process_request_thread,
+            args=(request, client_address),
+            daemon=self.daemon_threads,
+        )
+        with self._workers_lock:
+            self._active_workers.add(t)
+        try:
+            t.start()
+        except BaseException:
+            with self._workers_lock:
+                self._active_workers.discard(t)
+            self._worker_semaphore.release()
+            self.shutdown_request(request)
+            raise
+
+    def join_workers(self, timeout: float) -> None:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._workers_lock:
+                workers = list(self._active_workers)
+            if not workers:
+                return
+            for worker in workers:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                worker.join(timeout=remaining)
 
 
 def self_check():
@@ -788,17 +886,64 @@ def main():
         except Exception as e:  # noqa: BLE001
             print(f"[targets] ensure_ready failed for {t.__class__.__name__}: {e}")
 
+    shutdown_event.clear()
+
     # Start cleanup thread
-    t = threading.Thread(target=cleanup_loop, daemon=True)
-    t.start()
+    cleanup_thread = threading.Thread(
+        target=cleanup_loop,
+        args=(shutdown_event,),
+        name="cleanup-loop",
+        daemon=True,
+    )
+    cleanup_thread.start()
 
     addr = ("0.0.0.0", LISTEN_PORT)
-    httpd = ThreadingHTTPServer(addr, ImageRequestHandler)
-    print(
-        f"[start] Listening on {addr[0]}:{addr[1]} | resources={RESOURCE_IDS} | retention_minutes={RETENTION_MINUTES} | cleanup_interval_minutes={CLEANUP_INTERVAL_MINUTES}"
-    )
+    httpd = BoundedThreadingHTTPServer(addr, ImageRequestHandler)
 
-    httpd.serve_forever()
+    shutdown_triggered = False
+    shutdown_started_at: float | None = None
+
+    def _trigger_shutdown(signum, _frame):
+        nonlocal shutdown_triggered, shutdown_started_at
+        if shutdown_triggered:
+            return
+        shutdown_triggered = True
+        shutdown_started_at = time.monotonic()
+        sig_name = signal.Signals(signum).name
+
+        def _shutdown_worker():
+            print(f"[shutdown] Received {sig_name}; shutting down gracefully")
+            shutdown_event.set()
+            httpd.shutdown()
+
+        threading.Thread(
+            target=_shutdown_worker, name="shutdown-worker", daemon=True
+        ).start()
+
+    prev_sigterm = signal.signal(signal.SIGTERM, _trigger_shutdown)
+    prev_sigint = signal.signal(signal.SIGINT, _trigger_shutdown)
+
+    try:
+        print(
+            f"[start] Listening on {httpd.server_address[0]}:{httpd.server_address[1]} "
+            f"| resources={RESOURCE_IDS} | retention_minutes={RETENTION_MINUTES} "
+            f"| cleanup_interval_minutes={CLEANUP_INTERVAL_MINUTES}"
+        )
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("[shutdown] Interrupted; shutting down gracefully")
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+        signal.signal(signal.SIGINT, prev_sigint)
+        shutdown_event.set()
+        start = (
+            shutdown_started_at if shutdown_started_at is not None else time.monotonic()
+        )
+        deadline = start + _SHUTDOWN_TIMEOUT_SECONDS
+        httpd.server_close()
+        httpd.join_workers(max(0.0, deadline - time.monotonic()))
+        cleanup_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        print("[shutdown] Shutdown complete")
 
 
 if __name__ == "__main__":
