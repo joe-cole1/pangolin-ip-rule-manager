@@ -2,11 +2,15 @@
 
 import argparse
 import json
+import os
 import secrets
 import subprocess
 import uuid
 
-from python_version import docker_python_version
+try:
+    from python_version import docker_python_version
+except ImportError:
+    from scripts.python_version import docker_python_version
 
 # Run these checks inside the real container, using its normal user and stdlib.
 PROBE = """
@@ -94,6 +98,7 @@ def main():
     version = docker_python_version()
     name = f"pangolin-smoke-{uuid.uuid4().hex}"
     volume = f"{name}-data"
+    proxy_secret = secrets.token_urlsafe(32)
 
     def probe(action, *values):
         return docker(
@@ -132,12 +137,13 @@ def main():
             "--env",
             "RESOURCE_IDS=1",
             "--env",
-            f"PROXY_SHARED_SECRET={secrets.token_urlsafe(32)}",
+            "PROXY_SHARED_SECRET",
             "--env",
             "CROWDSEC_ENABLED=false",
             "--env",
             "STATE_FILE=/data/state.json",
             args.image,
+            env={**os.environ, "PROXY_SHARED_SECRET": proxy_secret},
         )
         container = json.loads(docker("inspect", name))[0]
         assert container["HostConfig"]["NetworkMode"] == "none"

@@ -3,6 +3,7 @@
 import argparse
 import http.server
 import json
+import os
 import secrets
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import image_smoke
 from scripts import pangolin_compatibility as harness
 from scripts import pangolin_compatibility_probe as probe
 
@@ -343,3 +345,174 @@ def test_compatibility_cleanup_cannot_report_success_if_resources_remain(monkeyp
     monkeypatch.setattr(harness, "docker", fake_docker)
     with pytest.raises(RuntimeError, match="cleanup could not be verified"):
         harness.clean("pangolin-compat-leftovers", {})
+
+
+def test_sanitize_output_redacts_bearer_tokens_and_proxy_secrets():
+    bearer_header = secrets.token_urlsafe(18)
+    bearer_lower = secrets.token_urlsafe(18)
+    bearer_json = secrets.token_urlsafe(18)
+    proxy_header = secrets.token_urlsafe(18)
+    proxy_eq = secrets.token_urlsafe(18)
+    proxy_json = secrets.token_urlsafe(18)
+    proxy_dict = secrets.token_urlsafe(18)
+    exact_secret = secrets.token_hex(16)
+
+    raw = "\n".join(
+        [
+            f"Authorization: Bearer {bearer_header}",
+            f"authorization: bearer {bearer_lower}",
+            json.dumps({"Authorization": f"Bearer {bearer_json}"}),
+            f"X-Proxy-Secret: {proxy_header}",
+            f"x-proxy-secret={proxy_eq}",
+            json.dumps({"X-Proxy-Secret": proxy_json}),
+            f"{{'X-Proxy-Secret': '{proxy_dict}'}}",
+            f"raw secret {exact_secret}",
+        ]
+    )
+
+    sanitized = harness.sanitize_output(raw, (exact_secret, ""))
+    lines = sanitized.splitlines()
+
+    assert len(lines) == 8
+    assert all(line.startswith("[compat] ") for line in lines)
+    for token in (
+        bearer_header,
+        bearer_lower,
+        bearer_json,
+        proxy_header,
+        proxy_eq,
+        proxy_json,
+        proxy_dict,
+        exact_secret,
+    ):
+        assert token not in sanitized
+    assert "[compat] Authorization: Bearer [REDACTED]" in lines
+    assert "[compat] authorization: bearer [REDACTED]" in lines
+    assert "[compat] X-Proxy-Secret: [REDACTED]" in lines
+    assert "[compat] x-proxy-secret=[REDACTED]" in lines
+    assert '[compat] {"X-Proxy-Secret": [REDACTED]}' in lines
+    assert "[compat] {'X-Proxy-Secret': [REDACTED]}" in lines
+    assert "[compat] raw secret [REDACTED]" in lines
+
+
+def test_failed_compatibility_run_redacts_bearer_and_proxy_secret_headers(
+    monkeypatch, capsys
+):
+    project = "pangolin-compat-header-redaction"
+    bearer_tok = secrets.token_urlsafe(18)
+    proxy_tok = secrets.token_urlsafe(18)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["compat", "--project", project, "--version", "9.8.7", "--edition", "ce"],
+    )
+    monkeypatch.setattr(harness.shutil, "which", lambda _: "/test/docker")
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    remaining = {"container": [], "volume": [], "network": []}
+    digest = "sha256:" + "a" * 64
+
+    def fake_docker(args, *, env, timeout=60, input=None):
+        if args[:2] == ["context", "inspect"]:
+            return "unix:///var/run/docker.sock"
+        if args[0] == "pull":
+            return ""
+        if args[:2] == ["image", "inspect"]:
+            return json.dumps([f"ghcr.io/fosrl/pangolin@{digest}"])
+        if args[0] == "compose":
+            if "up" in args:
+                remaining.update(container=["c1"], volume=["v1"], network=["n1"])
+            if "run" in args:
+                raise subprocess.CalledProcessError(
+                    1,
+                    ["docker"],
+                    output="FAIL header leak check\n",
+                    stderr=(
+                        f"Authorization: Bearer {bearer_tok}\n"
+                        f"X-Proxy-Secret: {proxy_tok}\n"
+                    ),
+                )
+            return ""
+        if args[:2] == ["network", "inspect"]:
+            return "true"
+        if "--filter" in args:
+            kind = "container" if args[0] == "ps" else args[0]
+            return "\n".join(remaining[kind])
+        remaining[args[0]] = []
+        return ""
+
+    monkeypatch.setattr(harness, "docker", fake_docker)
+    assert harness.main() == 1
+    output = capsys.readouterr()
+    logs = output.out + output.err
+    assert bearer_tok not in logs
+    assert proxy_tok not in logs
+    assert "[compat] Authorization: Bearer [REDACTED]" in logs
+    assert "[compat] X-Proxy-Secret: [REDACTED]" in logs
+
+
+def test_image_smoke_passes_proxy_secret_via_env_not_argv(monkeypatch):
+    monkeypatch.delenv("PROXY_SHARED_SECRET", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "image_smoke.py",
+            "--image",
+            "pangolin-smoke:test",
+            "--platform",
+            "linux/amd64",
+        ],
+    )
+    monkeypatch.setattr(image_smoke, "docker_python_version", lambda: "3.14.10")
+
+    calls = []
+    created_volume = []
+
+    def fake_docker(*args, check=True, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("volume", "create"):
+            created_volume.append(args[2])
+            return ""
+        if args[0] == "inspect":
+            return json.dumps(
+                [
+                    {
+                        "HostConfig": {"NetworkMode": "none", "PortBindings": {}},
+                        "Mounts": [{"Name": created_volume[0]}],
+                    }
+                ]
+            )
+        if args[0] == "exec":
+            action = args[5]
+            if action == "state":
+                return json.dumps(
+                    {
+                        ip: {
+                            "resources": {},
+                            "last_seen": "2026-01-01T00:00:00+00:00",
+                        }
+                        for ip in args[8:]
+                    }
+                )
+            return ""
+        return ""
+
+    monkeypatch.setattr(image_smoke, "docker", fake_docker)
+    image_smoke.main()
+
+    run_calls = [(args, kwargs) for args, kwargs in calls if args[0] == "run"]
+    assert len(run_calls) == 1
+    run_args, run_kwargs = run_calls[0]
+
+    assert not any(str(arg).startswith("PROXY_SHARED_SECRET=") for arg in run_args)
+    idx = run_args.index("PROXY_SHARED_SECRET")
+    assert idx > 0 and run_args[idx - 1] == "--env"
+
+    run_env = run_kwargs["env"]
+    assert isinstance(run_env["PROXY_SHARED_SECRET"], str)
+    assert len(run_env["PROXY_SHARED_SECRET"]) >= 32
+    assert run_env["PROXY_SHARED_SECRET"] not in " ".join(str(a) for a in run_args)
+    assert "PROXY_SHARED_SECRET" not in os.environ
+
+    assert any(args[:2] == ("rm", "--force") for args, _ in calls)
+    assert any(args[:2] == ("volume", "rm") for args, _ in calls)
