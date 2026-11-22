@@ -1067,8 +1067,11 @@ def test_rate_limit_expires_after_window(monkeypatch, app_module):
 
     # Back-date the cache entry so it looks expired
     with app._api_rate_limit_lock:
-        ts, result = app._api_rate_limit[("1.2.3.4", "user-abc")]
-        app._api_rate_limit[("1.2.3.4", "user-abc")] = (ts - 400, result)
+        ts, result = app._api_rate_limit[("1.2.3.4", "user-abc", "joe@example.com")]
+        app._api_rate_limit[("1.2.3.4", "user-abc", "joe@example.com")] = (
+            ts - 400,
+            result,
+        )
 
     api_calls = {"count": 0}
 
@@ -5203,7 +5206,7 @@ def test_add_ip_to_targets_sanitizes_logs(monkeypatch, app_module, capsys):
     )
 
     with app._api_rate_limit_lock:
-        app._api_rate_limit[("9.9.9.9\r\n", "uid\r\nRATE")] = (
+        app._api_rate_limit[("9.9.9.9\r\n", "uid\r\nRATE", "alice@example.com")] = (
             _time_mod.monotonic(),
             {"pangolin": {"ok": True}, "crowdsec": {"ok": False, "enabled": False}},
         )
@@ -6023,3 +6026,504 @@ def test_main_restores_signal_handlers_and_joins_within_budget(monkeypatch, app_
     ]
     assert len(join_timeouts) == 2
     assert all(0.0 <= t <= app_module._SHUTDOWN_TIMEOUT_SECONDS for t in join_timeouts)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 / Batch 7 — Cleanup TOCTOU, rate-limit cache, durable persistence
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_toctou_aborts_when_renewed_during_delete(monkeypatch, app_module):
+    """Concurrent renewal during delete_ip_rule_if_created_by_us preserves state & CrowdSec."""
+    app = app_module
+    monkeypatch.setattr(app, "RETENTION_MINUTES", 0)
+
+    ip = "1.2.3.4"
+    with app.state_lock:
+        app.state[ip] = {
+            "last_seen": "2000-01-01T00:00:00Z",
+            "resources": {
+                "5": {"created_by_us": True},
+                "6": {"created_by_us": False},
+            },
+        }
+    with app._api_rate_limit_lock:
+        app._api_rate_limit[(ip, "user-abc", "joe@example.com")] = (
+            _time_mod.monotonic(),
+            {"pangolin": {"ok": True}, "crowdsec": {"ok": False, "enabled": False}},
+        )
+
+    def fake_delete(ip_arg, _rid):
+        with app.state_lock:
+            app.state[ip_arg]["last_seen"] = app.now_utc_iso()
+        return True
+
+    expire_calls = []
+    monkeypatch.setattr(app, "delete_ip_rule_if_created_by_us", fake_delete)
+    monkeypatch.setattr(
+        app, "expire_ip_from_targets", lambda ip_arg: expire_calls.append(ip_arg)
+    )
+
+    app.cleanup_old_ips()
+
+    with app.state_lock:
+        assert ip in app.state
+        assert "5" in app.state[ip]["resources"]
+        assert "6" in app.state[ip]["resources"]
+    assert expire_calls == []
+    with app._api_rate_limit_lock:
+        assert (ip, "user-abc", "joe@example.com") not in app._api_rate_limit
+
+
+def test_cleanup_toctou_aborts_when_renewed_during_expire(monkeypatch, app_module):
+    """Concurrent renewal during expire_ip_from_targets prevents dropping state."""
+    app = app_module
+    monkeypatch.setattr(app, "RETENTION_MINUTES", 0)
+
+    ip = "1.2.3.4"
+    with app.state_lock:
+        app.state[ip] = {
+            "last_seen": "2000-01-01T00:00:00Z",
+            "resources": {"6": {"created_by_us": False}},
+        }
+
+    def fake_expire(ip_arg):
+        with app.state_lock:
+            app.state[ip_arg]["last_seen"] = app.now_utc_iso()
+
+    monkeypatch.setattr(app, "expire_ip_from_targets", fake_expire)
+
+    app.cleanup_old_ips()
+
+    with app.state_lock:
+        assert ip in app.state
+        assert "6" in app.state[ip]["resources"]
+
+
+def test_ip_lock_stripes_and_concurrent_cleanup_checkin_serialization(
+    monkeypatch, app_module
+):
+    """Fixed-stripe per-IP lock serializes cleanup and add_ip_to_targets without deadlock."""
+    app = app_module
+    assert len(app._ip_locks) == 64
+    assert app._get_ip_lock("2001:0db8::1") is app._get_ip_lock("2001:db8::1")
+
+    monkeypatch.setattr(app, "RETENTION_MINUTES", 0)
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 300)
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+    monkeypatch.setattr(app, "http_json", _standard_fake_http_json)
+
+    ip = "1.2.3.4"
+    with app.state_lock:
+        app.state[ip] = {
+            "last_seen": "2000-01-01T00:00:00Z",
+            "resources": {"5": {"created_by_us": True}},
+        }
+    with app._api_rate_limit_lock:
+        app._api_rate_limit[(ip, "user-abc", "joe@example.com")] = (
+            _time_mod.monotonic(),
+            {"pangolin": {"ok": True}, "crowdsec": {"ok": False, "enabled": False}},
+        )
+
+    delete_started = threading.Event()
+    allow_delete_finish = threading.Event()
+    events: list[str] = []
+    expire_calls: list[str] = []
+
+    def fake_delete(_ip_arg, _rid):
+        delete_started.set()
+        assert allow_delete_finish.wait(timeout=5)
+        events.append("delete_done")
+        return True
+
+    orig_ensure = app.pg_ensure_ip_rule
+
+    def tracked_ensure(ctx, ip_arg):
+        events.append("ensure_called")
+        return orig_ensure(ctx, ip_arg)
+
+    monkeypatch.setattr(app, "delete_ip_rule_if_created_by_us", fake_delete)
+    monkeypatch.setattr(app, "pg_ensure_ip_rule", tracked_ensure)
+    monkeypatch.setattr(
+        app, "expire_ip_from_targets", lambda ip_arg: expire_calls.append(ip_arg)
+    )
+
+    cleanup_thread = threading.Thread(target=app.cleanup_old_ips)
+    cleanup_thread.start()
+    assert delete_started.wait(timeout=5)
+
+    # Simulate request handler stamping last_seen under state_lock before add_ip_to_targets
+    with app.state_lock:
+        app.state[ip]["last_seen"] = app.now_utc_iso()
+
+    checkin_results = {}
+
+    def run_checkin():
+        checkin_results["res"] = app.add_ip_to_targets(
+            ip, remote_user_id="user-abc", remote_user="joe@example.com"
+        )
+
+    checkin_thread = threading.Thread(target=run_checkin)
+    checkin_thread.start()
+    _time_mod.sleep(0.05)
+
+    assert events == [], "add_ip_to_targets must block on per-IP lock during cleanup"
+
+    allow_delete_finish.set()
+    cleanup_thread.join(timeout=5)
+    checkin_thread.join(timeout=5)
+    assert not cleanup_thread.is_alive()
+    assert not checkin_thread.is_alive()
+
+    assert events == ["delete_done", "ensure_called"]
+    assert expire_calls == []
+    assert checkin_results["res"]["pangolin"]["ok"] is True
+    with app.state_lock:
+        assert ip in app.state
+        assert "5" in app.state[ip]["resources"]
+
+
+def test_cleanup_naive_last_seen_treated_as_utc_with_warning(
+    monkeypatch, app_module, capsys
+):
+    """Naive ISO timestamps in state.json are treated as UTC with a warning and expired."""
+    app = app_module
+    monkeypatch.setattr(app, "RETENTION_MINUTES", 0)
+
+    ip = "4.5.6.7"
+    with app.state_lock:
+        app.state[ip] = {
+            "last_seen": "2000-01-01T00:00:00",
+            "resources": {"5": {"created_by_us": True}},
+        }
+
+    deleted = []
+    monkeypatch.setattr(
+        app,
+        "delete_ip_rule_if_created_by_us",
+        lambda ip_arg, rid: deleted.append((ip_arg, rid)) or True,
+    )
+    monkeypatch.setattr(app, "expire_ip_from_targets", lambda _ip: None)
+
+    app.cleanup_old_ips()
+    out = capsys.readouterr().out
+
+    assert "Naive datetime" in out
+    assert deleted == [(ip, 5)]
+    with app.state_lock:
+        assert ip not in app.state
+
+
+def test_cleanup_skips_corrupt_entries_and_continues_other_ips(monkeypatch, app_module):
+    """Corrupt last_seen, non-dict records, or non-integer rid_str do not abort cleanup."""
+    app = app_module
+    monkeypatch.setattr(app, "RETENTION_MINUTES", 0)
+
+    with app.state_lock:
+        app.state["1.1.1.1"] = {
+            "last_seen": 12345,
+            "resources": {"5": {"created_by_us": True}},
+        }
+        app.state["2.2.2.2"] = "corrupt-non-dict"
+        app.state["3.3.3.3"] = {
+            "last_seen": "2000-01-01T00:00:00Z",
+            "resources": {
+                "bad-rid": {"created_by_us": True},
+                "5": {"created_by_us": True},
+            },
+        }
+        app.state["4.4.4.4"] = {
+            "last_seen": "2000-01-01T00:00:00Z",
+            "resources": {"7": {"created_by_us": True}},
+        }
+
+    deleted = []
+    monkeypatch.setattr(
+        app,
+        "delete_ip_rule_if_created_by_us",
+        lambda ip_arg, rid: deleted.append((ip_arg, rid)) or True,
+    )
+    monkeypatch.setattr(app, "expire_ip_from_targets", lambda _ip: None)
+
+    app.cleanup_old_ips()
+
+    assert deleted == [("3.3.3.3", 5), ("4.4.4.4", 7)]
+    with app.state_lock:
+        assert "1.1.1.1" in app.state
+        assert "2.2.2.2" in app.state
+        assert "3.3.3.3" in app.state
+        assert "5" not in app.state["3.3.3.3"]["resources"]
+        assert "bad-rid" in app.state["3.3.3.3"]["resources"]
+        assert "4.4.4.4" not in app.state
+
+
+def test_rate_limit_cache_requires_matching_remote_user(app_module, monkeypatch):
+    """Same (ip, remote_user_id) with a different remote_user must not hit the cache."""
+    app = app_module
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 300)
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake")
+
+    calls = []
+
+    def fake_filter(_ctx, _org_id, user_id, username):
+        calls.append((user_id, username))
+        return [{"resourceId": 5, "name": "Res", "fullDomain": "d.com", "ssl": True}]
+
+    monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_filter)
+    for t in app.TARGETS:
+        monkeypatch.setattr(t, "add_ip", lambda ip, resource_ids=None: None)
+
+    res1 = app.add_ip_to_targets(
+        "1.1.1.1", remote_user_id="id-1", remote_user="alice@example.com"
+    )
+    assert res1["pangolin"]["ok"] is True
+    assert len(calls) == 1
+
+    res2 = app.add_ip_to_targets(
+        "1.1.1.1", remote_user_id="id-1", remote_user="renamed@example.com"
+    )
+    assert res2["pangolin"]["ok"] is True
+    assert len(calls) == 2
+
+    res3 = app.add_ip_to_targets(
+        "1.1.1.1", remote_user_id="id-1", remote_user="alice@example.com"
+    )
+    assert res3["pangolin"]["ok"] is True
+    assert len(calls) == 2
+
+
+def test_rate_limit_skips_caching_on_crowdsec_failure(app_module, monkeypatch):
+    """When CROWDSEC_ENABLED=True and CrowdSec fails, result must not be cached."""
+    app = app_module
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 300)
+    monkeypatch.setattr(app, "CROWDSEC_ENABLED", True)
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake")
+
+    filter_calls = []
+
+    def fake_filter(_ctx, _org_id, user_id, username):
+        filter_calls.append((user_id, username))
+        return [{"resourceId": 5, "name": "Res", "fullDomain": "d.com", "ssl": True}]
+
+    monkeypatch.setattr(app, "pg_filter_resources_for_user", fake_filter)
+
+    crowdsec_state = {"fail": True}
+
+    class _FakeCrowdSecTarget(app.Target):
+        name = "crowdsec"
+
+        def add_ip(self, _ip, resource_ids=None):
+            if crowdsec_state["fail"]:
+                raise RuntimeError("cscli failed")
+
+    monkeypatch.setattr(app.TARGETS[0], "add_ip", lambda ip, resource_ids=None: None)
+    monkeypatch.setattr(app, "TARGETS", [app.TARGETS[0], _FakeCrowdSecTarget()])
+
+    res1 = app.add_ip_to_targets(
+        "1.1.1.1", remote_user_id="id-1", remote_user="alice@example.com"
+    )
+    assert res1["pangolin"]["ok"] is True
+    assert res1["crowdsec"]["ok"] is False
+    assert len(filter_calls) == 1
+
+    # Second attempt must retry because CrowdSec failed
+    crowdsec_state["fail"] = False
+    res2 = app.add_ip_to_targets(
+        "1.1.1.1", remote_user_id="id-1", remote_user="alice@example.com"
+    )
+    assert res2["pangolin"]["ok"] is True
+    assert res2["crowdsec"]["ok"] is True
+    assert len(filter_calls) == 2
+
+    # Third attempt within window hits cache now that both targets succeeded
+    res3 = app.add_ip_to_targets(
+        "1.1.1.1", remote_user_id="id-1", remote_user="alice@example.com"
+    )
+    assert res3["crowdsec"]["ok"] is True
+    assert len(filter_calls) == 2
+
+
+def test_cleanup_evicts_rate_limit_cache_so_recheckin_recreates_rule(
+    monkeypatch, app_module
+):
+    """cleanup_old_ips must evict expired IP from _api_rate_limit."""
+    app = app_module
+    monkeypatch.setattr(app, "ORG_ID", "test-org")
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake-token")
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 300)
+    monkeypatch.setattr(app, "RETENTION_MINUTES", 1)
+
+    ensure_calls = []
+    orig_ensure = app.pg_ensure_ip_rule
+
+    def counting_ensure(ctx, ip_arg):
+        ensure_calls.append(ip_arg)
+        return orig_ensure(ctx, ip_arg)
+
+    monkeypatch.setattr(app, "pg_ensure_ip_rule", counting_ensure)
+    monkeypatch.setattr(app, "http_json", _standard_fake_http_json)
+    monkeypatch.setattr(app, "delete_ip_rule_if_created_by_us", lambda _ip, _rid: True)
+    monkeypatch.setattr(app, "expire_ip_from_targets", lambda _ip: None)
+
+    ip = "1.2.3.4"
+    first = app.add_ip_to_targets(
+        ip, remote_user_id="user-abc", remote_user="joe@example.com"
+    )
+    assert first["pangolin"]["ok"] is True
+    assert len(ensure_calls) == 1
+
+    # Back-date state so IP expires cleanly
+    with app.state_lock:
+        app.state[ip]["last_seen"] = "2000-01-01T00:00:00Z"
+
+    app.cleanup_old_ips()
+    with app.state_lock:
+        assert ip not in app.state
+    with app._api_rate_limit_lock:
+        assert (ip, "user-abc", "joe@example.com") not in app._api_rate_limit
+
+    # Simulate rules_cache eviction that real delete_ip_rule_if_created_by_us performs
+    with app.state_lock:
+        app.rules_cache.clear()
+
+    second = app.add_ip_to_targets(
+        ip, remote_user_id="user-abc", remote_user="joe@example.com"
+    )
+    assert second["pangolin"]["ok"] is True
+    assert len(ensure_calls) == 2
+
+
+def test_rate_limit_cache_max_size_and_deepcopy_isolation(app_module, monkeypatch):
+    """_api_rate_limit enforces max size (evicting oldest) and isolates mutations."""
+    app = app_module
+    monkeypatch.setattr(app, "RATE_LIMIT_SECONDS", 300)
+    monkeypatch.setattr(app, "_API_RATE_LIMIT_MAX_ENTRIES", 2)
+    monkeypatch.setattr(app, "PANGOLIN_TOKEN", "fake")
+
+    monkeypatch.setattr(
+        app,
+        "pg_filter_resources_for_user",
+        lambda _ctx, _org, _uid, _user: [
+            {"resourceId": 5, "name": "Res", "fullDomain": "d.com", "ssl": True}
+        ],
+    )
+    for t in app.TARGETS:
+        monkeypatch.setattr(t, "add_ip", lambda ip, resource_ids=None: None)
+
+    mono_times = iter([100.0, 100.0, 101.0, 101.0, 102.0, 102.0, 103.0, 103.0])
+    monkeypatch.setattr(app.time, "monotonic", lambda: next(mono_times, 104.0))
+
+    r1 = app.add_ip_to_targets(
+        "1.1.1.1", remote_user_id="id-1", remote_user="alice@example.com"
+    )
+    # Mutate initial returned dict — must not corrupt cache
+    r1["pangolin"]["ok"] = False
+    r1["resources"].clear()
+
+    app.add_ip_to_targets(
+        "2.2.2.2", remote_user_id="id-2", remote_user="bob@example.com"
+    )
+    app.add_ip_to_targets(
+        "3.3.3.3", remote_user_id="id-3", remote_user="carol@example.com"
+    )
+
+    with app._api_rate_limit_lock:
+        assert len(app._api_rate_limit) == 2
+        assert ("1.1.1.1", "id-1", "alice@example.com") not in app._api_rate_limit
+        assert ("2.2.2.2", "id-2", "bob@example.com") in app._api_rate_limit
+        assert ("3.3.3.3", "id-3", "carol@example.com") in app._api_rate_limit
+
+    cached = app.add_ip_to_targets(
+        "2.2.2.2", remote_user_id="id-2", remote_user="bob@example.com"
+    )
+    assert cached["pangolin"]["ok"] is True
+    assert len(cached["resources"]) == 1
+    cached["pangolin"]["ok"] = False
+    cached["resources"].clear()
+
+    cached_again = app.add_ip_to_targets(
+        "2.2.2.2", remote_user_id="id-2", remote_user="bob@example.com"
+    )
+    assert cached_again["pangolin"]["ok"] is True
+    assert len(cached_again["resources"]) == 1
+
+
+def test_save_state_fsync_fchmod_before_replace_and_load_state_lock_order(
+    monkeypatch, app_module, temp_state_file
+):
+    """save_state fchmod+fsyncs before os.replace; load_state acquires _save_lock then state_lock."""
+    import os as _os
+    import stat as _stat
+
+    app = app_module
+    monkeypatch.setattr(app, "STATE_FILE", temp_state_file)
+
+    with app.state_lock:
+        app.state.clear()
+        app.state["1.2.3.4"] = {
+            "last_seen": "2025-01-01T00:00:00+00:00",
+            "resources": {"5": {"created_by_us": True}},
+        }
+
+    ops: list[str] = []
+    orig_fchmod = _os.fchmod
+    orig_fsync = _os.fsync
+    orig_replace = _os.replace
+
+    def spy_fchmod(fd, mode):
+        ops.append(f"fchmod:{oct(mode)}")
+        return orig_fchmod(fd, mode)
+
+    def spy_fsync(fd):
+        ops.append("fsync")
+        return orig_fsync(fd)
+
+    def spy_replace(src, dst):
+        ops.append("replace")
+        return orig_replace(src, dst)
+
+    def forbid_chmod(*_args, **_kwargs):
+        raise AssertionError("post-replace os.chmod must not be called")
+
+    monkeypatch.setattr(app.os, "fchmod", spy_fchmod)
+    monkeypatch.setattr(app.os, "fsync", spy_fsync)
+    monkeypatch.setattr(app.os, "replace", spy_replace)
+    monkeypatch.setattr(app.os, "chmod", forbid_chmod)
+
+    app.save_state()
+
+    assert ops == ["fchmod:0o600", "fsync", "replace"]
+    assert _stat.S_IMODE(_os.stat(temp_state_file).st_mode) == 0o600
+
+    # Verify load_state acquires _save_lock before state_lock
+    lock_events: list[str] = []
+
+    class _RecordingLock:
+        def __init__(self, name, real_lock):
+            self._name = name
+            self._real_lock = real_lock
+
+        def __enter__(self):
+            lock_events.append(f"enter:{self._name}")
+            return self._real_lock.__enter__()
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            lock_events.append(f"exit:{self._name}")
+            return self._real_lock.__exit__(exc_type, exc_val, exc_tb)
+
+    monkeypatch.setattr(app, "_save_lock", _RecordingLock("_save_lock", app._save_lock))
+    monkeypatch.setattr(app, "state_lock", _RecordingLock("state_lock", app.state_lock))
+
+    with app.state_lock:
+        app.state.clear()
+    lock_events.clear()
+
+    app.load_state()
+    assert lock_events == [
+        "enter:_save_lock",
+        "enter:state_lock",
+        "exit:state_lock",
+        "exit:_save_lock",
+    ]
+    assert "1.2.3.4" in app.state
