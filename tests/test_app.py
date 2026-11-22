@@ -4077,7 +4077,7 @@ def test_checkin_html_suppresses_invalid_dashboard_url(capsys, bad_url):
     assert "Redirecting to Resource Launcher" not in page
     assert "launcher-link" not in page
     assert "Open Resource Launcher" not in page
-    assert "https://jellyfin.example.com" in page
+    assert 'href="https://jellyfin.example.com"' in page
     out = capsys.readouterr().out
     assert "Ignoring invalid dashboard_url" in out
 
@@ -4140,7 +4140,7 @@ def test_handler_refuses_302_redirect_for_invalid_dashboard_url(
     assert "data-redirect-url=" not in body
     assert "Redirecting to Resource Launcher" not in body
     assert "Open Resource Launcher" not in body
-    assert "https://jellyfin.example.com" in body
+    assert 'href="https://jellyfin.example.com"' in body
     out = capsys.readouterr().out
     assert "Refusing 302 redirect to invalid dashboard_url" in out
 
