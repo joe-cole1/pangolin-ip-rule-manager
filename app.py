@@ -1,5 +1,7 @@
 import base64
 import contextlib
+import copy
+import ipaddress
 import json
 import os
 import signal
@@ -111,9 +113,29 @@ BANNER_GIF = base64.b64decode(
 )
 
 state_lock = threading.Lock()
-# Serializes save_state() so concurrent writers (request threads + cleanup thread)
-# cannot race on the temporary file or clobber each other's os.replace.
+# Serializes save_state() / load_state() so concurrent writers and loaders cannot
+# race on the temporary file, clobber os.replace, or invert lock ordering.
 _save_lock = threading.Lock()
+# Global lock acquisition order (never inverted):
+#   _ip_locks[stripe] -> _api_rate_limit_lock (leaf)
+#   _ip_locks[stripe] -> _save_lock -> state_lock (leaf)
+_IP_LOCK_STRIPES = 64
+_ip_locks: tuple[threading.Lock, ...] = tuple(
+    threading.Lock() for _ in range(_IP_LOCK_STRIPES)
+)
+
+
+def _canonicalize_ip_key(ip: str) -> str:
+    try:
+        return str(ipaddress.ip_address(ip))
+    except ValueError:
+        return ip
+
+
+def _get_ip_lock(ip: str) -> threading.Lock:
+    return _ip_locks[hash(_canonicalize_ip_key(ip)) % _IP_LOCK_STRIPES]
+
+
 state = {
     # ip: {
     #   "last_seen": "2025-01-01T00:00:00Z",
@@ -129,9 +151,24 @@ rules_cache = {
 # CrowdSec allowlist readiness/caches live in crowdsec_connector; app.py does not
 # duplicate them.
 
-# Per-(IP, stable Pangolin user ID) rate limit cache.
-_api_rate_limit: dict[tuple[str, str], tuple[float, dict]] = {}
+# Per-(IP, stable Pangolin user ID, username) rate limit cache.
+_API_RATE_LIMIT_MAX_ENTRIES = 4096
+_api_rate_limit: dict[tuple[str, str, str], tuple[float, dict]] = {}
 _api_rate_limit_lock = threading.Lock()
+
+
+def _evict_rate_limit_for_ip(ip: str) -> None:
+    canonical_ip = _canonicalize_ip_key(ip)
+    with _api_rate_limit_lock:
+        to_remove = [
+            k
+            for k in _api_rate_limit
+            if k[0] == ip or _canonicalize_ip_key(k[0]) == canonical_ip
+        ]
+        for k in to_remove:
+            del _api_rate_limit[k]
+
+
 shutdown_event = threading.Event()
 _SHUTDOWN_TIMEOUT_SECONDS = 4.0
 
@@ -204,18 +241,19 @@ def redact_headers_for_log(headers):
 
 
 def load_state():
-    if not os.path.exists(STATE_FILE):
-        return
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            # The HTTP handler already holds this mapping; preserve its identity.
-            with state_lock:
-                state.clear()
-                state.update(data)
-    except Exception as e:  # noqa: BLE001
-        print(f"[state] failed to load state: {e}")
+    with _save_lock:
+        if not os.path.exists(STATE_FILE):
+            return
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                # The HTTP handler already holds this mapping; preserve its identity.
+                with state_lock:
+                    state.clear()
+                    state.update(data)
+        except Exception as e:  # noqa: BLE001
+            print(f"[state] failed to load state: {e}")
 
 
 def save_state():
@@ -227,10 +265,13 @@ def save_state():
         try:
             fd, tmp_file = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(f.fileno(), 0o600)
                 f.write(snapshot)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_file, STATE_FILE)
             tmp_file = None
-            os.chmod(STATE_FILE, 0o600)
         except Exception as e:  # noqa: BLE001
             print(f"[state] failed to save state: {e}")
             if tmp_file is not None:
@@ -445,79 +486,92 @@ def add_ip_to_targets(ip: str, remote_user_id: str = "", remote_user: str = "") 
             error_kind="auth",
         )
 
-    # Skip API fan-out if this IP was successfully processed recently for this user
-    cache_key = (ip, remote_user_id)
-    if RATE_LIMIT_SECONDS > 0:
-        with _api_rate_limit_lock:
-            entry = _api_rate_limit.get(cache_key)  # type: ignore[arg-type]
-            if entry and (time.monotonic() - entry[0]) < RATE_LIMIT_SECONDS:
-                print(
-                    f"[targets] rate limited {sanitize_for_log(ip)} "
-                    f"for user_id {sanitize_for_log(remote_user_id)!r} "
-                    "— returning cached result"
-                )
-                return entry[1]
+    cache_key = (ip, remote_user_id, remote_user)
+    with _get_ip_lock(ip):
+        # Skip API fan-out if this IP was successfully processed recently for this user
+        if RATE_LIMIT_SECONDS > 0:
+            with _api_rate_limit_lock:
+                entry = _api_rate_limit.get(cache_key)
+                if entry and (time.monotonic() - entry[0]) < RATE_LIMIT_SECONDS:
+                    print(
+                        f"[targets] rate limited {sanitize_for_log(ip)} "
+                        f"for user_id {sanitize_for_log(remote_user_id)!r} "
+                        "— returning cached result"
+                    )
+                    return copy.deepcopy(entry[1])
 
-    ctx = make_pangolin_context()
-    try:
-        effective_resources = pg_filter_resources_for_user(
-            ctx, ORG_ID, remote_user_id, remote_user
-        )
-    except Exception as e:  # noqa: BLE001
-        error_kind = (
-            "auth"
-            if _is_identity_denial_error(e, ORG_ID, remote_user_id)
-            else "upstream"
-        )
-        return _fail(
-            f"User authorization failed for user_id {sanitize_for_log(remote_user_id)!r}, "
-            f"username {sanitize_for_log(remote_user)!r}: {sanitize_for_log(e)}",
-            error_kind=error_kind,
-        )
-
-    if not effective_resources:
-        return _fail(
-            f"User {sanitize_for_log(remote_user)!r} ({sanitize_for_log(remote_user_id)}) "
-            "is not authorised for any configured resource.",
-            error_kind="auth",
-        )
-
-    effective_ids = [r["resourceId"] for r in effective_resources]
-    results = {
-        "pangolin": {"ok": False, "detail": "not attempted", "enabled": True},
-        "crowdsec": {"ok": False, "detail": "disabled", "enabled": CROWDSEC_ENABLED},
-        "resources": effective_resources,
-    }
-    for t in TARGETS:
-        key = t.name
+        ctx = make_pangolin_context()
         try:
-            t.add_ip(ip, resource_ids=effective_ids)
-            results[key]["ok"] = True
-            results[key]["detail"] = "ok"
+            effective_resources = pg_filter_resources_for_user(
+                ctx, ORG_ID, remote_user_id, remote_user
+            )
         except Exception as e:  # noqa: BLE001
-            results[key]["ok"] = False
-            results[key]["detail"] = str(e)
-            print(
-                f"[targets] add failed for {sanitize_for_log(ip)} "
-                f"on {t.__class__.__name__}: {sanitize_for_log(e)}"
+            error_kind = (
+                "auth"
+                if _is_identity_denial_error(e, ORG_ID, remote_user_id)
+                else "upstream"
+            )
+            return _fail(
+                f"User authorization failed for user_id {sanitize_for_log(remote_user_id)!r}, "
+                f"username {sanitize_for_log(remote_user)!r}: {sanitize_for_log(e)}",
+                error_kind=error_kind,
             )
 
-    if not results["pangolin"]["ok"]:
-        results["error_kind"] = "upstream"
+        if not effective_resources:
+            return _fail(
+                f"User {sanitize_for_log(remote_user)!r} ({sanitize_for_log(remote_user_id)}) "
+                "is not authorised for any configured resource.",
+                error_kind="auth",
+            )
 
-    # Only cache successful Pangolin checkins
-    is_success = results.get("pangolin", {}).get("ok", False)
-    if RATE_LIMIT_SECONDS > 0 and is_success:
-        with _api_rate_limit_lock:
-            now_mono = time.monotonic()
-            _api_rate_limit[cache_key] = (now_mono, results)
-            # Prune entries that have aged out so the dict doesn't grow without bound
-            cutoff = now_mono - RATE_LIMIT_SECONDS
-            stale = [k for k, (ts, _) in _api_rate_limit.items() if ts < cutoff]
-            for k in stale:
-                del _api_rate_limit[k]
+        effective_ids = [r["resourceId"] for r in effective_resources]
+        results = {
+            "pangolin": {"ok": False, "detail": "not attempted", "enabled": True},
+            "crowdsec": {
+                "ok": False,
+                "detail": "disabled",
+                "enabled": CROWDSEC_ENABLED,
+            },
+            "resources": effective_resources,
+        }
+        for t in TARGETS:
+            key = t.name
+            try:
+                t.add_ip(ip, resource_ids=effective_ids)
+                results[key]["ok"] = True
+                results[key]["detail"] = "ok"
+            except Exception as e:  # noqa: BLE001
+                results[key]["ok"] = False
+                results[key]["detail"] = str(e)
+                print(
+                    f"[targets] add failed for {sanitize_for_log(ip)} "
+                    f"on {t.__class__.__name__}: {sanitize_for_log(e)}"
+                )
 
-    return results
+        if not results["pangolin"]["ok"]:
+            results["error_kind"] = "upstream"
+
+        # Only cache full target success (including CrowdSec when enabled)
+        pangolin_ok = bool(results.get("pangolin", {}).get("ok", False))
+        crowdsec_ok = bool(results.get("crowdsec", {}).get("ok", False))
+        is_success = pangolin_ok and (not CROWDSEC_ENABLED or crowdsec_ok)
+        if RATE_LIMIT_SECONDS > 0 and is_success and _API_RATE_LIMIT_MAX_ENTRIES > 0:
+            with _api_rate_limit_lock:
+                now_mono = time.monotonic()
+                # Prune entries that have aged out before enforcing the size cap
+                cutoff = now_mono - RATE_LIMIT_SECONDS
+                stale = [k for k, (ts, _) in _api_rate_limit.items() if ts < cutoff]
+                for k in stale:
+                    del _api_rate_limit[k]
+                _api_rate_limit.pop(cache_key, None)
+                while len(_api_rate_limit) >= _API_RATE_LIMIT_MAX_ENTRIES:
+                    oldest_key = min(
+                        _api_rate_limit, key=lambda k: _api_rate_limit[k][0]
+                    )
+                    del _api_rate_limit[oldest_key]
+                _api_rate_limit[cache_key] = (now_mono, copy.deepcopy(results))
+
+        return results
 
 
 def expire_ip_from_targets(ip: str) -> None:
@@ -537,6 +591,30 @@ def delete_ip_rule_if_created_by_us(ip: str, rid: int) -> bool:
     return pg_delete_ip_rule_if_created_by_us(ctx, ip, rid)
 
 
+def _parse_last_seen(
+    last_seen_str: object, ip: str, *, warn: bool = True
+) -> datetime | None:
+    if not last_seen_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(last_seen_str)  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        if warn:
+            print(
+                "[cleanup] Invalid datetime format in last_seen for "
+                f"{sanitize_for_log(ip)}: {sanitize_for_log(last_seen_str)}"
+            )
+        return None
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        if warn:
+            print(
+                "[cleanup] Naive datetime in last_seen for "
+                f"{sanitize_for_log(ip)}: {sanitize_for_log(last_seen_str)} — assuming UTC"
+            )
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
 def cleanup_old_ips():
     print("[cleanup] starting")
 
@@ -544,75 +622,152 @@ def cleanup_old_ips():
     cutoff = now_sec - timedelta(minutes=RETENTION_MINUTES)
     with state_lock:
         ips = list(state.keys())
-    for ip in ips:
-        with state_lock:
-            rec = state.get(ip) or {}
-            last_seen_str = rec.get("last_seen")
-            resources = dict(rec.get("resources", {}))
-        try:
-            last_seen = datetime.fromisoformat(last_seen_str) if last_seen_str else None
-        except ValueError:
-            print(f"[cleanup] Invalid datetime format in last_seen: {last_seen_str}")
-            last_seen = None
-        # Skip if record is missing timestamp or not yet expired
-        if not last_seen or last_seen >= cutoff:
-            continue
-        # Time to clean up per resource if created_by_us
-        changed = False
-        for rid_str, meta in list(resources.items()):
-            rid = int(rid_str)
-            if not meta.get("created_by_us"):
-                continue
-            if delete_ip_rule_if_created_by_us(ip, rid):
-                # Remove our reference
-                with state_lock:
-                    rec2 = state.get(ip)
-                    if rec2 and rid_str in rec2.get("resources", {}):
-                        rec2["resources"].pop(rid_str, None)
-                        changed = True
-                print(
-                    f"[cleanup] deleted rule for {ip} on resource {rid} (last_seen={last_seen_str})"
-                )
-            else:
-                print(
-                    f"[cleanup] delete failed for {ip} on resource {rid} — will retry next cycle"
-                )
-        # If no resources remain, drop the IP record
-        with state_lock:
-            rec3 = state.get(ip)
-            if rec3 and not rec3.get("resources"):
-                state.pop(ip, None)
-                changed = True
-        # Drop expired created_by_us=False resource entries from state.
-        # We never created these rules so we don't delete them from Pangolin,
-        # but we also don't need to track them forever.
-        with state_lock:
-            rec4 = state.get(ip)
-            if rec4:
-                expired_unowned = [
-                    rid_str
-                    for rid_str, meta in rec4.get("resources", {}).items()
-                    if not meta.get("created_by_us")
-                ]
-                for rid_str in expired_unowned:
-                    rec4["resources"].pop(rid_str, None)
-                    changed = True
-                    print(
-                        f"[cleanup] dropped unowned state entry for {ip} on resource {rid_str} (last_seen={last_seen_str})"
-                    )
-                # If that emptied the record entirely, drop the IP
-                if not rec4.get("resources"):
-                    state.pop(ip, None)
-                    changed = True
 
-        # Always attempt CrowdSec expiration for expired IPs (idempotent)
-        try:
-            expire_ip_from_targets(ip)
-        except Exception as e:  # noqa: BLE001
-            print(f"[cleanup] crowdsec expire failed for {ip}: {e}")
-        if changed:
-            save_state()
-            print(f"[cleanup] finished expiring {ip} (last_seen={last_seen_str})")
+    def _is_still_expired_locked(ip_key: str, snapshot_last_seen: object) -> bool:
+        cur = state.get(ip_key)
+        if not isinstance(cur, dict):
+            return False
+        cur_last_seen_str = cur.get("last_seen")
+        if cur_last_seen_str != snapshot_last_seen:
+            return False
+        cur_dt = _parse_last_seen(cur_last_seen_str, ip_key, warn=False)
+        return cur_dt is not None and cur_dt < cutoff
+
+    for ip in ips:
+        with _get_ip_lock(ip):
+            with state_lock:
+                rec = state.get(ip)
+                if rec is None:
+                    continue
+                if not isinstance(rec, dict):
+                    print(
+                        "[cleanup] Invalid state record for "
+                        f"{sanitize_for_log(ip)} — skipping"
+                    )
+                    continue
+                last_seen_str = rec.get("last_seen")
+                raw_resources = rec.get("resources", {})
+                if raw_resources is None:
+                    raw_resources = {}
+                if not isinstance(raw_resources, dict):
+                    print(
+                        "[cleanup] Invalid resources mapping for "
+                        f"{sanitize_for_log(ip)} — skipping"
+                    )
+                    continue
+                resources = dict(raw_resources)
+
+            last_seen = _parse_last_seen(last_seen_str, ip, warn=True)
+            # Skip if record is missing timestamp, invalid, or not yet expired
+            if not last_seen or last_seen >= cutoff:
+                continue
+
+            changed = False
+            renewed = False
+            deleted_any = False
+            for rid_str, meta in list(resources.items()):
+                try:
+                    rid = int(rid_str)
+                except (ValueError, TypeError):
+                    print(
+                        "[cleanup] Invalid resource ID key "
+                        f"{sanitize_for_log(rid_str)!r} for {sanitize_for_log(ip)} — skipping"
+                    )
+                    continue
+                if not isinstance(meta, dict) or not meta.get("created_by_us"):
+                    continue
+                with state_lock:
+                    if not _is_still_expired_locked(ip, last_seen_str):
+                        renewed = True
+                        break
+                if delete_ip_rule_if_created_by_us(ip, rid):
+                    deleted_any = True
+                    with state_lock:
+                        if not _is_still_expired_locked(ip, last_seen_str):
+                            renewed = True
+                            break
+                        rec2 = state.get(ip)
+                        if isinstance(rec2, dict):
+                            rec2_resources = rec2.get("resources")
+                            if (
+                                isinstance(rec2_resources, dict)
+                                and rid_str in rec2_resources
+                            ):
+                                rec2_resources.pop(rid_str, None)
+                                changed = True
+                    print(
+                        f"[cleanup] deleted rule for {sanitize_for_log(ip)} on resource {rid} "
+                        f"(last_seen={sanitize_for_log(last_seen_str)})"
+                    )
+                else:
+                    print(
+                        f"[cleanup] delete failed for {sanitize_for_log(ip)} on resource {rid} — will retry next cycle"
+                    )
+
+            if not renewed:
+                with state_lock:
+                    if not _is_still_expired_locked(ip, last_seen_str):
+                        renewed = True
+            if renewed:
+                if deleted_any:
+                    _evict_rate_limit_for_ip(ip)
+                if changed:
+                    save_state()
+                print(
+                    f"[cleanup] {sanitize_for_log(ip)} was renewed during cleanup — skipping remaining expiration"
+                )
+                continue
+
+            # Evict any rate-limit cache entries for this expired IP before target cleanup
+            _evict_rate_limit_for_ip(ip)
+
+            # Always attempt CrowdSec expiration for expired IPs (idempotent)
+            try:
+                expire_ip_from_targets(ip)
+            except Exception as e:  # noqa: BLE001
+                print(
+                    f"[cleanup] crowdsec expire failed for {sanitize_for_log(ip)}: {sanitize_for_log(e)}"
+                )
+
+            with state_lock:
+                if not _is_still_expired_locked(ip, last_seen_str):
+                    renewed = True
+                else:
+                    rec_cur = state.get(ip)
+                    if isinstance(rec_cur, dict):
+                        cur_resources = rec_cur.get("resources")
+                        if isinstance(cur_resources, dict):
+                            expired_unowned = [
+                                rid_str
+                                for rid_str, meta in cur_resources.items()
+                                if not (
+                                    isinstance(meta, dict) and meta.get("created_by_us")
+                                )
+                            ]
+                            for rid_str in expired_unowned:
+                                cur_resources.pop(rid_str, None)
+                                changed = True
+                                print(
+                                    "[cleanup] dropped unowned state entry for "
+                                    f"{sanitize_for_log(ip)} on resource {sanitize_for_log(rid_str)} "
+                                    f"(last_seen={sanitize_for_log(last_seen_str)})"
+                                )
+                        if not rec_cur.get("resources"):
+                            state.pop(ip, None)
+                            changed = True
+
+            if renewed:
+                if changed:
+                    save_state()
+                print(
+                    f"[cleanup] {sanitize_for_log(ip)} was renewed during cleanup — skipping remaining expiration"
+                )
+            elif changed:
+                save_state()
+                print(
+                    f"[cleanup] finished expiring {sanitize_for_log(ip)} "
+                    f"(last_seen={sanitize_for_log(last_seen_str)})"
+                )
     print("[cleanup] done")
 
 
