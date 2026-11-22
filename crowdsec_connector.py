@@ -6,21 +6,20 @@ import shlex
 import subprocess
 import threading
 import time
-from datetime import UTC, datetime
+
+from config_utils import now_utc_iso, parse_bool_env, parse_int_env
 
 # Local configuration (read from env, mirrors app.py defaults)
-CROWDSEC_ENABLED = os.getenv("CROWDSEC_ENABLED", "false").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
+CROWDSEC_CONFIG_ERRORS: list[str] = []
+CROWDSEC_ENABLED = parse_bool_env("CROWDSEC_ENABLED", False)
 CROWDSEC_CSCLI_BIN = os.getenv("CROWDSEC_CSCLI_BIN", "cscli").strip()
 CROWDSEC_CMD_PREFIX = os.getenv("CROWDSEC_CMD_PREFIX", "").strip()
 CROWDSEC_ALLOWLIST_NAME = os.getenv(
     "CROWDSEC_ALLOWLIST_NAME", "pangolin-ip-rule-manager"
 ).strip()
-CROWDSEC_CACHE_TTL_SECONDS = int(os.getenv("CROWDSEC_CACHE_TTL_SECONDS", "3600"))
+CROWDSEC_CACHE_TTL_SECONDS = parse_int_env(
+    "CROWDSEC_CACHE_TTL_SECONDS", 3600, CROWDSEC_CONFIG_ERRORS
+)
 
 # Runtime flags/caches (local to this module)
 # Lock acquisition order (never inverted):
@@ -39,8 +38,30 @@ _ALLOWLIST_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$")
 _HTTP_403_RE = re.compile(r"\b403\b")
 
 
-def _now_utc_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
+def _parse_cmd_prefix(*, warn: bool = False) -> list[str]:
+    """Split CROWDSEC_CMD_PREFIX with shlex, falling back to a single token."""
+    if not CROWDSEC_CMD_PREFIX:
+        return []
+    try:
+        return shlex.split(CROWDSEC_CMD_PREFIX)
+    except ValueError as e:
+        if warn:
+            print(
+                f"[crowdsec] WARNING: could not parse CROWDSEC_CMD_PREFIX with shlex ({e}); "
+                "treating as single token"
+            )
+        return [CROWDSEC_CMD_PREFIX]
+
+
+def _parse_ip_or_cidr(raw: str) -> str | None:
+    """Parse an IP address or CIDR string into canonical string form, or None."""
+    tok = raw.strip()
+    try:
+        if "/" in tok:
+            return str(ipaddress.ip_network(tok, strict=False))
+        return str(ipaddress.ip_address(tok))
+    except (ValueError, TypeError):
+        return None
 
 
 def _validate_ip(ip: str) -> str:
@@ -124,12 +145,7 @@ def _crowdsec_check_connectivity() -> None:
     Stages 1 and 2 are skipped when CROWDSEC_CMD_PREFIX is not a docker exec command.
     All failures are warnings; the function never raises.
     """
-    prefix_parts: list[str] = []
-    if CROWDSEC_CMD_PREFIX:
-        try:
-            prefix_parts = shlex.split(CROWDSEC_CMD_PREFIX)
-        except ValueError:
-            prefix_parts = [CROWDSEC_CMD_PREFIX]
+    prefix_parts = _parse_cmd_prefix(warn=False)
 
     is_docker_exec = (
         len(prefix_parts) >= 2
@@ -189,19 +205,7 @@ def _crowdsec_check_connectivity() -> None:
 
 
 def _build_cscli_cmd(args: list[str]) -> list[str]:
-    parts: list[str] = []
-    if CROWDSEC_CMD_PREFIX:
-        try:
-            parts.extend(shlex.split(CROWDSEC_CMD_PREFIX))
-        except Exception as e:  # noqa: BLE001
-            print(
-                f"[crowdsec] WARNING: could not parse CROWDSEC_CMD_PREFIX with shlex ({e}); "
-                "treating as single token"
-            )
-            parts.append(CROWDSEC_CMD_PREFIX)
-    parts.append(CROWDSEC_CSCLI_BIN)
-    parts.extend(args)
-    return parts
+    return [*_parse_cmd_prefix(warn=True), CROWDSEC_CSCLI_BIN, *args]
 
 
 def run_cscli(args: list[str]) -> tuple[int, str, str]:
@@ -222,35 +226,24 @@ def run_cscli(args: list[str]) -> tuple[int, str, str]:
 
 
 def crowdsec_allowlist_exists(name: str) -> bool:
-    # Prefer JSON output if available
-    rc, out, _err = run_cscli(["allowlist", "list", "-o", "json"])  # newest cscli
-    if rc == 0 and out:
-        try:
-            data = json.loads(out)
-            # expect list of allowlists with name fields
-            if isinstance(data, list):
-                return any(
-                    (isinstance(x, dict) and x.get("name") == name) for x in data
-                )
-        except (json.JSONDecodeError, TypeError, KeyError, AttributeError):
-            pass
-    else:
-        # try legacy plural command
-        rc2, out2, _ = run_cscli(["allowlists", "list", "-o", "json"])  # legacy
-        if rc2 == 0 and out2:
+    # Prefer JSON output if available, trying modern singular then legacy plural
+    for subcmd in ("allowlist", "allowlists"):
+        rc, out, _err = run_cscli([subcmd, "list", "-o", "json"])
+        if rc == 0 and out:
             try:
-                data = json.loads(out2)
+                data = json.loads(out)
                 if isinstance(data, list):
                     return any(
                         (isinstance(x, dict) and x.get("name") == name) for x in data
                     )
             except (json.JSONDecodeError, TypeError, KeyError, AttributeError):
                 pass
+            break
     # Fallback: plain text search. Match a whole whitespace-delimited token rather
     # than a substring so a shorter name cannot false-match a longer allowlist name.
-    for args in (["allowlist", "list"], ["allowlists", "list"]):
-        rc3, out3, _ = run_cscli(args)
-        if rc3 == 0 and out3 and name in out3.split():
+    for subcmd in ("allowlist", "allowlists"):
+        rc, out, _ = run_cscli([subcmd, "list"])
+        if rc == 0 and out and name in out.split():
             return True
     return False
 
@@ -345,29 +338,16 @@ def _parse_crowdsec_entries_from_json(text: str) -> set[str]:
         return set()
     for it in items:
         if isinstance(it, str):
-            tok = it.strip()
-            try:
-                # accept single IP or CIDR; preserve CIDR block string if present
-                if "/" in tok:
-                    net = ipaddress.ip_network(tok, strict=False)
-                    ips.add(str(net))
-                else:
-                    ips.add(str(ipaddress.ip_address(tok)))
-            except (ValueError, TypeError):
-                continue
+            parsed = _parse_ip_or_cidr(it)
+            if parsed is not None:
+                ips.add(parsed)
         elif isinstance(it, dict):
             for key in ("ip", "value", "cidr", "address"):
                 val = it.get(key)
                 if isinstance(val, str):
-                    val = val.strip()
-                    try:
-                        if "/" in val:
-                            net = ipaddress.ip_network(val, strict=False)
-                            ips.add(str(net))
-                        else:
-                            ips.add(str(ipaddress.ip_address(val)))
-                    except (ValueError, TypeError):
-                        pass
+                    parsed = _parse_ip_or_cidr(val)
+                    if parsed is not None:
+                        ips.add(parsed)
     return ips
 
 
@@ -433,6 +413,30 @@ def _crowdsec_ip_known_or_refresh(ip: str) -> bool:
     return _ip_matches_entries(ip, ip_set, include_broader_cidrs=True)
 
 
+def _run_cscli_with_retry(
+    args: list[str],
+    *,
+    action: str,
+    attempts: int = 3,
+    initial_backoff: float = 1.0,
+) -> tuple[int, str, str]:
+    """Run cscli up to `attempts` times with exponential backoff on failure."""
+    backoff = initial_backoff
+    rc, out, err = 1, "", ""
+    for attempt in range(attempts):
+        rc, out, err = run_cscli(args)
+        if rc == 0:
+            return rc, out, err
+        if attempt < attempts - 1:
+            print(
+                f"[crowdsec] {action} attempt {attempt + 1}/{attempts} "
+                f"failed (rc={rc}) — retrying in {backoff:.1f}s"
+            )
+            time.sleep(backoff)
+            backoff *= 2
+    return rc, out, err
+
+
 def crowdsec_add_ip(ip: str) -> None:
     if not CROWDSEC_ENABLED:
         return
@@ -451,25 +455,16 @@ def crowdsec_add_ip(ip: str) -> None:
         CROWDSEC_ALLOWLIST_NAME,
         canonical_ip,
         "-d",
-        "added on " + _now_utc_iso() + " by pangolin-ip-rule-manager",
+        "added on " + now_utc_iso() + " by pangolin-ip-rule-manager",
     ]
-    backoff = 1.0
-    rc, out, err = 1, "", ""
-    for attempt in range(3):
-        rc, out, err = run_cscli(args)
-        if rc == 0:
-            print(
-                f"[crowdsec] added {canonical_ip} to allowlist '{CROWDSEC_ALLOWLIST_NAME}'"
-            )
-            with _cache_lock:
-                _crowdsec_cache.setdefault("ip_set", set()).add(canonical_ip)
-            return
-        if attempt < 2:
-            print(
-                f"[crowdsec] add attempt {attempt + 1}/3 failed (rc={rc}) — retrying in {backoff:.1f}s"
-            )
-            time.sleep(backoff)
-            backoff *= 2
+    rc, out, err = _run_cscli_with_retry(args, action="add")
+    if rc == 0:
+        print(
+            f"[crowdsec] added {canonical_ip} to allowlist '{CROWDSEC_ALLOWLIST_NAME}'"
+        )
+        with _cache_lock:
+            _crowdsec_cache.setdefault("ip_set", set()).add(canonical_ip)
+        return
     # All attempts failed: maybe it already existed; re-list once to confirm
     refreshed = _crowdsec_refresh_allowlist_ip_set()
     if _ip_matches_entries(canonical_ip, refreshed, include_broader_cidrs=True):
@@ -518,29 +513,21 @@ def crowdsec_remove_ip(ip: str) -> None:
         # nothing to do
         return
     args = ["allowlist", "remove", CROWDSEC_ALLOWLIST_NAME, canonical_ip]
-    backoff = 1.0
-    for attempt in range(3):
-        rc, _out, _err = run_cscli(args)
-        if rc == 0:
-            print(
-                f"[crowdsec] removed {canonical_ip} from allowlist '{CROWDSEC_ALLOWLIST_NAME}'"
-            )
-            ip_obj = ipaddress.ip_address(canonical_ip)
-            with _cache_lock:
-                ip_set = _crowdsec_cache.setdefault("ip_set", set())
-                to_discard = {
-                    entry
-                    for entry in ip_set
-                    if _entry_matches_ip(ip_obj, entry, include_broader_cidrs=False)
-                }
-                ip_set.difference_update(to_discard)
-            return
-        if attempt < 2:
-            print(
-                f"[crowdsec] remove attempt {attempt + 1}/3 failed (rc={rc}) — retrying in {backoff:.1f}s"
-            )
-            time.sleep(backoff)
-            backoff *= 2
+    rc, _out, _err = _run_cscli_with_retry(args, action="remove")
+    if rc == 0:
+        print(
+            f"[crowdsec] removed {canonical_ip} from allowlist '{CROWDSEC_ALLOWLIST_NAME}'"
+        )
+        ip_obj = ipaddress.ip_address(canonical_ip)
+        with _cache_lock:
+            ip_set = _crowdsec_cache.setdefault("ip_set", set())
+            to_discard = {
+                entry
+                for entry in ip_set
+                if _entry_matches_ip(ip_obj, entry, include_broader_cidrs=False)
+            }
+            ip_set.difference_update(to_discard)
+        return
     print(
         f"[crowdsec] WARNING: failed to remove {canonical_ip} from allowlist '{CROWDSEC_ALLOWLIST_NAME}'"
     )

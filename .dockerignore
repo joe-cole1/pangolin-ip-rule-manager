@@ -5,3 +5,4 @@
 !docker-entrypoint.sh
 !templates/
 !templates/*.html
+!templates/*.css

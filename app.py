@@ -9,16 +9,19 @@ import tempfile
 import threading
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from config_utils import now_utc_iso, parse_bool_env, parse_int_env
 from crowdsec_connector import (
     CROWDSEC_ALLOWLIST_NAME,
     CROWDSEC_CACHE_TTL_SECONDS,
     CROWDSEC_CMD_PREFIX,
+    CROWDSEC_CONFIG_ERRORS,
     CROWDSEC_CSCLI_BIN,
     CROWDSEC_ENABLED,
     _validate_allowlist_name,
@@ -42,66 +45,75 @@ from pangolin_connector import (
     list_org_resources as pg_list_org_resources,
 )
 
+_CONFIG_ERRORS: list[str] = []
+
+
+def _parse_resource_ids_env(raw: str, errors: list[str]) -> list[int]:
+    """Parse comma-separated RESOURCE_IDS integers, recording invalid tokens."""
+    ids: list[int] = []
+    for part in raw.split(","):
+        tok = part.strip()
+        if not tok:
+            continue
+        try:
+            ids.append(int(tok))
+        except ValueError:
+            errors.append(f"RESOURCE_IDS contains non-integer value {tok!r}")
+    return ids
+
+
+def _derive_dashboard_url(pangolin_url: str, org_id: str) -> str:
+    """Derive the Pangolin Resource Launcher URL from PANGOLIN_URL and ORG_ID."""
+    base = pangolin_url.rstrip("/")
+    changed = True
+    while changed:
+        changed = False
+        for suffix in ("/v1", "/v2", "/api"):
+            if base.endswith(suffix):
+                base = base.removesuffix(suffix).rstrip("/")
+                changed = True
+    if org_id:
+        return f"{base}/{quote(org_id, safe='')}"
+    return base
+
+
 # Config via environment
 PANGOLIN_URL = os.getenv("PANGOLIN_URL", "").rstrip("/")
 PANGOLIN_TOKEN = os.getenv("PANGOLIN_TOKEN", "")
 ORG_ID = os.getenv("ORG_ID", "")
-RESOURCE_IDS = [int(x) for x in os.getenv("RESOURCE_IDS", "").split(",") if x.strip()]
-RETENTION_MINUTES = int(
-    os.getenv("RETENTION_MINUTES", "1440")
+RESOURCE_IDS = _parse_resource_ids_env(os.getenv("RESOURCE_IDS", ""), _CONFIG_ERRORS)
+RETENTION_MINUTES = parse_int_env(
+    "RETENTION_MINUTES", 1440, _CONFIG_ERRORS
 )  # default 1 day in minutes
-LISTEN_PORT = int(os.getenv("LISTEN_PORT", "8080"))
+LISTEN_PORT = parse_int_env("LISTEN_PORT", 8080, _CONFIG_ERRORS)
 STATE_FILE = os.getenv("STATE_FILE", "/data/state.json")
-CLEANUP_INTERVAL_MINUTES = int(
-    os.getenv("CLEANUP_INTERVAL_MINUTES", "60")
+CLEANUP_INTERVAL_MINUTES = parse_int_env(
+    "CLEANUP_INTERVAL_MINUTES", 60, _CONFIG_ERRORS
 )  # default 1 hour in minutes
-RULE_PRIORITY = int(os.getenv("RULE_PRIORITY", "0"))
-RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "300"))
-RULES_CACHE_TTL_SECONDS = int(
-    os.getenv("RULES_CACHE_TTL_SECONDS", "3600")
+RULE_PRIORITY = parse_int_env("RULE_PRIORITY", 0, _CONFIG_ERRORS)
+RATE_LIMIT_SECONDS = parse_int_env("RATE_LIMIT_SECONDS", 300, _CONFIG_ERRORS)
+RULES_CACHE_TTL_SECONDS = parse_int_env(
+    "RULES_CACHE_TTL_SECONDS", 3600, _CONFIG_ERRORS
 )  # cache for existence checks (~1h)
 # Optional: site name shown in the HTML check-in and error pages
 SITE_NAME = os.getenv("SITE_NAME", "").strip()
 # Optional: allow overriding the caller IP via /update?ip=...
-UPDATE_ENDPOINT_ENABLED = os.getenv(
-    "UPDATE_ENDPOINT_ENABLED", "false"
-).strip().lower() in ("1", "true", "yes", "on")
+UPDATE_ENDPOINT_ENABLED = parse_bool_env("UPDATE_ENDPOINT_ENABLED", False)
 # Required shared secret that Pangolin sends in the X-Proxy-Secret request header.
 # Requests missing or mismatching the secret are rejected before any state write
 # or API call.
 PROXY_SHARED_SECRET = os.getenv("PROXY_SHARED_SECRET", "")
 # Optional: log request headers with credentials, tokens, cookies, and the proxy secret redacted.
-DEBUG_LOG_HEADERS = os.getenv("DEBUG_LOG_HEADERS", "false").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
+DEBUG_LOG_HEADERS = parse_bool_env("DEBUG_LOG_HEADERS", False)
 # Optional: redirect browser check-ins directly to Pangolin Resource Launcher (dashboard)
-REDIRECT_TO_LAUNCHER = os.getenv("REDIRECT_TO_LAUNCHER", "false").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
+REDIRECT_TO_LAUNCHER = parse_bool_env("REDIRECT_TO_LAUNCHER", False)
 # Optional: delay redirect by X seconds. Set to 0 for immediate redirect. Default is 3.
-try:
-    REDIRECT_DELAY_SECONDS = int(os.getenv("REDIRECT_DELAY_SECONDS", "3"))
-except ValueError:
-    REDIRECT_DELAY_SECONDS = 3
+REDIRECT_DELAY_SECONDS = parse_int_env("REDIRECT_DELAY_SECONDS", 3, _CONFIG_ERRORS)
 # Optional: explicitly override the Pangolin Resource Launcher dashboard URL.
 # If empty, it is automatically derived from PANGOLIN_URL and ORG_ID.
 PANGOLIN_DASHBOARD_URL = os.getenv("PANGOLIN_DASHBOARD_URL", "").strip().rstrip("/")
 if not PANGOLIN_DASHBOARD_URL and PANGOLIN_URL:
-    # Derive from PANGOLIN_URL (strip api/version suffixes and append ORG_ID if present)
-    _base = PANGOLIN_URL
-    for _suffix in ("/v1", "/v2", "/api"):
-        _base = _base.removesuffix(_suffix)
-    _base = _base.rstrip("/")
-    if ORG_ID:
-        PANGOLIN_DASHBOARD_URL = f"{_base}/{ORG_ID}"
-    else:
-        PANGOLIN_DASHBOARD_URL = _base
+    PANGOLIN_DASHBOARD_URL = _derive_dashboard_url(PANGOLIN_URL, ORG_ID)
 
 
 # Minimal 1x1 PNG (transparent) as bytes
@@ -174,8 +186,14 @@ shutdown_event = threading.Event()
 _SHUTDOWN_TIMEOUT_SECONDS = 4.0
 
 
-def now_utc_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
+def _print_warning_banner(*lines: str) -> None:
+    """Print a prominent framed warning block to stdout."""
+    print()
+    print("=" * 60)
+    for line in lines:
+        print(line)
+    print("=" * 60)
+    print()
 
 
 _REDACTED_HEADER_NAMES = frozenset(
@@ -389,11 +407,9 @@ class PangolinTarget(Target):
         self._ctx_factory = ctx_factory
 
     def add_ip(self, ip: str, resource_ids: list[int] | None = None) -> None:
-        from dataclasses import replace as _dc_replace
-
         ctx = self._ctx_factory()
         if resource_ids is not None:
-            ctx = _dc_replace(ctx, resource_ids=resource_ids)
+            ctx = replace(ctx, resource_ids=resource_ids)
         pg_ensure_ip_rule(ctx, ip)
 
     # Pangolin cleanup is handled separately based on created_by_us; no expire here.
@@ -784,6 +800,7 @@ def cleanup_loop(stop_event: threading.Event | None = None):
 
 
 from request_handler import (
+    RequestHandlerContext,
     build_plain_http_response,
     create_image_request_handler,
     is_valid_dashboard_url,
@@ -791,26 +808,26 @@ from request_handler import (
 )
 
 
-def _make_image_handler_context() -> dict:
-    return {
-        "update_enabled": UPDATE_ENDPOINT_ENABLED,
-        "retention_minutes": RETENTION_MINUTES,
-        "crowdsec_enabled": CROWDSEC_ENABLED,
-        "site_name": SITE_NAME,
-        "proxy_shared_secret": PROXY_SHARED_SECRET,
-        "debug_log_headers": DEBUG_LOG_HEADERS,
-        "state": state,
-        "state_lock": state_lock,
-        "now_utc_iso": now_utc_iso,
-        "save_state": save_state,
-        "add_ip_to_targets": add_ip_to_targets,
-        "banner_png": BANNER_PNG,
-        "banner_gif": BANNER_GIF,
-        "redact_headers_for_log": redact_headers_for_log,
-        "redirect_to_launcher": REDIRECT_TO_LAUNCHER,
-        "redirect_delay_seconds": REDIRECT_DELAY_SECONDS,
-        "pangolin_dashboard_url": PANGOLIN_DASHBOARD_URL,
-    }
+def _make_image_handler_context() -> RequestHandlerContext:
+    return RequestHandlerContext(
+        update_enabled=UPDATE_ENDPOINT_ENABLED,
+        retention_minutes=RETENTION_MINUTES,
+        crowdsec_enabled=CROWDSEC_ENABLED,
+        site_name=SITE_NAME,
+        proxy_shared_secret=PROXY_SHARED_SECRET,
+        debug_log_headers=DEBUG_LOG_HEADERS,
+        state=state,
+        state_lock=state_lock,
+        now_utc_iso=now_utc_iso,
+        save_state=save_state,
+        add_ip_to_targets=add_ip_to_targets,
+        banner_png=BANNER_PNG,
+        banner_gif=BANNER_GIF,
+        redact_headers_for_log=redact_headers_for_log,
+        redirect_to_launcher=REDIRECT_TO_LAUNCHER,
+        redirect_delay_seconds=REDIRECT_DELAY_SECONDS,
+        pangolin_dashboard_url=PANGOLIN_DASHBOARD_URL,
+    )
 
 
 # Expose the HTTP handler class
@@ -911,12 +928,16 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
 def self_check():
     # Double-check mandatory environment settings and print useful warnings/summary.
+    config_errors = [*_CONFIG_ERRORS, *CROWDSEC_CONFIG_ERRORS]
+    if config_errors:
+        raise RuntimeError("Invalid configuration: " + "; ".join(config_errors))
+
     missing = []
     if not PANGOLIN_URL:
         missing.append("PANGOLIN_URL")
     if not RESOURCE_IDS:
         missing.append("RESOURCE_IDS")
-    if not PROXY_SHARED_SECRET:
+    if not PROXY_SHARED_SECRET or not PROXY_SHARED_SECRET.strip():
         missing.append("PROXY_SHARED_SECRET")
     if missing:
         print(
@@ -927,17 +948,35 @@ def self_check():
             "Missing required environment variables: " + ", ".join(missing)
         )
 
-    if PANGOLIN_URL:
-        parsed_url = urlparse(PANGOLIN_URL)
-        if parsed_url.scheme != "https":
-            raise RuntimeError(
-                f"PANGOLIN_URL must use https:// scheme; got {parsed_url.scheme!r}"
-            )
+    if any(rid <= 0 for rid in RESOURCE_IDS):
+        raise RuntimeError(
+            f"RESOURCE_IDS must contain positive integers only; got {RESOURCE_IDS!r}"
+        )
+    if len(set(RESOURCE_IDS)) != len(RESOURCE_IDS):
+        raise RuntimeError(f"RESOURCE_IDS contains duplicate IDs; got {RESOURCE_IDS!r}")
+
+    parsed_url = urlparse(PANGOLIN_URL)
+    if parsed_url.scheme != "https":
+        raise RuntimeError(
+            f"PANGOLIN_URL must use https:// scheme; got {parsed_url.scheme!r}"
+        )
+    if not parsed_url.netloc:
+        raise RuntimeError(
+            f"PANGOLIN_URL must include a non-empty host (https://<host>); got {PANGOLIN_URL!r}"
+        )
 
     if PANGOLIN_DASHBOARD_URL and not is_valid_dashboard_url(PANGOLIN_DASHBOARD_URL):
         raise RuntimeError(
             "PANGOLIN_DASHBOARD_URL must be a valid https:// URL without userinfo, "
             f"whitespace, or control characters; got {PANGOLIN_DASHBOARD_URL!r}"
+        )
+
+    if not (0 <= LISTEN_PORT <= 65535):
+        raise RuntimeError(f"LISTEN_PORT={LISTEN_PORT} must be between 0 and 65535")
+    if LISTEN_PORT == 0:
+        print(
+            "[warn] LISTEN_PORT=0 binds an ephemeral port; "
+            "Docker HEALTHCHECK expects a fixed port."
         )
 
     for _name, _val, _min in [
@@ -957,27 +996,29 @@ def self_check():
         except ValueError as e:
             raise RuntimeError(str(e)) from None
 
+    if len(PROXY_SHARED_SECRET) < 32:
+        _print_warning_banner(
+            "[WARN] PROXY_SHARED_SECRET is shorter than 32 characters.",
+            "       Use a high-entropy random secret (at least 32 characters).",
+        )
+
     if not PANGOLIN_TOKEN:
-        print()
-        print("=" * 60)
-        print("[WARN] PANGOLIN_TOKEN is not set or empty.")
-        print("       All Pangolin API calls will be skipped.")
-        print("       IP rules will NOT be created or deleted.")
-        print("       If this is unintentional, check your environment.")
-        print("=" * 60)
-        print()
+        _print_warning_banner(
+            "[WARN] PANGOLIN_TOKEN is not set or empty.",
+            "       All Pangolin API calls will be skipped.",
+            "       IP rules will NOT be created or deleted.",
+            "       If this is unintentional, check your environment.",
+        )
     if not ORG_ID:
         print("[warn] ORG_ID is not set; startup resource listing will be skipped.")
     # Verify state file directory is writable before we need it
     state_dir = os.path.dirname(os.path.abspath(STATE_FILE))
     if not os.path.isdir(state_dir):
-        print()
-        print("=" * 60)
-        print(f"[WARN] State file directory does not exist: {state_dir}")
-        print("       State will be lost on restart.")
-        print(f"       Check your volume mount for STATE_FILE={STATE_FILE}")
-        print("=" * 60)
-        print()
+        _print_warning_banner(
+            f"[WARN] State file directory does not exist: {state_dir}",
+            "       State will be lost on restart.",
+            f"       Check your volume mount for STATE_FILE={STATE_FILE}",
+        )
     else:
         test_file = os.path.join(state_dir, ".write_test")
         try:
@@ -985,13 +1026,11 @@ def self_check():
                 f.write("ok")
             os.remove(test_file)
         except OSError as e:
-            print()
-            print("=" * 60)
-            print(f"[WARN] State file directory is not writable: {state_dir}")
-            print("       State will be lost on restart.")
-            print(f"       Error: {e}")
-            print("=" * 60)
-            print()
+            _print_warning_banner(
+                f"[WARN] State file directory is not writable: {state_dir}",
+                "       State will be lost on restart.",
+                f"       Error: {e}",
+            )
 
     cs_status = (
         f"enabled name='{CROWDSEC_ALLOWLIST_NAME}' bin='{CROWDSEC_CSCLI_BIN}' prefix='{CROWDSEC_CMD_PREFIX}'"
@@ -1025,21 +1064,18 @@ def main():
         print_org_resources()
     except Exception as e:  # noqa: BLE001
         err_str = str(e)
-        print()
-        print("=" * 60)
         if "401" in err_str or "403" in err_str:
-            print("[WARN] Pangolin API auth failed at startup.")
-            print(
-                "       Check that PANGOLIN_TOKEN is correct and has the required permissions."
+            _print_warning_banner(
+                "[WARN] Pangolin API auth failed at startup.",
+                "       Check that PANGOLIN_TOKEN is correct and has the required permissions.",
+                "       The service will still start, but Pangolin rules will fail until resolved.",
             )
         else:
-            print(f"[WARN] Pangolin API unreachable at startup: {e}")
-            print("       Check PANGOLIN_URL and network connectivity.")
-        print(
-            "       The service will still start, but Pangolin rules will fail until resolved."
-        )
-        print("=" * 60)
-        print()
+            _print_warning_banner(
+                f"[WARN] Pangolin API unreachable at startup: {e}",
+                "       Check PANGOLIN_URL and network connectivity.",
+                "       The service will still start, but Pangolin rules will fail until resolved.",
+            )
 
     # Ensure targets are ready (e.g., create CrowdSec allowlist if enabled)
     for t in TARGETS:

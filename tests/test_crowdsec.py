@@ -1405,3 +1405,102 @@ def test_remove_ip_invalid_allowlist_name_raises_before_subprocess(monkeypatch):
     with pytest.raises(ValueError, match="invalid CrowdSec allowlist name"):
         crowdsec_connector.crowdsec_remove_ip("1.2.3.4")
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 / Batch 10 — Helper Refactors
+# ---------------------------------------------------------------------------
+
+
+def test_parse_cmd_prefix_variants(monkeypatch, capsys):
+    """_parse_cmd_prefix splits valid commands, handles empty, and only warns when requested."""
+    import crowdsec_connector
+
+    monkeypatch.setattr(crowdsec_connector, "CROWDSEC_CMD_PREFIX", "")
+    assert crowdsec_connector._parse_cmd_prefix(warn=True) == []
+
+    monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec crowdsec"
+    )
+    assert crowdsec_connector._parse_cmd_prefix(warn=False) == [
+        "docker",
+        "exec",
+        "crowdsec",
+    ]
+
+    monkeypatch.setattr(
+        crowdsec_connector, "CROWDSEC_CMD_PREFIX", "docker exec 'unterminated"
+    )
+    assert crowdsec_connector._parse_cmd_prefix(warn=False) == [
+        "docker exec 'unterminated"
+    ]
+    assert capsys.readouterr().out == ""
+
+    assert crowdsec_connector._parse_cmd_prefix(warn=True) == [
+        "docker exec 'unterminated"
+    ]
+    assert "WARNING" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (" 1.2.3.4 ", "1.2.3.4"),
+        (" 2001:0db8::0001 ", "2001:db8::1"),
+        ("192.0.2.5/24", "192.0.2.0/24"),
+        ("not-an-ip", None),
+    ],
+)
+def test_parse_ip_or_cidr_variants(raw, expected):
+    """_parse_ip_or_cidr canonicalizes IPs/CIDRs and returns None on invalid input."""
+    import crowdsec_connector
+
+    assert crowdsec_connector._parse_ip_or_cidr(raw) == expected
+
+
+def test_run_cscli_with_retry_backoff_and_exhaustion(monkeypatch):
+    """_run_cscli_with_retry retries with exponential backoff and stops on rc=0 or exhaustion."""
+    import crowdsec_connector
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(_time, "sleep", lambda secs: sleeps.append(secs))
+
+    results = iter([(1, "", "transient"), (0, "ok", "")])
+    monkeypatch.setattr(crowdsec_connector, "run_cscli", lambda args: next(results))
+    rc, out, err = crowdsec_connector._run_cscli_with_retry(
+        ["allowlist", "add"], action="add"
+    )
+    assert (rc, out, err) == (0, "ok", "")
+    assert sleeps == [1.0]
+
+    sleeps.clear()
+    monkeypatch.setattr(
+        crowdsec_connector, "run_cscli", lambda args: (2, "", "still failing")
+    )
+    rc2, out2, err2 = crowdsec_connector._run_cscli_with_retry(
+        ["allowlist", "remove"], action="remove"
+    )
+    assert (rc2, out2, err2) == (2, "", "still failing")
+    assert sleeps == [1.0, 2.0]
+
+
+def test_allowlist_exists_legacy_plural_json_fallback(monkeypatch):
+    """crowdsec_allowlist_exists tries legacy 'allowlists' JSON when 'allowlist' fails."""
+    import crowdsec_connector
+
+    seen_cmds: list[list[str]] = []
+
+    def fake_run(args):
+        seen_cmds.append(args)
+        if args == ["allowlist", "list", "-o", "json"]:
+            return 1, "", "unknown command"
+        if args == ["allowlists", "list", "-o", "json"]:
+            return 0, '[{"name": "my-list"}]', ""
+        return 1, "", "unexpected"
+
+    monkeypatch.setattr(crowdsec_connector, "run_cscli", fake_run)
+    assert crowdsec_connector.crowdsec_allowlist_exists("my-list") is True
+    assert seen_cmds == [
+        ["allowlist", "list", "-o", "json"],
+        ["allowlists", "list", "-o", "json"],
+    ]
