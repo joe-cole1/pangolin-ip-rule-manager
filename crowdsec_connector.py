@@ -121,7 +121,8 @@ def _validate_allowlist_name(name: str) -> None:
 def _run_docker_cmd(args: list[str]) -> tuple[int, str, str]:
     """Run a docker command directly, respecting DOCKER_HOST from the environment."""
     try:
-        proc = subprocess.run(
+        # shell=False; fixed docker binary with controlled subcommand args.
+        proc = subprocess.run(  # noqa: S603
             ["docker"] + args,
             capture_output=True,
             text=True,
@@ -211,7 +212,8 @@ def _build_cscli_cmd(args: list[str]) -> list[str]:
 def run_cscli(args: list[str]) -> tuple[int, str, str]:
     """Run cscli command. Returns (returncode, stdout, stderr)."""
     try:
-        proc = subprocess.run(
+        # shell=False; cscli args validated via _validate_ip/_validate_allowlist_name.
+        proc = subprocess.run(  # noqa: S603
             _build_cscli_cmd(args),
             capture_output=True,
             text=True,

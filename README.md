@@ -167,7 +167,7 @@ services:
       PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:?set PROXY_SHARED_SECRET}
 
       # Retention and cleanup
-      RETENTION_MINUTES: "43200"       # 30 days
+      RETENTION_MINUTES: "1440"        # 1 day
       CLEANUP_INTERVAL_MINUTES: "60"
       RULE_PRIORITY: "0"
       RULES_CACHE_TTL_SECONDS: "3600"
@@ -310,6 +310,7 @@ CrowdSec integration is disabled by default. When enabled, the service adds IPs 
 |---|---|---|---|
 | `SITE_NAME` | _(empty)_ | No | Name shown in the card header and footer of the HTML check-in and error pages (e.g. `yourdomain.com`). When empty, the subtitle and footer domain are omitted. |
 | `UPDATE_ENDPOINT_ENABLED` | `false` | No | Enables the `/update?ip=...` endpoint. See [Manual IP Override](#manual-ip-override-update-endpoint). |
+| `DEBUG_LOG_HEADERS` | `false` | No | Logs incoming request headers for debugging (preserving duplicate headers and sanitizing control characters) with sensitive headers redacted. Leave `false` in production. |
 
 ---
 
@@ -405,7 +406,7 @@ Keep the **check-in resource itself** behind Pangolin user authentication. Do no
 
 Leave the check-in resource's custom response headers empty unless you need a deliberate override. The app already sends `Cache-Control: no-store, no-cache, must-revalidate, max-age=0`, `Pragma: no-cache`, `Expires: 0`, and browser security headers. A proxy or CDN cache override can serve an old page or image without reaching the app, so the visit will not refresh the IP's expiry time.
 
-The HTML page uses inline styles and scripts for its layout, copy-IP button, and optional redirect countdown. A stricter `Content-Security-Policy` response override can block these features. Confirm the delivered response still has the intended cache and security headers after any override.
+The HTML page uses inline styles and scripts for its layout, bookmark button, technical-details toggle, and optional redirect countdown. A stricter `Content-Security-Policy` response override can block these features. Confirm the delivered response still has the intended cache and security headers after any override.
 
 ### Upgrade Validation
 
@@ -555,7 +556,7 @@ State is stored as JSON at `STATE_FILE` (default `/data/state.json`). Mount a na
 - **Role intersection:** A user only ever bootstraps access to resources their Pangolin account permits, regardless of how many resources `RESOURCE_IDS` contains.
 - **Live identity validation:** Every check-in searches the current Pangolin organization user list. The returned permanent user ID and username must exactly match both trusted identity headers before current role assignments are accepted.
 - **IP validation:** IPs from `X-Real-IP` and `X-Forwarded-For` are validated and must be globally routable. The socket address fallback is not validated, as it is controlled by the OS/kernel rather than the caller.
-- **Header redaction in logs:** `Authorization`, `Proxy-Authorization`, and `X-Proxy-Secret` headers are redacted in all log output.
+- **Header redaction and log sanitization:** `Authorization`, `Proxy-Authorization`, `X-Proxy-Secret`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Auth-Token`, `X-Csrf-Token`, `X-Xsrf-Token`, and any header name containing `cookie`, `secret`, `token`, `auth`, `api-key`, `apikey`, or `password` are redacted in debug log output, and control characters / Unicode line separators are sanitized before logging.
 - **Secrets:** All credentials should be stored in a secrets manager (e.g., Bitwarden) and injected at runtime. Never hardcode them in compose files or Dockerfiles.
 - **Scope of deletions:** The service only deletes Pangolin rules it created itself. It will never touch rules that existed before it ran.
 - **Docker socket:** Only required for CrowdSec integration (`docker exec crowdsec cscli ...`). Prefer the isolated socket proxy in `docker-compose.yml`; mounting the raw socket read-only does not restrict Docker API operations.
